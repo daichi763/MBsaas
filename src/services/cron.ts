@@ -6,8 +6,10 @@
 //   D1 の問い合わせ数の上限で後ろの処理が止まらないようにする）。式なしで起動したとき（手動の確認）だけ全部を実行する。
 //   一覧にない式で起動したときは何もしない（#9967。index.tsx が障害の記録に残す。wrangler.jsonc だけを変えて毎日の削除が15分ごとに走らないように）。
 // - 処理が例外を投げた、または結果に failed（1以上）・error があれば「失敗」として記録する。1つが失敗しても次の処理は続ける。
-// - 結果に idle: true を返した（何もしなかった）実行は、同じ処理の直前の記録も idle なら、その行を消してから記録する
-//   （15分おきのリマインドなど回数の多い処理で、記録と本部画面の直近の一覧が埋まらないようにする。最後の実行の日時は残る）
+// - 結果に idle: true を返した（何もしなかった）実行は、同じ処理の直前の記録も idle なら、その行を今回の実行で上書きする
+//   （15分おきのリマインドなど回数の多い処理で、記録と本部画面の直近の一覧が埋まらないようにする。最後の実行の日時は残る）。
+//   消して入れ直すと、行・索引・AUTOINCREMENT の連番の書き込みが毎回起きるため、上書きにする（#9976）。
+//   上書きした行の run_id は前のままなので、直近の一覧は開始の日時の順に並べる
 // - 本部画面には、処理ごとの最終実行・成否・エラーと、失敗・長く実行されていないときの警告を出す（cronStatus）。
 //   長さの目安は処理ごと（cronStaleHours。15分おきの処理は1時間、毎日の処理は25時間）。
 
@@ -73,15 +75,19 @@ export async function runCronJobs<E extends { DB: D1Database }>(env: E, jobs: Cr
     const finished = Date.now()
     console.log(`cron ${job.name}: ${status}${result ? ' ' + JSON.stringify(result) : ''}${error ? ' error=' + error : ''}`)
     try {
+      const vals = [cron || null, job.label, status, result ? JSON.stringify(result).slice(0, 2000) : null,
+        error ? error.slice(0, 1000) : null, finished - started, new Date(started).toISOString(), new Date(finished).toISOString()]
+      let replaced = false
       if (status === 'ok' && result?.idle === true) {
-        await env.DB.prepare(`DELETE FROM cron_runs WHERE run_id = (SELECT MAX(run_id) FROM cron_runs WHERE job = ?) AND status = 'ok'
-          AND (CASE WHEN json_valid(result_json) THEN json_extract(result_json, '$.idle') END) = 1`).bind(job.name).run()
+        const r = await env.DB.prepare(`UPDATE cron_runs SET cron = ?, label = ?, status = ?, result_json = ?, error_message = ?, duration_ms = ?, started_at = ?, finished_at = ?
+          WHERE run_id = (SELECT MAX(run_id) FROM cron_runs WHERE job = ?) AND status = 'ok'
+          AND (CASE WHEN json_valid(result_json) THEN json_extract(result_json, '$.idle') END) = 1`).bind(...vals, job.name).run()
+        replaced = (r.meta.changes || 0) > 0
       }
-      await env.DB.prepare(`INSERT INTO cron_runs (cron, job, label, status, result_json, error_message, duration_ms, started_at, finished_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(
-        cron || null, job.name, job.label, status, result ? JSON.stringify(result).slice(0, 2000) : null,
-        error ? error.slice(0, 1000) : null, finished - started, new Date(started).toISOString(), new Date(finished).toISOString()
-      ).run()
+      if (!replaced) {
+        await env.DB.prepare(`INSERT INTO cron_runs (cron, label, status, result_json, error_message, duration_ms, started_at, finished_at, job)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(...vals, job.name).run()
+      }
     } catch (e) {
       console.log(`cron_runs insert failed: ${job.name}: ${e}`)
     }
@@ -109,7 +115,8 @@ export async function cronStatus(db: D1Database, opts: { limit?: number } = {}) 
   const latest = (await db.prepare(`SELECT r.* FROM cron_runs r
     JOIN (SELECT job, MAX(run_id) AS run_id FROM cron_runs GROUP BY job) m ON m.run_id = r.run_id
     ORDER BY r.job`).all()).results as CronRunRow[]
-  const recent = (await db.prepare('SELECT * FROM cron_runs ORDER BY run_id DESC LIMIT ?').bind(opts.limit || 50).all()).results as CronRunRow[]
+  // 何もしなかった実行は前の行を上書きする（run_id は前のまま）ので、開始の日時の順に並べる（idx_cron_runs_started で引ける）
+  const recent = (await db.prepare('SELECT * FROM cron_runs ORDER BY started_at DESC, run_id DESC LIMIT ?').bind(opts.limit || 50).all()).results as CronRunRow[]
   const now = Date.now()
   const warnings: { job: string | null; label: string | null; kind: 'failed' | 'stale' | 'never'; message: string }[] = []
   if (!latest.length) warnings.push({ job: null, label: null, kind: 'never', message: '定期処理がまだ一度も実行されていません（Cron Trigger の設定とデプロイを確認してください）' })

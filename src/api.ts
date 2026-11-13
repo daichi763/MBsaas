@@ -6,7 +6,7 @@ import { passwordResetEmail } from './email-templates/password-reset'
 import { noticeEmail } from './email-templates/notice'
 import { runRetentionCleanup, listRetentionSchedule, validateRetiredAt, isRetirementEffective, RETENTION_NON_ROW_TARGETS, RETENTION_TOKEN_TARGETS } from './services/retention'
 import { cronStatus } from './services/cron'
-import { RETENTION_MAINTENANCE_TARGETS, RETENTION_SETTING_DEFS, dailyReportRetentionInfo, getRetentionSettings, scanOrphanPhotos, setRetentionHold } from './services/retention'
+import { RETENTION_MAINTENANCE_TARGETS, RETENTION_SETTING_DEFS, dailyReportRetentionInfo, getRetentionSettings, locationPhotoSql, scanOrphanPhotos, setRetentionHold } from './services/retention'
 import { csvLimitHeaders, csvLimitNote, loadLatestForCsv } from './csv'
 import { OFFBOARDING_TABLES, OFFBOARDING_GRACE_DAYS, OFFBOARDING_GRACE_MIN, OFFBOARDING_GRACE_MAX, OFFBOARDING_EXPORT_PAGE, OFFBOARDING_TOTAL_STEPS,
   countOffboardingData, findUnknownOffboardingTables, exportOffboardingTablePage, listOffboardingFiles, findOffboardingFile, offboardingBucket, runOffboardingDeletion } from './services/retention'
@@ -783,7 +783,8 @@ api.use('/*', async (c, next) => {
 // 最後にアプリを使った日時（#491）: パスワードでのログインのほか、セッションでの操作でも残す（週次アクティブの集計に使う）。
 // 企業切替の後はセッションの利用者が切替先のユーザー行になるので、切替先の行が更新される。
 // 書き込みを減らすため、前回から LAST_SEEN_STEP_MINUTES 以上たったときだけ更新し、定期の取得（X-Background: 1）では更新しない
-const LAST_SEEN_STEP_MINUTES = 60
+// （6時間。週次アクティブは日単位なので足りる。スタッフ一覧の「最終利用」は最大6時間古くなる。利用者 11/12 了承。#9976）
+const LAST_SEEN_STEP_MINUTES = 360
 async function touchLastSeen(c: any, u: any) {
   if (c.req.header('X-Background') === '1') return
   const now = nowJST()
@@ -803,23 +804,26 @@ async function touchLastSeen(c: any, u: any) {
 // ・バッジ更新などの定期の取得（X-Background: 1）では延ばさない（画面を開いたままでも、操作がなければ期限が来る）
 // ・ログインから最長期間（SESSION_MAX_DAYS）を超えては延ばさない
 // ・書き込みを減らすため、前回の延長から SESSION_EXTEND_STEP_MINUTES 以上たったときだけ更新する
-// スタッフは日をまたぐ勤務や翌日の報告があるため、操作のない時間の上限と最長期間を長くする
+// スタッフは日をまたぐ勤務や翌日の報告があるため、操作のない時間の上限と最長期間を長くする。
+// スタッフの延長の間隔は6時間（上限72時間のうち、操作がなくても最低66時間は残る。#9976 利用者 11/12 了承）
 const SESSION_IDLE_HOURS: Record<string, number> = { staff: 72 }
 const SESSION_MAX_DAYS: Record<string, number> = { staff: 30 }
 const SESSION_MAX_DAYS_DEFAULT = 7
-const SESSION_EXTEND_STEP_MINUTES = 10
+const SESSION_EXTEND_STEP_MINUTES: Record<string, number> = { staff: 360 }
+const SESSION_EXTEND_STEP_MINUTES_DEFAULT = 10
 async function extendSession(c: any, token: string, u: any): Promise<string> {
   const current = String(u.expires_at)
   if (c.req.header('X-Background') === '1') return current
   const idleHours = SESSION_IDLE_HOURS[u.role] ?? SESSION_HOURS
   const maxDays = SESSION_MAX_DAYS[u.role] ?? SESSION_MAX_DAYS_DEFAULT
+  const stepMs = (SESSION_EXTEND_STEP_MINUTES[u.role] ?? SESSION_EXTEND_STEP_MINUTES_DEFAULT) * 60 * 1000
   const target = new Date(Date.now() + idleHours * 3600 * 1000).toISOString()
-  if (Date.parse(current) > Date.parse(target) - SESSION_EXTEND_STEP_MINUTES * 60 * 1000) return current
+  if (Date.parse(current) > Date.parse(target) - stepMs) return current
   // created_at は CURRENT_TIMESTAMP（UTC）。expires_at と同じ ISO 8601 の書式にして比べる
   const maxSql = `COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', created_at, '+${maxDays} days'), expires_at)`
   // アプリを開くと API を同時に何本も呼ぶ。先に延ばした要求があれば（期限が延ばす幅より短い差なら）書かない（#9970）。
   // そのときは延ばした後の期限を読み、ほかの要求と同じ期限・Cookie を返す
-  const stepFloor = new Date(Date.parse(target) - SESSION_EXTEND_STEP_MINUTES * 60 * 1000).toISOString()
+  const stepFloor = new Date(Date.parse(target) - stepMs).toISOString()
   const hashed = await hashToken(token)
   let row = await c.env.DB.prepare(`UPDATE sessions SET expires_at = MIN(?, ${maxSql})
       WHERE token = ? AND expires_at < MIN(?, ${maxSql}) RETURNING expires_at`)
@@ -1341,6 +1345,10 @@ const STAFF_SHIFT_PLACE_COLUMNS = `si.site_name, si.address AS site_address, si.
   p.default_break_minutes AS project_break_minutes, p.site_contact_name, p.site_contact_phone`
 const STAFF_SHIFT_PLACE_JOINS = `LEFT JOIN sites si ON si.site_id = s.site_id AND si.company_id = s.company_id
     LEFT JOIN shift_slots sl ON sl.slot_id = s.slot_id AND sl.company_id = s.company_id`
+// ホームで読むシフトの列（s.* を読まない。返すのは staffShiftView の許可リストの列だけで、金額・精算などの列は使わないため。
+// D1 の結果を読む CPU を減らす #9970）。前日確認の状態（dayBeforeState）に使う列も読む
+const HOME_SHIFT_COLUMNS = `s.shift_id, s.company_id, s.staff_id, s.project_id, s.work_date, s.start_time, s.end_time, s.location, s.role, s.status, s.break_minutes,
+  s.site_id, s.slot_id, s.staff_reply, s.staff_reply_note, s.staff_reply_at, s.staff_changed_at, s.day_before_confirmed_at, s.day_before_confirmed_key`
 
 // 次回の稼働（#278）: 今日より後の最初の稼働日の勤務（確定・代打。同一人物の全所属企業）。同じ日に複数あれば開始時刻順に HOME_NEXT_MAX 件まで。
 // 前日確認（#176）: シフトの会社が前日確認を使っていれば、明日のシフトに確認の状態を付ける（確認の後にシフトが変わったものは未確認）
@@ -1348,7 +1356,7 @@ const HOME_NEXT_MAX = 5
 function homeNextShiftsStmt(db: D1Database, personIds: number[], today: string) {
   const inIds = personIds.map(() => '?').join(','), inSt = WORKING_SHIFT_STATUSES.map(() => '?').join(',')
   return db.prepare(`
-    SELECT s.*, p.project_name, co.company_name AS shift_company_name, ${STAFF_SHIFT_PLACE_COLUMNS}
+    SELECT ${HOME_SHIFT_COLUMNS}, p.project_name, co.company_name AS shift_company_name, ${STAFF_SHIFT_PLACE_COLUMNS}
     FROM shifts s JOIN projects p ON s.project_id = p.project_id JOIN companies co ON co.company_id = s.company_id
     ${STAFF_SHIFT_PLACE_JOINS}
     WHERE s.staff_id IN (${inIds}) AND s.status IN (${inSt})
@@ -1371,7 +1379,7 @@ function homeNextShiftsView(rows: any[], u: any, personRows: any[], today: strin
 // シフト: 本日のシフトと、前日に始まった日をまたぐシフト（同一人物の全所属企業。欠勤を除く）
 function homeShiftsStmt(db: D1Database, personIds: number[], today: string) {
   return db.prepare(`
-    SELECT s.*, p.project_name, p.project_type, p.report_template_id, p.photo_required_override, co.company_name AS shift_company_name, ${STAFF_SHIFT_PLACE_COLUMNS}
+    SELECT ${HOME_SHIFT_COLUMNS}, p.project_name, p.photo_required_override, co.company_name AS shift_company_name, ${STAFF_SHIFT_PLACE_COLUMNS}
     FROM shifts s JOIN projects p ON s.project_id = p.project_id JOIN companies co ON co.company_id = s.company_id
     ${STAFF_SHIFT_PLACE_JOINS}
     WHERE s.staff_id IN (${personIds.map(() => '?').join(',')}) AND s.work_date IN (?, ?) AND s.status != 'absent'
@@ -1417,6 +1425,8 @@ async function homeLoadStatus(db: D1Database, shifts: any[], dailyShifts: any[])
   const idsJson = bindJsonArray(ids)
   const att = attendanceTypesBatch(db, 'SELECT value FROM json_each(?)', [idsJson])
   const dIds = dailyShifts.map(s => s.shift_id as number)
+  // 報告の詳細（遅延・早退・打刻の方法・時刻の扱い）はホームに出すシフト（dailyShifts）の分だけ読み、報告漏れの候補は種類だけを読む（#9970）
+  const shown = new Set(dIds), missedIds = ids.filter(id => !shown.has(id))
   const dStaff = [...new Set(dailyShifts.map(s => s.staff_id as number))]
   const dDates = [...new Set(dailyShifts.map(s => s.work_date as string))]
   const res = await db.batch([
@@ -1428,14 +1438,15 @@ async function homeLoadStatus(db: D1Database, shifts: any[], dailyShifts: any[])
     // 電波がない場所で押して後から送った報告は、押した時刻で記録したこと（device_time）と受け取った時刻も出す（#427）
     db.prepare(`SELECT shift_id, report_type, reported_at, status, late_minutes, early_leave_minutes, COALESCE(entry_method, 'app') AS entry_method, corrected_by_correction_id,
       time_source, received_at
-      FROM attendance_reports WHERE shift_id IN ${JSON_IN}`).bind(idsJson),
+      FROM attendance_reports WHERE shift_id IN ${JSON_IN}`).bind(bindJsonArray(dIds)),
+    db.prepare(`SELECT shift_id, report_type FROM attendance_reports WHERE shift_id IN ${JSON_IN}`).bind(bindJsonArray(missedIds)),
     db.prepare(`SELECT shift_id, report_type, requested_at FROM attendance_corrections WHERE shift_id IN ${JSON_IN} AND status = 'pending'`).bind(idsJson),
     ...(dIds.length ? [db.prepare(`SELECT shift_id, staff_id, work_date, project_id, manager_checked, manager_checked_at FROM daily_reports
       WHERE shift_id IN (${dIds.map(() => '?').join(',')}) OR (+shift_id IS NULL AND staff_id IN (${dStaff.map(() => '?').join(',')}) AND work_date IN (${dDates.map(() => '?').join(',')}))`)
       .bind(...dIds, ...dStaff, ...dDates)] : []),
   ])
   const types = att.resolve(res.slice(0, att.statements.length))
-  const [modeRes, repRes, pendRes, dailyRes] = res.slice(att.statements.length)
+  const [modeRes, repRes, missedRepRes, pendRes, dailyRes] = res.slice(att.statements.length)
   const modes = new Map<number, ReturnType<typeof resolveModes>>()
   for (const r of (modeRes.results || []) as any[]) {
     const m = resolveModes({ daily_report_mode: r.p_dr }, { daily_report_mode: r.sp_dr }, { attendance_mode: r.s_att, daily_report_mode: r.s_dr })
@@ -1454,6 +1465,8 @@ async function homeLoadStatus(db: D1Database, shifts: any[], dailyShifts: any[])
       entry_method: r.entry_method, corrected: r.corrected_by_correction_id != null,
       ...deviceTimeMark(r) }
   }
+  // 報告漏れの候補は、報告があるかどうかだけを使う（homeMissedView）
+  for (const r of (missedRepRes.results || []) as any[]) { const o = status.get(r.shift_id); if (o) o.reports[r.report_type] = { report_type: r.report_type } }
   for (const r of (pendRes.results || []) as any[]) { const o = status.get(r.shift_id); if (o) o.pending_corrections[r.report_type] = r.requested_at }
   const drows = (dailyRes?.results || []) as any[]
   for (const s of dailyShifts) {
@@ -1484,8 +1497,8 @@ const HOME_NOTICE_PINNED_MAX = 5
 async function homeLoadNotices(db: D1Database, u: any, personRows: any[]) {
   const others = personRows.filter(r => r.user_id && r.company_id !== u.company_id)
   const [unread, recent, counts] = await Promise.all([
-    loadStaffNotices(db, u.user_id, { unreadOnly: true, order: 'unread_first', limit: 30 }),
-    loadStaffNotices(db, u.user_id, { order: 'recent', limit: HOME_NOTICE_PREVIEW }),
+    loadStaffNotices(db, u.user_id, { unreadOnly: true, order: 'unread_first', limit: 30, summary: true }),
+    loadStaffNotices(db, u.user_id, { order: 'recent', limit: HOME_NOTICE_PREVIEW, summary: true }),
     countUnreadNotices(db, [u.user_id, ...others.map(r => r.user_id)]),
   ])
   const rank = (n: any) => n.importance === 'urgent' ? 0 : n.read_required ? 1 : 2
@@ -7838,7 +7851,10 @@ api.get('/hq/companies', async (c) => {
     WHERE COALESCE(co.active_status, 'active') != ? ORDER BY co.company_id`)
       .bind(d90, d30, d30, d60, today, d30, d30, d60, today, HQ_COMPANY_STATUS),
     // 週次アクティブ（#491）: 課金対象の利用者のうち、ログイン・アプリの操作（last_seen_at）か、アプリからの勤怠の報告が期間内にあった人。
-    // 他社から連携したスタッフは所属元のログインのまま稼働先へ報告するので、報告先の企業のスタッフ行で数える
+    // 他社から連携したスタッフは所属元のログインのまま稼働先へ報告するので、報告先の企業のスタッフ行で数える。
+    // アプリからの報告には必ず端末の情報（device_info）が入り、位置情報・端末の情報は保存期間（最短90日）まで残るので、
+    // 30日以内のアプリの報告は locationPhotoSql の条件を満たす。この条件を付けて部分索引 idx_attendance_location_photo（reported_at）で引く
+    // （報告の日時だけの索引 idx_attendance_reported_at は打刻のたびに書くだけになるので、次の Sprint で消す。#9976）
     db.prepare(`SELECT company_id, SUM(CASE WHEN last_at >= ? THEN 1 ELSE 0 END) AS active_users, COUNT(*) AS active_users_30d
       FROM (SELECT company_id, user_id, MAX(t) AS last_at FROM (
           SELECT u.company_id, u.user_id, MAX(COALESCE(u.last_login_at, ''), COALESCE(u.last_seen_at, '')) AS t FROM users u
@@ -7846,7 +7862,7 @@ api.get('/hq/companies', async (c) => {
           UNION ALL
           SELECT u.company_id, u.user_id, ar.reported_at AS t FROM attendance_reports ar
             JOIN staff_profiles sp ON sp.staff_id = ar.staff_id JOIN users u ON u.user_id = sp.user_id
-            WHERE ar.reported_at >= ? AND COALESCE(ar.entry_method, 'app') = 'app' AND ${HQ_BILLABLE_SQL}
+            WHERE ar.reported_at >= ? AND ${locationPhotoSql('ar')} AND COALESCE(ar.entry_method, 'app') = 'app' AND ${HQ_BILLABLE_SQL}
         ) GROUP BY company_id, user_id)
       GROUP BY company_id`).bind(d7, d30, d30),
     // 請求記録（#295）: 入金待ち・滞納の月数と、最後に記録した月
@@ -7914,7 +7930,7 @@ api.get('/hq/companies/:id', async (c) => {
     SELECT
       (SELECT COUNT(*) FROM daily_reports WHERE company_id = ?) AS total_reports,
       (SELECT COUNT(*) FROM shifts WHERE company_id = ?) AS total_shifts,
-      (SELECT COUNT(*) FROM attendance_reports WHERE company_id = ?) AS total_attendance,
+      (SELECT COUNT(*) FROM attendance_reports WHERE staff_id IN (SELECT staff_id FROM staff_profiles WHERE company_id = ?)) AS total_attendance,
       (SELECT COUNT(*) FROM projects WHERE company_id = ? AND status = 'active') AS active_projects`).bind(cid, cid, cid, cid).first()
   // 直近6か月の月別の推移（日報数・シフト数・稼働した人数。#517）
   const today = todayJST()
