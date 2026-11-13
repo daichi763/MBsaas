@@ -6939,8 +6939,8 @@ async function renderAccount() {
   try {
     me = (await axios.get('/api/auth/account')).data
     const [l, a] = await Promise.all([
-      hasPerm('admin_users.manage', me) ? axios.get('/api/admin/users').then(r => r.data) : null,
-      axios.get('/api/admin/assignees', hasPerm('admin_users.manage', me) ? {} : { params: { user_id: me.user_id } }).then(r => r.data.assignments).catch(() => []),
+      hasPerm('admin_users.manage') ? axios.get('/api/admin/users').then(r => r.data) : null,
+      axios.get('/api/admin/assignees', hasPerm('admin_users.manage') ? {} : { params: { user_id: me.user_id } }).then(r => r.data.assignments).catch(() => []),
     ])
     list = l; asg = a || []
   } catch (e) { $app.innerHTML = '<p class="text-center text-gray-400 py-10">アカウント情報を取得できませんでした</p>'; return }
@@ -6989,7 +6989,7 @@ async function renderAccount() {
     </div>
     <section class="card p-3 mb-6 flex items-center gap-3 flex-wrap">
       <i class="fas fa-shield-halved text-blue-500"></i>
-      <span class="text-sm flex-1">二段階認証・ログイン中の端末・スタッフのログインの終了${hasPerm('security.manage', me) ? '・ログインの履歴・接続元の制限' : ''}は「セキュリティ」の画面で行います。</span>
+      <span class="text-sm flex-1">二段階認証・ログイン中の端末・スタッフのログインの終了${hasPerm('security.manage') ? '・ログインの履歴・接続元の制限' : ''}は「セキュリティ」の画面で行います。</span>
       <a href="#security" class="btn btn-outline text-sm">セキュリティへ</a>
     </section>
     <section class="card p-3 mb-6 flex items-center gap-3 flex-wrap">

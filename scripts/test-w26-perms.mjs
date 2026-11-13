@@ -301,6 +301,9 @@ ok('(3) /api/auth/me の permissions が、表（permissionsFor）と同じ。�
   const js = ['admin.js', 'settlement.js', 'security.js', 'notifications.js', 'roster.js', 'tour.js'].map(f => [f, readFileSync(join(ROOT, 'public', 'static', f), 'utf8')])
   const leftJs = js.flatMap(([f, s]) => s.split('\n').map((l, i) => [f, i + 1, l]).filter(([, , l]) => /\.role\s*===\s*'company_admin'|\.role\s*!==\s*'company_admin'|\['company_admin',\s*'system_admin'\]\.includes|can_manage_hr/.test(l)).map(([f, n]) => `${f}:${n}`))
   ok('(4) 画面のボタンの出し分けは hasPerm（/api/auth/me の permissions）で決める（ロール名・can_manage_hr の直書きが残っていない）', !leftJs.length, leftJs)
+  // hasPerm に渡せる利用者は permissions を持つもの（ME・その写しの S.me）だけ。/api/auth/account などの応答を渡すと、だれにも出なくなる
+  const otherMe = js.flatMap(([f, s]) => s.split('\n').map((l, i) => [f, i + 1, l]).filter(([, , l]) => /hasPerm\('[\w.]+',\s*(?!\s|S\.me\))/.test(l)).map(([f, n]) => `${f}:${n}`))
+  ok('(4) hasPerm の2つめの引数は S.me（ME の写し）だけ（permissions のない応答を渡さない）', !otherMe.length, otherMe)
 }
 
 const failed = results.filter(r => !r.pass)
