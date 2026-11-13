@@ -2,11 +2,14 @@ import { REPORT_TYPES } from '../report-settings'
 import { ERROR_LOG_KEEP_DAYS } from '../lib/error-log'
 import { nowJST, todayJST, addDays } from '../lib/time'
 import { dirtyReportCountsBeforeStmt } from '../lib/report-counts'
+import { summaryMarksBeforeStmt, summaryRowsBeforeStmts } from '../lib/monthly-summary'
 
 // データ保存期間ポリシーに基づく定期削除サービス。
 //
 // 対象と基準:
 //   daily_reports              : work_date から3年（実績の修正の履歴 daily_report_edits・コメント daily_report_comments も、日報と一緒に消す。#9707 #9965）
+//                                日報の月ごとの集計（report_summary_months・report_month_summaries・report_day_summaries。#9972）も、
+//                                基準日の月までの分を日報と一緒に消す
 //   user_notifications         : created_at から2年（既存の notice_reads の保持期間に合わせる）
 //   email_logs                 : created_at から1年（宛先のメールアドレスを含む送信記録。#240）
 //   operation_logs             : created_at から7年（シフト・精算の操作履歴。#159）。担当スタッフの退職後7年でも、その人の分を消す
@@ -383,11 +386,16 @@ async function cleanupDailyReports(db: D1Database, dryRun: boolean): Promise<Ret
 
   let deleted = 0
   try {
+    // 日報の月ごとの集計（#9972。migrations/0111）の、基準日の月までの分（日報から作り直せる控え）。
+    // 印も同じ batch で消す（行だけ消えて印が残る間に開くと、空の集計を集計済みとして読むため）
+    await db.batch([summaryMarksBeforeStmt(db, cutoff), ...summaryRowsBeforeStmts(db, cutoff)])
     // 消す日報の実績の修正の履歴（daily_report_edits。#9707）も、同じ batch で先に消す。
     // 2つの文で同じ日報を選ぶよう、番号の順に選ぶ
     const pick = `SELECT daily_report_id FROM daily_reports WHERE work_date < ? AND ${DR_NOT_HELD} ORDER BY daily_report_id LIMIT ?`
     for (let i = 0; i < DAILY_REPORTS_MAX_BATCHES; i++) {
-      const [, , result] = await db.batch([
+      const [, , , result] = await db.batch([
+        // 集計済みの印は日報より先に消す（残っていると、日報を消したときにトリガーが消した印の数が result の件数に入るため）
+        summaryMarksBeforeStmt(db, cutoff),
         db.prepare(`DELETE FROM daily_report_edits WHERE daily_report_id IN (${pick})`).bind(cutoff, DAILY_REPORTS_BATCH),
         // 日報のコメント（#9965。migrations/0107）
         db.prepare(`DELETE FROM daily_report_comments WHERE daily_report_id IN (${pick})`).bind(cutoff, DAILY_REPORTS_BATCH),
@@ -1206,6 +1214,11 @@ export const OFFBOARDING_TABLES: OffboardingTable[] = [
   { target: 'daily_report_edits', label: '日報の実績の修正の履歴', table: 'daily_report_edits', where: OB_CO },
   // Sprint 24（w24-requests）: 日報のコメント（#9965）
   { target: 'daily_report_comments', label: '日報のコメント', table: 'daily_report_comments', where: OB_CO },
+  // Sprint 26（w26-summary）: 日報の月ごとの集計（#9972。日報から作り直せるので書き出さない）。日報より先に消す
+  // （日報を消すとその月の印を消すトリガー（0111）が動き、印が残っていると日報の削除の件数 meta.changes に数えられるため）
+  { target: 'report_summary_months', label: '日報の集計済みの印', table: 'report_summary_months', where: OB_CO, noExport: true },
+  { target: 'report_month_summaries', label: '日報の月ごとの集計', table: 'report_month_summaries', where: OB_CO, noExport: true },
+  { target: 'report_day_summaries', label: '日報の日ごとの集計', table: 'report_day_summaries', where: OB_CO, noExport: true },
   { target: 'daily_reports', label: '日報', table: 'daily_reports', where: OB_CO },
   // Sprint 25（w25-perf）: 日報一覧の件数の控え（#9970。日報から作り直せるので書き出さない）
   { target: 'daily_report_month_counts', label: '日報一覧の件数の控え', table: 'daily_report_month_counts', where: OB_CO, noExport: true },
