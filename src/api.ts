@@ -63,7 +63,8 @@ import { authAccountApi, adminUsersApi, hqUsersApi, cleanEmail, genTempPassword,
 import { assigneesApi, assigneeListStmt, groupAssignees, loadAssignees, parseAssignees, assigneeSaveStmts, assigneeDeleteStmt } from './assignees'
 import { loadReportComments, staffCommentView, legacyCommentSyncStmt, legacyCommentReadSyncStmt, parseCommentBody, type ReportComment } from './lib/report-comments'
 // 日報一覧の件数の控え（#9970。migrations/0108）
-import { dailyReportCountPlan, dirtyReportCountsByIdsStmt, dirtyReportCountsByShiftStmt } from './lib/report-counts'
+import { dailyReportCountPlan, dirtyReportCountsByIdsStmt, dirtyReportCountsByShiftStmt, nextYm } from './lib/report-counts'
+import { LEGACY_KEYS, RS_DAY, RS_MONTH, addValues, freshSummaryMonths, popcount, summaryLastYm, summaryMarksStmt, summaryReady } from './lib/monthly-summary'
 import { findDailyReport, dailyReportView, dailyReportBlocked, saveDailyReport, mergeIncidentNotes, parseReportFields, pastReportFields, withPastFields, mergePastReportFields, guessReportFieldLabels, type ReportFieldDef,
   reportEditFields, buildAdminReportEdit, parseReportValuesJson, REPORT_EDIT_REASON_MAX } from './lib/daily-report'
 import { assertAssignable, assignableStaffSql, isUniqueViolation } from './lib/staff-eligibility'
@@ -4219,16 +4220,32 @@ api.get('/admin/staff/:id/skill-sheet', async (c) => {
   const projects = await c.env.DB.prepare(`
     SELECT DISTINCT p.project_name, p.project_type FROM shifts s JOIN projects p ON s.project_id = p.project_id
     WHERE s.staff_id = ? AND s.company_id = ? AND s.status IN ('confirmed','substitute') AND s.work_date <= ?`).bind(sid, u.company_id, todayJST()).all()
+  // 通算実績（#9972）: 集計済みの過去の月（自社。今月と前月より前）は月ごとの集計（report_month_summaries）から読み、それ以外は日報の表から数えて足す。
+  // 集計はここでは作らない（実績分析で作られた月だけを使う。スタッフ1人のために会社の月をまるごと集計し直さない）
+  const fresh = freshSummaryMonths(await summaryMarksStmt(c.env.DB, u.company_id, '0000-00', summaryLastYm(todayJST())).all(), nowJST())
+  const freshList = JSON.stringify(fresh)
+  const drWhere = fresh.length ? 'dr.staff_id = ? AND NOT (dr.company_id = ? AND substr(dr.work_date, 1, 7) IN (SELECT value FROM json_each(?)))' : 'dr.staff_id = ?'
+  const drBinds = fresh.length ? [sid, u.company_id, freshList] : [sid]
+  const msFrom = `FROM ${RS_MONTH} WHERE staff_id = ? AND company_id = ? AND ym IN (SELECT value FROM json_each(?))`
+  const msRows = fresh.length ? (await c.env.DB.prepare(`SELECT reports, values_json, legacy_json ${msFrom}`).bind(sid, u.company_id, freshList).all()).results as any[] : []
+  // JSON でない日報（壊れた値）は 0 として数える（json_extract が失敗して 500 になっていた）
   const perf = await c.env.DB.prepare(`
-    SELECT SUM(COALESCE(json_extract(report_values,'$.mnp'),0)) AS mnp,
-      SUM(COALESCE(json_extract(report_values,'$.pi'),0)) AS pi,
-      SUM(COALESCE(json_extract(report_values,'$.shinki'),0)) AS shinki,
-      SUM(COALESCE(json_extract(report_values,'$.hikari'),0)) AS hikari,
-      SUM(COALESCE(json_extract(report_values,'$.seiyaku'),0)) AS seiyaku,
+    SELECT SUM(COALESCE(CASE WHEN json_valid(report_values) THEN json_extract(report_values,'$.mnp') END,0)) AS mnp,
+      SUM(COALESCE(CASE WHEN json_valid(report_values) THEN json_extract(report_values,'$.pi') END,0)) AS pi,
+      SUM(COALESCE(CASE WHEN json_valid(report_values) THEN json_extract(report_values,'$.shinki') END,0)) AS shinki,
+      SUM(COALESCE(CASE WHEN json_valid(report_values) THEN json_extract(report_values,'$.hikari') END,0)) AS hikari,
+      SUM(COALESCE(CASE WHEN json_valid(report_values) THEN json_extract(report_values,'$.seiyaku') END,0)) AS seiyaku,
       COUNT(*) AS total_days
-    FROM daily_reports WHERE staff_id = ?`).bind(sid).first()
+    FROM daily_reports dr WHERE ${drWhere}`).bind(...drBinds).first() as any
+  const msSums = new Map<string, number>(), legacy = new Map<string, number>()
+  if (msRows.length) {
+    for (const r of msRows) { addValues(msSums, r.values_json); addValues(legacy, r.legacy_json) }
+    for (const k of LEGACY_KEYS) perf[k] = (Number(perf[k]) || 0) + (legacy.get(k) || 0)
+    perf.total_days = (Number(perf.total_days) || 0) + msRows.reduce((n, r) => n + (Number(r.reports) || 0), 0)
+  }
   // テンプレートの数値項目の合計（#184。performance.values と performance_fields。固定の列は今の画面のために残す）
-  const metrics = await reportMetricSums(c.env.DB, 'dr.staff_id = ?', [sid], "''")
+  const metrics = await reportMetricSums(c.env.DB, drWhere, drBinds, "''",
+    msRows.length ? { summary: { projects: `SELECT project_id, company_id ${msFrom}`, binds: [sid, u.company_id, freshList], sums: msSums } } : {})
   const latestEval = await c.env.DB.prepare('SELECT * FROM evaluations WHERE staff_id = ? ORDER BY evaluation_period DESC LIMIT 1').bind(sid).first()
   // 管理者メモは社内用なので、社外に出すスキルシートには返さない。推薦コメントは別の欄（skill_sheet_comment。#447）に保存したものを返す
   const { memo: _memo, ...sheet } = profile
@@ -6227,16 +6244,28 @@ async function metricFieldsWithLabels(db: D1Database, cid: number | null, templa
 }
 // 日報の数値項目の合計（#184。スタッフ詳細・スキルシート・案件詳細の実績）。where は daily_reports dr の条件、group は GROUP BY の式。
 // 項目は実績分析と同じ規則（metricFields）で決め、group の値ごとに { キー: 合計 } を返す（その組に無い項目は 0）。
-// opts.cid を渡すと、表示名のわからないキーを自社・本部のテンプレートで補う。opts.presentOnly は metricFields と同じ
-async function reportMetricSums(db: D1Database, where: string, binds: any[], group: string, opts: { cid?: number; presentOnly?: boolean } = {}) {
+// opts.cid を渡すと、表示名のわからないキーを自社・本部のテンプレートで補う。opts.presentOnly は metricFields と同じ。
+// opts.summary（group が "''" のときだけ）: 月ごとの集計から読んだ分（#9972）。projects は案件と会社の SELECT（binds はその値）、sums は項目の合計で、日報の表から数えた分に足す
+async function reportMetricSums(db: D1Database, where: string, binds: any[], group: string,
+  opts: { cid?: number; presentOnly?: boolean; summary?: { projects: string; binds: any[]; sums: Map<string, number> } } = {}) {
+  const sx = opts.summary
   const [tpl, sums] = await db.batch([
-    db.prepare(`SELECT DISTINCT p.project_id, rt.template_id, rt.fields_json, p.past_report_fields_json FROM daily_reports dr
+    db.prepare(`SELECT DISTINCT p.project_id, rt.template_id, rt.fields_json, p.past_report_fields_json
+      FROM ${sx ? `(SELECT dr.project_id, dr.company_id FROM daily_reports dr WHERE ${where} UNION ${sx.projects}) dr` : 'daily_reports dr'}
       JOIN projects p ON p.project_id = dr.project_id AND p.company_id = dr.company_id LEFT JOIN report_templates rt ON rt.template_id = p.report_template_id
-      WHERE ${where} ORDER BY rt.template_id IS NULL, rt.template_id, p.project_id`).bind(...binds),
+      WHERE ${sx ? '1' : where} ORDER BY rt.template_id IS NULL, rt.template_id, p.project_id`).bind(...binds, ...(sx ? sx.binds : [])),
     db.prepare(`SELECT ${group} AS g, je.key AS k, SUM(${ANALYTICS_NUM}) AS v, MAX(je.type IN ('integer','real')) AS isnum
       FROM daily_reports dr, ${ANALYTICS_JE} WHERE ${where} GROUP BY g, je.key`).bind(...binds),
   ])
-  const sumRows = (sums.results || []) as any[]
+  let sumRows = (sums.results || []) as any[]
+  if (sx?.sums.size) {
+    const byKey = new Map<any, any>(sumRows.map(r => [r.k, r]))
+    for (const [k, v] of sx.sums) {
+      const r = byKey.get(k)
+      if (r) { r.v = (Number(r.v) || 0) + v; r.isnum = 1 } else byKey.set(k, { g: '', k, v, isnum: 1 })
+    }
+    sumRows = [...byKey.values()].sort((a, b) => sqliteKeyCompare(a.k, b.k))
+  }
   const fields = await metricFieldsWithLabels(db, opts.cid ?? null, (tpl.results || []) as any[], sumRows, !!opts.presentOnly)
   const keys = new Set(fields.map(f => f.key))
   const values = new Map<string, Record<string, number>>()
@@ -6295,35 +6324,89 @@ async function seiyakuSums(db: D1Database, companyId: number, mFrom: string, mTo
   for (const r of (sums.results || []) as any[]) if (r.g != null) out.set(Number(r.g), Number(r.v) || 0)
   return out
 }
+// ---------- 確定した過去の月の実績分析（#9972。src/lib/monthly-summary.ts） ----------
+// 月ごとの集計（report_month_summaries。案件 × スタッフの行）を読み、全体・スタッフ別・案件別・クライアント別を Workers で足し合わせる
+// （稼働人数・案件数は重ならないように数え、稼働日数は日報のある日のビットを重ねて数える）。名前などは日報の表のときと同じ結合で引く。
+// 日別は日ごとの集計（report_day_summaries）から読む。スタッフで絞ったときの日別は、人ごとの日別を持たないので日報の表から数える
+function analyticsSummaryStmts(db: D1Database, cid: number, month: string, project: any | null, staffIds: number[], dailyDetail: D1PreparedStatement) {
+  const w = 'ms.company_id = ? AND ms.ym = ?' + (project ? ' AND ms.project_id = ?' : '') + (staffIds.length ? ` AND ms.staff_id IN ${JSON_IN}` : '')
+  const b = [cid, month, ...(project ? [project.project_id] : []), ...(staffIds.length ? [bindJsonArray(staffIds)] : [])]
+  const ms = `${RS_MONTH} ms LEFT JOIN projects p ON p.project_id = ms.project_id AND p.company_id = ms.company_id`
+  const extra = (g: string, e: { cols: string; joins: string }) => db.prepare(`SELECT a.g, ${e.cols} FROM (SELECT DISTINCT ${g} AS g FROM ${ms} WHERE ${w}) a ${e.joins}`).bind(...b, cid)
+  return [
+    db.prepare(`SELECT ms.project_id, ms.staff_id, ms.reports, ms.flagged, ms.days_mask, ${project ? 'ms.values_json' : 'NULL AS values_json'}, COALESCE(p.client_id, 0) AS client_id
+      FROM ${ms} WHERE ${w}`).bind(...b),
+    extra('ms.staff_id', ANALYTICS_GROUPS.staff.extra), extra('ms.project_id', ANALYTICS_GROUPS.project.extra), extra('COALESCE(p.client_id, 0)', ANALYTICS_GROUPS.client.extra),
+    staffIds.length ? dailyDetail : db.prepare(`SELECT work_date AS g, reports, staff_count, 1 AS work_days, project_count, flagged FROM ${RS_DAY}
+      WHERE company_id = ? AND work_date >= ? AND work_date < ? AND project_id = ? ORDER BY work_date`).bind(cid, ...monthBounds(month), project ? project.project_id : 0),
+  ]
+}
+// analyticsSummaryStmts の結果から、日報の表から数えたときと同じ形の行（g の順）と、全体・スタッフ別の項目の合計（jsonKeySums の rows と同じ形）を作る
+function analyticsFromSummary(res: any[][], withValues: boolean) {
+  const [msRows, staffEx, projectEx, clientEx, daily] = res
+  const keyOf = { total: () => '', staff: (r: any) => r.staff_id, project: (r: any) => r.project_id, client: (r: any) => r.client_id }
+  const extras = { total: [], staff: staffEx, project: projectEx, client: clientEx }
+  const rows = { daily } as Record<AnalyticsGroup, any[]>
+  const sums: Partial<Record<AnalyticsGroup, JsonSumRow[]>> = {}
+  for (const k of ['total', 'staff', 'project', 'client'] as const) {
+    type Acc = { reports: number; flagged: number; staff: Set<number>; projects: Set<number>; mask: number; values: Map<string, number> }
+    const acc = new Map<any, Acc>()
+    const vals = withValues && (k === 'total' || k === 'staff')
+    for (const r of msRows) {
+      const g = keyOf[k](r)
+      let a = acc.get(g)
+      if (!a) acc.set(g, a = { reports: 0, flagged: 0, staff: new Set(), projects: new Set(), mask: 0, values: new Map() })
+      a.reports += Number(r.reports) || 0; a.flagged += Number(r.flagged) || 0
+      a.staff.add(r.staff_id); a.projects.add(r.project_id); a.mask |= Number(r.days_mask) || 0
+      if (vals) addValues(a.values, r.values_json)
+    }
+    const ex = new Map((extras[k] as any[]).map(({ g, ...rest }) => [g, rest]))
+    const gs = [...acc.keys()].sort((x, y) => (x < y ? -1 : x > y ? 1 : 0))
+    rows[k] = gs.map(g => { const a = acc.get(g)!; return { g, reports: a.reports, staff_count: a.staff.size, work_days: popcount(a.mask), project_count: a.projects.size, flagged: a.flagged, ...ex.get(g) } })
+    if (vals) sums[k] = gs.flatMap(g => [...acc.get(g)!.values].sort(([x], [y]) => sqliteKeyCompare(x, y)).map(([key, v]) => ({ g, k: key, v, isnum: 1 })))
+  }
+  return { rows, sums }
+}
 // 実績分析の集計。project を渡すと、その案件の日報だけを、その案件のテンプレートの項目で集計する（無ければ全案件。項目の列は出さない）。
 // withOptions: 画面の案件の選択肢（稼働中の案件と、日報のある終了した案件）も返す。
 // staffIds: スタッフで絞る（#9963。一覧・グラフ・CSV で同じ条件。空なら全員）。withOptions のときは、絞り込みの選択肢
-// （その月・その案件に日報のある人。staff_options）と、選んだ人の名前（staff_filter）も返す
+// （その月・その案件に日報のある人。staff_options）と、選んだ人の名前（staff_filter）も返す。
+// 確定した過去の月（今月と前月より前）は、日報の表ではなく月ごとの集計の表から数える（#9972。集計を書けないとき（本部の閲覧中）は日報の表から）
 async function loadAnalytics(db: D1Database, cid: number, month: string, project: any | null, withOptions = false, staffIds: number[] = []) {
   const baseWhere = 'dr.company_id = ? AND dr.work_date >= ? AND dr.work_date < ?' + (project ? ' AND dr.project_id = ?' : '')
   const baseBind = [cid, ...monthBounds(month), ...(project ? [project.project_id] : [])]
   const where = baseWhere + (staffIds.length ? ` AND dr.staff_id IN ${JSON_IN}` : '')
   const bind = [...baseBind, ...(staffIds.length ? [bindJsonArray(staffIds)] : [])]
   const groups = Object.keys(ANALYTICS_GROUPS) as AnalyticsGroup[]
+  const summary = month <= summaryLastYm(todayJST()) && await summaryReady(db, cid, month, month, nowJST())
   // 項目は案件を選んだときだけ合計する（案件別・クライアント別はそのとき1行なので、全体の合計を写す）
   const sumGroups: AnalyticsGroup[] = project ? ['total', 'daily', 'staff'] : []
   // 案件のテンプレートと日報にありそうなキーを先に読み、そのキーで合計する（jsonKeySums）
   const [tplRes, keysRes] = project ? await db.batch([db.prepare('SELECT fields_json FROM report_templates WHERE template_id = ?').bind(project.report_template_id ?? null), reportKeysStmt(db, cid)]) : []
   const tplRow = project ? (((tplRes?.results || []) as any[])[0] || null) : null
   const knownKeys = reportKeysOf(keysRes)
-  const sumQ = sumGroups.map(k => jsonKeySums(db, { from: 'daily_reports dr', where, binds: bind, group: ANALYTICS_GROUPS[k].g }, knownKeys))
+  // 集計の表を使うときに日報の表から合計するのは、日別の項目だけ（日ごとの集計は項目の合計を持たない）
+  const detailSums = summary ? sumGroups.filter(k => k === 'daily') : sumGroups
+  const sumQ = detailSums.map(k => jsonKeySums(db, { from: 'daily_reports dr', where, binds: bind, group: ANALYTICS_GROUPS[k].g }, knownKeys))
+  const detailStmt = (k: AnalyticsGroup) => {
+    const G = ANALYTICS_GROUPS[k]
+    const inner = `SELECT ${G.g} AS g, ${ANALYTICS_COUNTS} FROM daily_reports dr ${G.join} WHERE ${where} ${groupBySql(G.g)}`
+    return G.extra ? db.prepare(`SELECT a.*, ${G.extra.cols} FROM (${inner}) a ${G.extra.joins} ORDER BY a.g`).bind(...bind, cid) : db.prepare(inner).bind(...bind)
+  }
+  const groupStmts = summary ? analyticsSummaryStmts(db, cid, month, project, staffIds, detailStmt('daily')) : groups.map(detailStmt)
   const stmts = [
-    ...groups.map(k => {
-      const G = ANALYTICS_GROUPS[k]
-      const inner = `SELECT ${G.g} AS g, ${ANALYTICS_COUNTS} FROM daily_reports dr ${G.join} WHERE ${where} ${groupBySql(G.g)}`
-      return G.extra ? db.prepare(`SELECT a.*, ${G.extra.cols} FROM (${inner}) a ${G.extra.joins} ORDER BY a.g`).bind(...bind, cid) : db.prepare(inner).bind(...bind)
-    }),
+    ...groupStmts,
     ...sumQ.flatMap(s => s.statements),
     ...(withOptions ? [db.prepare(`SELECT p.project_id, p.project_name, COALESCE(p.status, 'active') AS status, cl.client_name
       FROM projects p LEFT JOIN clients cl ON cl.client_id = p.client_id AND cl.company_id = p.company_id
       WHERE p.company_id = ? AND (COALESCE(p.status, 'active') = 'active' OR EXISTS (SELECT 1 FROM daily_reports d2 WHERE d2.project_id = p.project_id AND d2.company_id = p.company_id))
       ORDER BY CASE WHEN COALESCE(p.status, 'active') = 'active' THEN 0 ELSE 1 END, p.project_id`).bind(cid),
-      db.prepare(`SELECT dr.staff_id, MAX(us.name) AS name, COUNT(*) AS reports FROM daily_reports dr
+      summary
+        ? db.prepare(`SELECT ms.staff_id, MAX(us.name) AS name, SUM(ms.reports) AS reports FROM ${RS_MONTH} ms
+          LEFT JOIN staff_profiles sp ON sp.staff_id = ms.staff_id LEFT JOIN users us ON us.user_id = sp.user_id
+          WHERE ms.company_id = ? AND ms.ym = ?${project ? ' AND ms.project_id = ?' : ''} GROUP BY ms.staff_id ORDER BY reports DESC, name, ms.staff_id LIMIT ${ANALYTICS_STAFF_OPTIONS}`)
+          .bind(cid, month, ...(project ? [project.project_id] : []))
+        : db.prepare(`SELECT dr.staff_id, MAX(us.name) AS name, COUNT(*) AS reports FROM daily_reports dr
         LEFT JOIN staff_profiles sp ON sp.staff_id = dr.staff_id LEFT JOIN users us ON us.user_id = sp.user_id
         WHERE ${baseWhere} GROUP BY dr.staff_id ORDER BY reports DESC, name, dr.staff_id LIMIT ${ANALYTICS_STAFF_OPTIONS}`).bind(...baseBind),
       ...(staffIds.length ? [db.prepare(`SELECT sp.staff_id, us.name FROM staff_profiles sp JOIN users us ON us.user_id = sp.user_id
@@ -6332,9 +6415,15 @@ async function loadAnalytics(db: D1Database, cid: number, month: string, project
   ]
   const raw = await db.batch(stmts)
   const res = raw.map(r => (r.results || []) as any[])
-  const sumRows: JsonSumRow[][] = []
-  { let at = groups.length; for (const s of sumQ) { sumRows.push((await s.finish(raw.slice(at, at + s.statements.length))).rows); at += s.statements.length } }
-  const sumRes = (k: AnalyticsGroup) => { const i = sumGroups.indexOf(k); return i < 0 ? [] : sumRows[i] }
+  const sumRows: Partial<Record<AnalyticsGroup, JsonSumRow[]>> = {}
+  { let at = groupStmts.length; for (const [i, s] of sumQ.entries()) { sumRows[detailSums[i]] = (await s.finish(raw.slice(at, at + s.statements.length))).rows; at += s.statements.length } }
+  let groupRows = res.slice(0, groups.length)
+  if (summary) {
+    const s = analyticsFromSummary(res.slice(0, groupStmts.length), !!project)
+    groupRows = groups.map(k => s.rows[k])
+    Object.assign(sumRows, s.sums)
+  }
+  const sumRes = (k: AnalyticsGroup) => sumRows[k] || []
   const fields: AnalyticsField[] = project
     ? await metricFieldsWithLabels(db, cid, [{ fields_json: tplRow?.fields_json, past_report_fields_json: project.past_report_fields_json }], sumRes('total'), true)
     : []
@@ -6343,7 +6432,7 @@ async function loadAnalytics(db: D1Database, cid: number, month: string, project
   const out = {} as Record<AnalyticsGroup, AnalyticsRow[]>
   groups.forEach((k, i) => {
     const rows = new Map<any, AnalyticsRow>()
-    for (const r of res[i]) {
+    for (const r of groupRows[i]) {
       const { g, ...rest } = r
       rows.set(g, { ...rest, flagged: Number(rest.flagged) || 0, values: zero() })
     }
@@ -6359,7 +6448,7 @@ async function loadAnalytics(db: D1Database, cid: number, month: string, project
   const totals = out.total[0] || { reports: 0, staff_count: 0, work_days: 0, project_count: 0, flagged: 0, values: zero() }
   if (project) for (const r of [...out.project, ...out.client]) r.values = { ...totals.values }
   // 選択肢は stmts の最後に、案件・スタッフ・選んだ人の名前の順に入れている
-  const optAt = groups.length + sumQ.reduce((n, s) => n + s.statements.length, 0)
+  const optAt = groupStmts.length + sumQ.reduce((n, s) => n + s.statements.length, 0)
   const names = new Map(((withOptions && staffIds.length ? res[optAt + 2] : []) || []).map((r: any) => [Number(r.staff_id), r.name]))
   return {
     month, fields, totals, daily: out.daily, by_staff: out.staff, by_project: out.project, by_client: out.client,
@@ -6456,15 +6545,34 @@ api.get('/admin/analytics/series', async (c) => {
 
   const where = 'dr.company_id = ? AND dr.work_date >= ? AND dr.work_date < ?' + (project ? ' AND dr.project_id = ?' : '') + (staffIds.length ? ` AND dr.staff_id IN ${JSON_IN}` : '')
   const binds = [cid, monthBounds(from)[0], monthBounds(to)[1], ...(project ? [project.project_id] : []), ...(staffIds.length ? [bindJsonArray(staffIds)] : [])]
+  // 確定した過去の月（今月と前月より前。#9972。src/lib/monthly-summary.ts）は集計の表から読む:
+  //   案件の項目の一覧と、月ごとの推移（全体・スタッフ別・案件別）は月ごとの集計、日・週ごとの推移（全体・案件別。スタッフで絞らず、日報の数か
+  //   インシデント・クレームの数のとき）は日ごとの集計。それ以外（開催場所別など）と、今月・前月の分は日報の表から数え、同じ日付の枠に足す
+  const sumTo = [to, summaryLastYm(todayJST())].sort()[0]
+  const useSum = from <= sumTo && (!!project || unit === 'month' || !staffIds.length) && await summaryReady(db, cid, from, sumTo, nowJST())
+  const msWhere = 'ms.company_id = ? AND ms.ym >= ? AND ms.ym <= ?' + (project ? ' AND ms.project_id = ?' : '') + (staffIds.length ? ` AND ms.staff_id IN ${JSON_IN}` : '')
+  const msBinds = [cid, from, sumTo, ...binds.slice(3)]
+  // 日報の表から数える分（集計の表を使うときは、集計の無い月だけ）
+  const dBinds = useSum ? [cid, `${nextYm(sumTo)}-01`, ...binds.slice(2)] : binds
+  const hasDetail = !useSum || sumTo < to
   // 案件の指標: その期間の日報に値のある数値項目（日報が無ければ今のテンプレートの項目）。実績分析の表と同じ規則
   let fields: AnalyticsField[] = []
   if (project) {
-    const [tpl, keys] = await db.batch([
+    const [tpl, keys, sumKeys] = await db.batch([
       db.prepare('SELECT fields_json FROM report_templates WHERE template_id = ?').bind(project.report_template_id ?? null),
-      db.prepare(`SELECT je.key AS k, MAX(je.type IN ('integer','real')) AS isnum FROM daily_reports dr, ${ANALYTICS_JE} WHERE ${where} GROUP BY je.key`).bind(...binds),
+      db.prepare(`SELECT je.key AS k, MAX(je.type IN ('integer','real')) AS isnum FROM daily_reports dr, ${ANALYTICS_JE} WHERE ${hasDetail ? where : '0'} GROUP BY je.key`).bind(...(hasDetail ? dBinds : [])),
+      ...(useSum ? [db.prepare(`SELECT ms.values_json FROM ${RS_MONTH} ms WHERE ${msWhere} AND ms.values_json IS NOT NULL`).bind(...msBinds)] : []),
     ])
     const tplRow = ((tpl.results || []) as any[])[0]
-    fields = await metricFieldsWithLabels(db, cid, [{ fields_json: tplRow?.fields_json, past_report_fields_json: project.past_report_fields_json }], (keys.results || []) as any[], true)
+    let keyRows = (keys.results || []) as any[]
+    if (sumKeys) {
+      const isnum = new Map<any, number>(keyRows.map(r => [r.k, Number(r.isnum) || 0]))
+      const seenKeys = new Map<string, number>()
+      for (const r of (sumKeys.results || []) as any[]) addValues(seenKeys, r.values_json)
+      for (const k of seenKeys.keys()) isnum.set(k, 1)
+      keyRows = [...isnum].sort(([x], [y]) => sqliteKeyCompare(x, y)).map(([k, n]) => ({ k, isnum: n }))
+    }
+    fields = await metricFieldsWithLabels(db, cid, [{ fields_json: tplRow?.fields_json, past_report_fields_json: project.past_report_fields_json }], keyRows, true)
   }
   const metricQ = c.req.query('metric') || ''; const keyQ = c.req.query('key') || ''
   // 指定の項目がその期間に無いとき（未指定も）は、成約数か最初の項目にする。項目が無ければ日報数
@@ -6476,10 +6584,41 @@ api.get('/admin/analytics/series', async (c) => {
   const vb = field ? [field.key] : []
   const bucket = SERIES_UNITS[unit]
 
-  const stmts = [db.prepare(`SELECT ${bucket} AS b, ${val} AS v FROM daily_reports dr WHERE ${where} GROUP BY b`).bind(...vb, ...binds)]
-  if (split) stmts.push(db.prepare(`SELECT ${split.g} AS s, ${split.name} AS name, ${val} AS v, COUNT(*) AS n FROM daily_reports dr ${split.joins}
-    WHERE ${where} GROUP BY s ORDER BY v DESC, n DESC, s LIMIT 200`).bind(...vb, ...binds))
-  const [wholeRes, rankRes] = (await db.batch(stmts)).map(r => (r.results || []) as any[])
+  // 数える元（日報の表・月ごとの集計・日ごとの集計）。b は日付の枠、v は指標、n は日報の数、s は分ける単位
+  type SeriesSrc = { from: string; where: string; binds: any[]; b: string; v: string; n: string; s: string; name: string; joins: string }
+  const detailSrc: SeriesSrc = { from: 'daily_reports dr', where, binds: dBinds, b: bucket, v: val, n: 'COUNT(*)', s: split?.g || "''", name: split?.name || "''", joins: split?.joins || '' }
+  const dataSum = useSum && splitQ !== 'site' && (unit === 'month' || (splitQ !== 'staff' && !staffIds.length && metric !== 'field'))
+  const srcs: SeriesSrc[] = []
+  if (dataSum && unit === 'month') {
+    srcs.push({ from: `${RS_MONTH} ms`, where: msWhere, binds: msBinds, b: 'ms.ym', n: 'SUM(ms.reports)',
+      v: metric === 'field' ? 'COALESCE(SUM((SELECT SUM(value) FROM json_each(ms.values_json) WHERE key = ?)), 0)' : metric === 'flagged' ? 'SUM(ms.flagged)' : 'SUM(ms.reports)',
+      s: splitQ === 'staff' ? 'ms.staff_id' : 'ms.project_id', name: split?.name || "''",
+      joins: splitQ === 'staff' ? 'LEFT JOIN staff_profiles sp ON sp.staff_id = ms.staff_id LEFT JOIN users us ON us.user_id = sp.user_id'
+        : 'LEFT JOIN projects p ON p.project_id = ms.project_id AND p.company_id = ms.company_id' })
+  } else if (dataSum) {
+    srcs.push({ from: `${RS_DAY} ds`, where: `ds.company_id = ? AND ds.work_date >= ? AND ds.work_date < ? AND ds.project_id ${project ? '= ?' : splitQ === 'project' ? '!= 0' : '= 0'}`,
+      binds: [cid, monthBounds(from)[0], `${nextYm(sumTo)}-01`, ...(project ? [project.project_id] : [])], b: unit === 'week' ? "date(ds.work_date, 'weekday 0', '-6 days')" : 'ds.work_date',
+      v: metric === 'flagged' ? 'SUM(ds.flagged)' : 'SUM(ds.reports)', n: 'SUM(ds.reports)', s: 'ds.project_id', name: 'MAX(p.project_name)',
+      joins: 'LEFT JOIN projects p ON p.project_id = ds.project_id AND p.company_id = ds.company_id' })
+  }
+  if (!dataSum || hasDetail) srcs.push(dataSum ? detailSrc : { ...detailSrc, binds })
+  const vbOf = (x: SeriesSrc) => (x.from.startsWith(RS_DAY) ? [] : vb)
+  const stmts = srcs.map(x => db.prepare(`SELECT ${x.b} AS b, ${x.v} AS v FROM ${x.from} WHERE ${x.where} GROUP BY b`).bind(...vbOf(x), ...x.binds))
+  // 分けるときの順位: 日報の表だけなら SQL で並べて上位200件。集計の表と合わせるときは、元ごとに数えて足してから同じ順で並べる
+  if (split) stmts.push(...srcs.map(x => db.prepare(`SELECT ${x.s} AS s, ${x.name} AS name, ${x.v} AS v, ${x.n} AS n FROM ${x.from} ${x.joins}
+    WHERE ${x.where} GROUP BY s${dataSum ? '' : ' ORDER BY v DESC, n DESC, s LIMIT 200'}`).bind(...vbOf(x), ...x.binds)))
+  const batchRes = (await db.batch(stmts)).map(r => (r.results || []) as any[])
+  const wholeRes = batchRes.slice(0, srcs.length).flat()
+  let rankRes = batchRes.slice(srcs.length).flat()
+  if (split && dataSum) {
+    const m = new Map<number, { s: number; name: any; v: number; n: number }>()
+    for (const r of rankRes) {
+      const id = Number(r.s), x = m.get(id)
+      if (x) { x.v += Number(r.v) || 0; x.n += Number(r.n) || 0; if (x.name == null) x.name = r.name }
+      else m.set(id, { s: id, name: r.name, v: Number(r.v) || 0, n: Number(r.n) || 0 })
+    }
+    rankRes = [...m.values()].sort((a, b) => b.v - a.v || b.n - a.n || a.s - b.s).slice(0, 200)
+  }
   const buckets = seriesBuckets(from, to, unit)
   const pos = new Map(buckets.map((b, i) => [b, i]))
   const zeros = () => buckets.map(() => 0)
@@ -6494,10 +6633,11 @@ api.get('/admin/analytics/series', async (c) => {
     // 選んだもの（その期間に日報のあるものだけ）か、合計が 0 より大きい上位 top 件
     const show = pickIds.length ? choices.filter(ch => pickIds.includes(ch.id)) : choices.filter(ch => ch.total > 0).slice(0, top)
     if (show.length) {
-      const detail = await db.prepare(`SELECT ${bucket} AS b, ${split.g} AS s, ${val} AS v FROM daily_reports dr ${split.joins}
-        WHERE ${where} AND ${split.g} IN (SELECT value FROM json_each(?)) GROUP BY b, s`).bind(...vb, ...binds, JSON.stringify(show.map(s => s.id))).all()
+      const ids = JSON.stringify(show.map(s => s.id))
+      const detail = (await db.batch(srcs.map(x => db.prepare(`SELECT ${x.b} AS b, ${x.s} AS s, ${x.v} AS v FROM ${x.from} ${x.joins}
+        WHERE ${x.where} AND ${x.s} IN (SELECT value FROM json_each(?)) GROUP BY b, s`).bind(...vbOf(x), ...x.binds, ids)))).flatMap(r => (r.results || []) as any[])
       const byId = new Map(show.map(s => [s.id, { id: s.id, label: s.label, values: zeros(), total: 0 }]))
-      for (const r of (detail.results || []) as any[]) {
+      for (const r of detail) {
         const i = pos.get(String(r.b)); const row = byId.get(Number(r.s))
         if (i !== undefined && row) row.values[i] += Number(r.v) || 0
       }

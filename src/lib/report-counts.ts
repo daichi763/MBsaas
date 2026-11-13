@@ -27,11 +27,11 @@ export type DrCountQuery = {
 
 const ymOf = (d: string) => d.slice(0, 7)
 const monthStart = (ym: string) => `${ym}-01`
-function nextYm(ym: string): string {
+export function nextYm(ym: string): string {
   const [y, m] = ym.split('-').map(Number)
   return m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, '0')}`
 }
-function prevYm(ym: string): string {
+export function prevYm(ym: string): string {
   const [y, m] = ym.split('-').map(Number)
   return m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, '0')}`
 }
