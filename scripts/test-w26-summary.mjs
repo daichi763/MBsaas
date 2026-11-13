@@ -33,7 +33,9 @@ async function sql(command) {
   for (let i = 0; ; i++) {
     try { out = execFileSync(process.execPath, [CLI, 'd1', 'execute', 'mbsaas-production', '--local', '--persist-to', PERSIST, '--json', `--file=${file}`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }); break } catch (e) {
       const msg = String(e.stdout || '') + String(e.stderr || '')
-      if (i >= 3 || !/internal error|SQLITE_BUSY|database is locked|bad_alloc|write EOF/i.test(msg)) throw new Error(msg.slice(0, 600))
+      // wrangler がメモリ不足などで落ちたとき（出力が無い・異常終了）も、もう一度試す
+      const crashed = !msg.trim() || e.status === 134 || e.signal
+      if (i >= 3 || !(crashed || /internal error|SQLITE_BUSY|database is locked|bad_alloc|write EOF/i.test(msg))) throw new Error(msg.slice(0, 600))
       await new Promise(r => setTimeout(r, 2000))
     }
   }
@@ -54,9 +56,10 @@ async function login(company_code, user_code) {
   if (r.status !== 200 || !cookie) throw new Error(`login failed: ${company_code}/${user_code} ${r.status}`)
   return cookie
 }
-function client(cookie) {
+// background: X-Background: 1 を付ける（セッションの延長・最終利用の更新の書き込みを出さない。テストが遅い環境で、書き込みの行の確認に混ざらないように）
+function client(cookie, background = false) {
   const call = async (method, path, body) => {
-    const r = await fetch(`${BASE}${path}`, { method, headers: { Cookie: cookie, 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) })
+    const r = await fetch(`${BASE}${path}`, { method, headers: { Cookie: cookie, 'Content-Type': 'application/json', ...(background ? { 'X-Background': '1' } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) })
     const text = await r.text()
     let data = null; try { data = JSON.parse(text) } catch { }
     return { status: r.status, data, text, ...rowsOf(r.headers.get('x-test-d1-rows')) }
@@ -71,7 +74,7 @@ const ymAdd = (ym, n) => { const [y, m] = ym.split('-').map(Number); const d = n
 const LAST_SUM = ymAdd(cur, -2) // 集計の表から読む最後の月
 
 const PFX = 'W26S' + Date.now().toString(36).slice(-4).toUpperCase()
-const admin = client(await login('sample', 'admin'))
+const admin = client(await login('sample', 'admin'), true)
 async function newProject(name) {
   must(await admin.post('/api/admin/projects', { project_name: name }), 'project ' + name)
   return must(await admin.get('/api/admin/projects'), 'projects').projects.find(p => p.project_name === name).project_id
@@ -278,6 +281,19 @@ ok('スキルシートの通算の稼働日（日報の数）が、日報の表�
   await hq.get(`/api/admin/analytics?month=${M}`)
   await hq.get(`/api/admin/analytics/series?from=${from8}&to=${cur}&unit=month`)
   ok('本部の閲覧中は集計を書かない', (await marks()).length === 0)
+  // 集計を書けないとき（書き込みの上限など）も、画面は止めずに日報の表から数える（テストでは、集計の行を入れると失敗するトリガーで再現する）
+  await sql(`CREATE TRIGGER trg_w26s_test_fail BEFORE INSERT ON report_month_summaries BEGIN SELECT RAISE(ABORT, 'w26s test'); END`)
+  try {
+    const legacy = await hq.get(`/api/admin/analytics?month=${M}&project_id=${P1}`)
+    const r = await admin.get(`/api/admin/analytics?month=${M}&project_id=${P1}`)
+    const sr = await admin.get(`/api/admin/analytics/series?from=${from8}&to=${cur}&unit=month&split=project`)
+    const legacySr = await hq.get(`/api/admin/analytics/series?from=${from8}&to=${cur}&unit=month&split=project`)
+    ok('集計を書けないときも、実績分析・グラフは日報の表から数えて出す（500 にしない）', r.status === 200 && sr.status === 200
+      && JSON.stringify(r.data) === JSON.stringify(legacy.data) && JSON.stringify(sr.data) === JSON.stringify(legacySr.data), { status: [r.status, sr.status] })
+    ok('集計を書けなかった batch は途中まで残らない（印が無い）', (await marks()).length === 0, await marks())
+  } finally {
+    await sql('DROP TRIGGER IF EXISTS trg_w26s_test_fail')
+  }
 }
 
 // ---------- データが倍になっても、集計済みの月の読み取りはほとんど増えない ----------

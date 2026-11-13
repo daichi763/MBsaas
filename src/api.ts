@@ -4222,7 +4222,8 @@ api.get('/admin/staff/:id/skill-sheet', async (c) => {
     WHERE s.staff_id = ? AND s.company_id = ? AND s.status IN ('confirmed','substitute') AND s.work_date <= ?`).bind(sid, u.company_id, todayJST()).all()
   // 通算実績（#9972）: 集計済みの過去の月（自社。今月と前月より前）は月ごとの集計（report_month_summaries）から読み、それ以外は日報の表から数えて足す。
   // 集計はここでは作らない（実績分析で作られた月だけを使う。スタッフ1人のために会社の月をまるごと集計し直さない）
-  const fresh = freshSummaryMonths(await summaryMarksStmt(c.env.DB, u.company_id, '0000-00', summaryLastYm(todayJST())).all(), nowJST())
+  // 印を読めないときは、すべて日報の表から数える
+  const fresh = freshSummaryMonths(await summaryMarksStmt(c.env.DB, u.company_id, '0000-00', summaryLastYm(todayJST())).all().catch(() => undefined), nowJST())
   const freshList = JSON.stringify(fresh)
   const drWhere = fresh.length ? 'dr.staff_id = ? AND NOT (dr.company_id = ? AND substr(dr.work_date, 1, 7) IN (SELECT value FROM json_each(?)))' : 'dr.staff_id = ?'
   const drBinds = fresh.length ? [sid, u.company_id, freshList] : [sid]

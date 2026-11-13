@@ -127,8 +127,15 @@ export function summaryRowsBeforeStmts(db: D1Database, cutoff: string): D1Prepar
  */
 export async function summaryReady(db: D1Database, companyId: number, fromYm: string, toYm: string, now: string): Promise<boolean> {
   if (fromYm > toYm) return true
-  const stale = staleSummaryMonths(monthsBetween(fromYm, toYm), await summaryMarksStmt(db, companyId, fromYm, toYm).all(), now)
-  if (!stale.length) return true
-  const out = await db.batch(refreshSummaryStmts(db, companyId, stale, now))
-  return Number(out[0]?.meta?.changes) > 0
+  // 集計を読めない・書けないとき（無料プランの書き込みの上限に達したときなど。batch は1つの処理なので、途中までは残らない）も、
+  // 画面を止めずに日報の表から数える
+  try {
+    const stale = staleSummaryMonths(monthsBetween(fromYm, toYm), await summaryMarksStmt(db, companyId, fromYm, toYm).all(), now)
+    if (!stale.length) return true
+    const out = await db.batch(refreshSummaryStmts(db, companyId, stale, now))
+    return Number(out[0]?.meta?.changes) > 0
+  } catch (e) {
+    console.log(`monthly-summary: refresh failed (company ${companyId}, ${fromYm}〜${toYm}): ${e}`)
+    return false
+  }
 }
