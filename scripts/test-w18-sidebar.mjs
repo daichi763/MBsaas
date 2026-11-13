@@ -49,10 +49,10 @@ const toggle = (aside.match(/<button[^>]*id="side-toggle"[^>]*>/) || [''])[0]
 ok('メニューに「畳む／開く」のボタンがある（button・aria-expanded・aria-controls・名前）',
   toggle.includes('type="button"') && toggle.includes('data-action="sideToggle"') && toggle.includes('aria-expanded="true"') && toggle.includes('aria-controls="side-nav"') && toggle.includes('aria-label="メニューを畳む"') && toggle.includes('title="メニューを畳む"'), toggle)
 ok('メニューの幅はクラスで決める（w-60 を外し、本文は admin-main。md:ml-60 は使わない）',
-  /<aside id="sidebar" class="hidden md:flex flex-col bg-white/.test(html) && !/<aside id="sidebar"[^>]*\bw-60\b/.test(html) && html.includes('<div class="admin-main flex-1 min-w-0">') && !html.includes('md:ml-60'))
+  /<aside id="sidebar" class="hidden md:flex flex-col bg-surface/.test(html) && !/<aside id="sidebar"[^>]*\bw-60\b/.test(html) && html.includes('<div class="admin-main flex-1 min-w-0">') && !html.includes('md:ml-60'))
 ok('見出し（#9305）・項目・下の伴走支援・ログアウトはそのまま',
   (aside.match(/class="nav-group-head" data-action="navGroupToggle"/g) || []).length === 7 && (aside.match(/class="side-link/g) || []).length >= 24
-  && aside.includes('<div class="side-foot p-3 border-t border-gray-100">') && aside.includes('data-action="hqsOpenSupport"') && aside.includes('id="logout-btn"'))
+  && aside.includes('<div class="side-foot p-3 border-t border-neutral-100">') && aside.includes('data-action="hqsOpenSupport"') && aside.includes('id="logout-btn"'))
 ok('スマホ幅のメニュー（上のヘッダーの選択欄）は変えない', html.includes('<header class="md:hidden') && html.includes('<select id="mobile-nav"') && /<aside id="sidebar" class="hidden md:flex/.test(html))
 
 // スタッフ画面・本部画面には畳むボタンを付けない（本部画面は上のメニューで、左のメニューはない）
@@ -81,7 +81,7 @@ const decl = (sel) => [...css.matchAll(/([^{}]+){([^{}]*)}/g)].filter(m => m[1].
 ok('畳んだ幅は 3.5rem（56px）、開いた幅は 15rem。本文と下のバーは同じ幅だけ空ける（md 以上だけ）',
   /@media \(min-width:768px\)\{body\{--side-w:15rem\}body\.side-collapsed\{--side-w:3\.5rem\}#sidebar\{width:var\(--side-w\)/.test(css)
   && css.includes('.admin-main{margin-left:var(--side-w)') && css.includes('.side-offset-left{left:calc(var(--side-w) + 1rem)}'))
-ok('畳んだときは見出しを区切り線にし、閉じた見出しの中の項目も出す', css.includes('body.side-collapsed #side-nav .nav-group-head{display:none}') && css.includes('body.side-collapsed #side-nav .nav-group{border-top:1px solid #e5e7eb')
+ok('畳んだときは見出しを区切り線にし、閉じた見出しの中の項目も出す', css.includes('body.side-collapsed #side-nav .nav-group-head{display:none}') && css.includes('body.side-collapsed #side-nav .nav-group{border-top:1px solid rgb(var(--color-border))')
   && css.includes('body.side-collapsed #side-nav .nav-group.collapsed .nav-group-body{display:block}'))
 ok('畳んだときは文字を隠してアイコンを出し、件数のバッジはアイコンの右上に小さく出す',
   ['body.side-collapsed #sidebar .side-link', 'body.side-collapsed #sidebar .side-foot button'].every(x => decl(x).includes('justify-content:center') && decl(x).includes('font-size:0'))
@@ -104,8 +104,8 @@ ok('案件ごと: 左の列は決まった幅、日の列は最小の幅だけ�
 ok('人ごと: 名前・稼働の列は決まった幅、日の列は最小の幅だけを決める',
   personDay > 0 && person.includes('<table class="board-table board-fit" style="min-width:${BOARD_RH_W + 56 + days.length * dayW}px">') && person.includes('style="width:${BOARD_RH_W}px">スタッフ</th><th class="board-th" style="width:56px">稼働</th>') && !person.includes('118'), { personDay })
 ok('左の列の文字は省略し、title で全部を出す（案件ごと・枠なし・人ごと）',
-  slot.includes('<td class="board-rowhead sticky left-0 bg-white z-10" title="${esc(`${r.site || \'（場所未設定）\'}\\n${r.start}〜${r.end}・${r.role}`)}">') && slot.includes('<p class="text-[11px] text-gray-500 truncate">${esc(r.start)}')
-  && slot.includes('title="${esc(`${p.project_name || \'\'}\\n${r.site || \'\'}`)}"') && person.includes('<td class="board-rowhead sticky left-0 bg-white z-10" title="${esc(`${r.name || \'\'} ') && person.includes('<p class="truncate"><a href="#staff/'))
+  slot.includes('<td class="board-rowhead sticky left-0 bg-surface z-10" title="${esc(`${r.site || \'（場所未設定）\'}\\n${r.start}〜${r.end}・${r.role}`)}">') && slot.includes('<p class="text-[11px] text-gray-500 truncate">${esc(r.start)}')
+  && slot.includes('title="${esc(`${p.project_name || \'\'}\\n${r.site || \'\'}`)}"') && person.includes('<td class="board-rowhead sticky left-0 bg-surface z-10" title="${esc(`${r.name || \'\'} ') && person.includes('<p class="truncate"><a href="#staff/'))
 // 週の表がメニューを畳んだ 1366px で収まる幅か（本文の幅の計算。スクロールバー 15px、本文の左右の余白 48px、右の候補の欄 340px と間 12px、表の枠 2px）
 const inner = (vw, side) => vw - 15 - side - 48
 const slotFits = (vw, side) => rh + 7 * slotDay <= inner(vw, side) - 340 - 12 - 2

@@ -194,7 +194,7 @@ ok('準備: 日報を2件出せた', rep0 && RID2 && rep0.values.w17sales === 10
   vm.runInContext(js + '\n;globalThis.__f = reportFormBodyHtml', ctx)
   const html = ctx.__f([{ key: 'a1', label: '販売<数>', type: 'number', required: true }, { key: 'm', label: 'メモ', type: 'text', maxLength: 50 }], k => ({ a1: 3 })[k], { submitLabel: '日報を提出する' })
   ok('#9903 項目の種類・必須・文字数・表示名（エスケープ）を、スタッフアプリと同じ形で描く',
-    /実績件数/.test(html) && /data-key="a1"/.test(html) && /value="3"/.test(html) && /販売&lt;数&gt;<span class="text-red-500/.test(html)
+    /実績件数/.test(html) && /data-key="a1"/.test(html) && /value="3"/.test(html) && /販売&lt;数&gt;<span class="text-danger-500/.test(html)
     && /報告事項/.test(html) && /maxlength="50"/.test(html) && /インシデントがあった/.test(html) && /日報を提出する/.test(html), html.slice(0, 400))
   const onlyText = ctx.__f([{ key: 'm', label: 'メモ', type: 'textarea' }], null, {})
   ok('#9903 数値の項目が無ければ「実績件数」の欄は出さない', !/実績件数/.test(onlyText) && /rows="3"/.test(onlyText))

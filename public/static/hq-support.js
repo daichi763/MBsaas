@@ -8,9 +8,9 @@
   const $bar = document.getElementById('hq-support-bar')
   const fmt = (v, utc) => v ? dayjs(String(v).replace(' ', 'T') + (utc && !/Z$/.test(String(v)) ? 'Z' : '')).format('M/D HH:mm') : ''
   const ANN_STYLE = {
-    maintenance: { cls: 'border-amber-300 bg-amber-50', badge: '<span class="badge badge-yellow">メンテナンス</span>' },
-    important: { cls: 'border-red-200 bg-red-50', badge: '<span class="badge badge-red">重要</span>' },
-    normal: { cls: 'border-blue-200 bg-blue-50', badge: '<span class="badge badge-blue">お知らせ</span>' },
+    maintenance: { cls: 'border-warning-300 bg-warning-50', badge: '<span class="badge badge-yellow">メンテナンス</span>' },
+    important: { cls: 'border-danger-200 bg-danger-50', badge: '<span class="badge badge-red">重要</span>' },
+    normal: { cls: 'border-primary-200 bg-primary-50', badge: '<span class="badge badge-blue">お知らせ</span>' },
   }
   const SUPPORT_STATUS = { open: '<span class="badge badge-red">受付</span>', in_progress: '<span class="badge badge-yellow">対応中</span>', done: '<span class="badge badge-green">完了</span>' }
   const END_REASON = { hq: '本部が終了', replaced: '本部が終了', revoked: '許可の取り消し', logout: '本部がログアウト' }
@@ -26,7 +26,7 @@
   // ---------- 本部の閲覧中（本部ユーザーが開いている） ----------
   function renderViewBar() {
     const expired = Date.parse(VIEW.expires_at) <= Date.now()
-    showBar(`<div class="rounded-xl border border-cyan-300 bg-cyan-50 text-cyan-900 px-4 py-3 text-sm flex flex-wrap items-center gap-3">
+    showBar(`<div class="rounded-xl border border-hq-accent-300 bg-hq-accent-50 text-hq-accent-900 px-4 py-3 text-sm flex flex-wrap items-center gap-3">
       <span class="flex-1 min-w-0"><i class="fas fa-eye mr-1"></i>本部として「${esc(VIEW.company_name)}」の管理画面を閲覧しています（読み取り専用。登録・変更はできません）。
         ${expired ? '<b>閲覧の期限が切れました。</b>本部画面から開き直してください。' : `期限: ${esc(fmt(VIEW.expires_at))}`}</span>
       <button type="button" class="btn btn-outline text-xs" data-action="hqsEndView"><i class="fas fa-right-from-bracket"></i>閲覧を終了</button>
@@ -43,15 +43,15 @@
     try { s = (await axios.get('/api/admin/hq-support/status', { background: true })).data } catch (e) { return }
     const parts = []
     for (const v of s.active_views || []) {
-      parts.push(`<div class="rounded-xl border border-cyan-200 bg-cyan-50 text-cyan-900 px-4 py-2 text-sm"><i class="fas fa-eye mr-1"></i>本部（${esc(v.hq_name || '担当者')}）が、${esc(fmt(v.expires_at))} までこの管理画面を閲覧しています（読み取り専用）。
+      parts.push(`<div class="rounded-xl border border-hq-accent-200 bg-hq-accent-50 text-hq-accent-900 px-4 py-2 text-sm"><i class="fas fa-eye mr-1"></i>本部（${esc(v.hq_name || '担当者')}）が、${esc(fmt(v.expires_at))} までこの管理画面を閲覧しています（読み取り専用）。
         <button type="button" class="underline ml-1" data-action="hqsOpenSupport" data-section="access">閲覧の記録・許可</button></div>`)
     }
     for (const a of s.announcements || []) {
       const st = ANN_STYLE[a.importance] || ANN_STYLE.normal
       parts.push(`<div class="rounded-xl border ${st.cls} px-4 py-3 text-sm">
-        <div class="flex flex-wrap items-center gap-2 mb-1">${st.badge}<span class="font-bold text-gray-800">${esc(a.title)}</span>
-          <span class="text-xs text-gray-400">本部より ${esc(fmt(a.starts_at))}${a.ends_at ? ` 〜 ${esc(fmt(a.ends_at))}` : ''}</span></div>
-        <p class="text-gray-700 whitespace-pre-wrap">${esc(a.body)}</p>
+        <div class="flex flex-wrap items-center gap-2 mb-1">${st.badge}<span class="font-bold text-neutral-800">${esc(a.title)}</span>
+          <span class="text-xs text-neutral-400">本部より ${esc(fmt(a.starts_at))}${a.ends_at ? ` 〜 ${esc(fmt(a.ends_at))}` : ''}</span></div>
+        <p class="text-neutral-700 whitespace-pre-wrap">${esc(a.body)}</p>
         ${VIEW ? '' : `<div class="mt-2"><button type="button" class="btn btn-outline text-xs" data-action="hqsReadAnn" data-id="${Number(a.announcement_id)}"><i class="fas fa-check"></i>確認しました</button></div>`}
       </div>`)
     }
@@ -74,42 +74,42 @@
     } catch (e) { showApiError(e, '読み込めませんでした'); return }
     const menus = reqs.menus || {}
     modal(`
-      <h3 class="font-bold text-lg mb-1"><i class="fas fa-hands-holding-circle text-blue-600 mr-1"></i>伴走支援を依頼する</h3>
-      <p class="text-xs text-gray-500 mb-3">依頼は会社名・依頼者の名前を付けて本部に届きます。本部の担当者から、入力された連絡先へご連絡します。</p>
+      <h3 class="font-bold text-lg mb-1"><i class="fas fa-hands-holding-circle text-primary-600 mr-1"></i>伴走支援を依頼する</h3>
+      <p class="text-xs text-neutral-500 mb-3">依頼は会社名・依頼者の名前を付けて本部に届きます。本部の担当者から、入力された連絡先へご連絡します。</p>
       <div class="space-y-3">
-        <div><label class="text-sm text-gray-600 block mb-1">メニュー *</label>
+        <div><label class="text-sm text-neutral-600 block mb-1">メニュー *</label>
           <select id="hqs-menu" class="inp"><option value="">選んでください</option>${Object.entries(menus).map(([k, v]) => `<option value="${esc(k)}">${esc(v)}</option>`).join('')}</select></div>
-        <div><label class="text-sm text-gray-600 block mb-1">内容 *（困っていること・お願いしたいこと）</label>
+        <div><label class="text-sm text-neutral-600 block mb-1">内容 *（困っていること・お願いしたいこと）</label>
           <textarea id="hqs-detail" rows="4" maxlength="2000" class="inp" placeholder="例: 新しい案件の日報項目を一緒に決めたい"></textarea></div>
         <div class="grid grid-cols-2 gap-3">
-          <div><label class="text-sm text-gray-600 block mb-1">希望の日時</label><input id="hqs-preferred" class="inp" maxlength="100" placeholder="例: 来週の平日午後"></div>
-          <div><label class="text-sm text-gray-600 block mb-1">連絡先（電話・メール）</label><input id="hqs-contact" class="inp" maxlength="200"></div>
+          <div><label class="text-sm text-neutral-600 block mb-1">希望の日時</label><input id="hqs-preferred" class="inp" maxlength="100" placeholder="例: 来週の平日午後"></div>
+          <div><label class="text-sm text-neutral-600 block mb-1">連絡先（電話・メール）</label><input id="hqs-contact" class="inp" maxlength="200"></div>
         </div>
         <div class="flex gap-2">${MODAL_CANCEL_BTN}<button type="button" class="btn btn-primary flex-1" data-action="hqsSendSupport">本部に依頼する</button></div>
       </div>
       ${(reqs.requests || []).length ? `
       <h4 class="font-bold text-sm mt-5 mb-2">これまでの依頼</h4>
-      <div class="max-h-48 overflow-y-auto border border-gray-100 rounded-lg divide-y divide-gray-100 text-xs">
-        ${reqs.requests.map(r => `<div class="px-3 py-2"><div class="flex items-center gap-2">${SUPPORT_STATUS[r.status] || ''}<span class="font-medium">${esc(menus[r.menu] || r.menu)}</span><span class="text-gray-400 ml-auto">${esc(fmt(r.created_at, true))}・${esc(r.requester_name || '')}</span></div>
-          <p class="text-gray-600 mt-1 whitespace-pre-wrap line-clamp-2">${esc(r.detail)}</p></div>`).join('')}
+      <div class="max-h-48 overflow-y-auto border border-neutral-100 rounded-lg divide-y divide-neutral-100 text-xs">
+        ${reqs.requests.map(r => `<div class="px-3 py-2"><div class="flex items-center gap-2">${SUPPORT_STATUS[r.status] || ''}<span class="font-medium">${esc(menus[r.menu] || r.menu)}</span><span class="text-neutral-400 ml-auto">${esc(fmt(r.created_at, true))}・${esc(r.requester_name || '')}</span></div>
+          <p class="text-neutral-600 mt-1 whitespace-pre-wrap line-clamp-2">${esc(r.detail)}</p></div>`).join('')}
       </div>` : ''}
-      <div id="hqs-access" class="mt-5 pt-4 border-t border-gray-100">${accessHtml(access)}</div>`)
+      <div id="hqs-access" class="mt-5 pt-4 border-t border-neutral-100">${accessHtml(access)}</div>`)
     if (el.dataset.section === 'access') { const a = document.getElementById('hqs-access'); if (a) a.scrollIntoView() }
   })
   function accessHtml(a) {
-    return `<h4 class="font-bold text-sm mb-1"><i class="fas fa-eye text-gray-400 mr-1"></i>本部による管理画面の閲覧</h4>
-      <p class="text-xs text-gray-500 mb-2">許可すると、問い合わせや設定の支援のために、本部の担当者が期限付き（最長60分）・読み取り専用でこの管理画面を確認できます。従業員管理（給与・口座・保険番号）とセキュリティの画面は見られません。閲覧の開始・終了と開いた画面は記録され、下の一覧で確認できます。</p>
+    return `<h4 class="font-bold text-sm mb-1"><i class="fas fa-eye text-neutral-400 mr-1"></i>本部による管理画面の閲覧</h4>
+      <p class="text-xs text-neutral-500 mb-2">許可すると、問い合わせや設定の支援のために、本部の担当者が期限付き（最長60分）・読み取り専用でこの管理画面を確認できます。従業員管理（給与・口座・保険番号）とセキュリティの画面は見られません。閲覧の開始・終了と開いた画面は記録され、下の一覧で確認できます。</p>
       <div class="flex items-center gap-3 mb-2">
         <span class="text-sm">現在: ${a.allowed ? '<span class="badge badge-green">許可している</span>' : '<span class="badge badge-gray">許可していない</span>'}</span>
-        ${a.can_manage ? `<button type="button" class="btn ${a.allowed ? 'btn-outline' : 'btn-primary'} text-xs ml-auto" data-action="hqsToggleAccess" data-allowed="${a.allowed ? '0' : '1'}">${a.allowed ? '許可を取り消す' : '閲覧を許可する'}</button>` : '<span class="text-xs text-gray-400 ml-auto">変更は会社管理者が行えます</span>'}
+        ${a.can_manage ? `<button type="button" class="btn ${a.allowed ? 'btn-outline' : 'btn-primary'} text-xs ml-auto" data-action="hqsToggleAccess" data-allowed="${a.allowed ? '0' : '1'}">${a.allowed ? '許可を取り消す' : '閲覧を許可する'}</button>` : '<span class="text-xs text-neutral-400 ml-auto">変更は会社管理者が行えます</span>'}
       </div>
-      ${(a.sessions || []).length ? `<div class="max-h-40 overflow-y-auto text-xs border border-gray-100 rounded-lg divide-y divide-gray-100">
+      ${(a.sessions || []).length ? `<div class="max-h-40 overflow-y-auto text-xs border border-neutral-100 rounded-lg divide-y divide-neutral-100">
         ${a.sessions.map(v => {
           const active = !v.ended_at && Date.parse(v.expires_at) > Date.parse(a.now)
           return `<div class="px-3 py-2"><div class="flex items-center gap-2">${active ? '<span class="badge badge-blue">閲覧中</span>' : ''}<span class="font-medium">${esc(v.hq_name || '本部')}</span>
-            <span class="text-gray-400 ml-auto">${esc(fmt(v.started_at))} 〜 ${esc(fmt(v.ended_at || v.expires_at))}${v.ended_at && END_REASON[v.end_reason] ? `（${esc(END_REASON[v.end_reason])}）` : ''}・${Number(v.pages) || 0}画面</span></div>
-            <p class="text-gray-500 mt-0.5">目的: ${esc(v.reason)}</p></div>`
-        }).join('')}</div>` : '<p class="text-xs text-gray-400">閲覧の記録はありません</p>'}`
+            <span class="text-neutral-400 ml-auto">${esc(fmt(v.started_at))} 〜 ${esc(fmt(v.ended_at || v.expires_at))}${v.ended_at && END_REASON[v.end_reason] ? `（${esc(END_REASON[v.end_reason])}）` : ''}・${Number(v.pages) || 0}画面</span></div>
+            <p class="text-neutral-500 mt-0.5">目的: ${esc(v.reason)}</p></div>`
+        }).join('')}</div>` : '<p class="text-xs text-neutral-400">閲覧の記録はありません</p>'}`
   }
   delegate('hqsToggleAccess', (el) => withSubmitLock(el, async () => {
     const allowed = el.dataset.allowed === '1'

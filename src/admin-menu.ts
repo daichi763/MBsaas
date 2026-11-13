@@ -84,7 +84,7 @@ const visibleItems = (role: string) => ADMIN_MENU.filter(m => !m.hr || HR_ROLES.
 
 const sideLink = (m: AdminMenuItem) => m.badge === undefined
   ? `<a href="#${m.hash}" class="side-link" data-tab="${m.hash}"><i class="fas ${m.icon} w-5"></i>${m.label}</a>`
-  : `<a href="#${m.hash}" class="side-link flex items-center" data-tab="${m.hash}"><i class="fas ${m.icon} w-5"></i>${m.label}${m.badge ? `<span id="${m.badge}" class="hidden ml-auto text-[10px] bg-red-500 text-white rounded-full px-1.5 py-0.5"></span>` : ''}</a>`
+  : `<a href="#${m.hash}" class="side-link flex items-center" data-tab="${m.hash}"><i class="fas ${m.icon} w-5"></i>${m.label}${m.badge ? `<span id="${m.badge}" class="hidden ml-auto text-3xs bg-danger-500 text-white rounded-full px-1.5 py-0.5"></span>` : ''}</a>`
 
 // 左のメニューの見出し（押すと閉じたり開いたりする。開閉は admin.js が localStorage に覚える）。
 // 閉じたときは、中の項目の未読などの件数の合計を見出しの横に出す

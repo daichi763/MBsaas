@@ -80,14 +80,14 @@
     const on = init.notify === undefined ? snDefault() : !!init.notify
     const msg = init.notify_message || ''
     const touched = init.notify !== undefined || SN.def !== null
-    return `<div class="rounded-lg border border-gray-200 bg-gray-50 p-2 mt-3 text-sm" id="${esc(id)}" data-sn-box data-touched="${touched ? 1 : 0}">
-      <label class="flex items-center gap-2 font-bold text-gray-700 cursor-pointer"><input type="checkbox" class="sn-on" ${on ? 'checked' : ''}><i class="fas fa-bell text-blue-500"></i>スタッフに通知を送る</label>
+    return `<div class="rounded-lg border border-neutral-200 bg-neutral-50 p-2 mt-3 text-sm" id="${esc(id)}" data-sn-box data-touched="${touched ? 1 : 0}">
+      <label class="flex items-center gap-2 font-bold text-neutral-700 cursor-pointer"><input type="checkbox" class="sn-on" ${on ? 'checked' : ''}><i class="fas fa-bell text-primary-500"></i>スタッフに通知を送る</label>
       <div class="sn-msg-wrap mt-1.5" ${on ? '' : 'hidden'}>
         <textarea class="inp text-sm sn-msg" rows="2" maxlength="${SN_MAX}" placeholder="スタッフへのメッセージ（任意・${SN_MAX}文字まで。通知に添えます）" aria-label="スタッフへのメッセージ">${esc(msg)}</textarea>
-        <p class="text-[11px] text-gray-400 text-right"><span class="sn-count">${[...msg].length}</span>/${SN_MAX}</p>
+        <p class="text-2xs text-neutral-400 text-right"><span class="sn-count">${[...msg].length}</span>/${SN_MAX}</p>
       </div>
-      <p class="sn-off-note text-[11px] text-amber-700 mt-1" ${on ? 'hidden' : ''}>アプリ内の通知・プッシュ・メールのどれも送りません（変更履歴に「通知なし」と残します）</p>
-      <p class="text-[11px] text-gray-400 mt-1">${o.note ? esc(o.note) + '。' : ''}初めのチェックは会社の設定（${SN.def === null ? '確認できませんでした' : SN.def ? '送る' : '送らない'}）です（「その他の操作」→「通知の設定」で変えられます）</p>
+      <p class="sn-off-note text-2xs text-warning-700 mt-1" ${on ? 'hidden' : ''}>アプリ内の通知・プッシュ・メールのどれも送りません（変更履歴に「通知なし」と残します）</p>
+      <p class="text-2xs text-neutral-400 mt-1">${o.note ? esc(o.note) + '。' : ''}初めのチェックは会社の設定（${SN.def === null ? '確認できませんでした' : SN.def ? '送る' : '送らない'}）です（「その他の操作」→「通知の設定」で変えられます）</p>
     </div>`
   }
   // 送る値。欄がないときは何も足さない（サーバーが会社の設定に従う）
@@ -121,9 +121,9 @@
     const on = BS.saveNotify == null ? snDefault() : !!BS.saveNotify
     const touched = BS.saveNotify != null || SN.def !== null
     return `<span id="board-sn-save" data-sn-box data-touched="${touched ? 1 : 0}" class="flex items-center gap-1.5 flex-wrap text-xs" title="保存したときに、追加・移動・外したシフトの本人に通知を送るか（初めは会社の設定）">
-      <label class="flex items-center gap-1 cursor-pointer whitespace-nowrap"><input type="checkbox" class="sn-on" ${on ? 'checked' : ''}><i class="fas fa-bell text-blue-500"></i>スタッフに通知</label>
+      <label class="flex items-center gap-1 cursor-pointer whitespace-nowrap"><input type="checkbox" class="sn-on" ${on ? 'checked' : ''}><i class="fas fa-bell text-primary-500"></i>スタッフに通知</label>
       <span class="sn-msg-wrap" ${on ? '' : 'hidden'}><input class="inp text-xs py-1 sn-msg" style="width:13rem" maxlength="${SN_MAX}" placeholder="メッセージ（任意・${SN_MAX}文字まで）" aria-label="スタッフへのメッセージ" value="${esc(BS.saveNotifyMsg || '')}"></span>
-      <span class="sn-off-note text-amber-700 whitespace-nowrap" ${on ? 'hidden' : ''}>通知なしで保存</span>
+      <span class="sn-off-note text-warning-700 whitespace-nowrap" ${on ? 'hidden' : ''}>通知なしで保存</span>
     </span>`
   }
   function saveNotifyParams() {
@@ -136,23 +136,23 @@
   delegate('shiftNotifySetting', async () => {
     const d = await loadShiftNotify(true)
     if (!d) { toast('通知の設定を読み込めませんでした'); return }
-    const opt = (v, label, desc) => `<label class="flex items-start gap-2 p-2 rounded border border-gray-200 ${d.can_edit ? 'cursor-pointer' : 'opacity-70'}">
+    const opt = (v, label, desc) => `<label class="flex items-start gap-2 p-2 rounded border border-neutral-200 ${d.can_edit ? 'cursor-pointer' : 'opacity-70'}">
         <input type="radio" name="sn-default" value="${v}" class="mt-1" ${d.enabled === (v === '1') ? 'checked' : ''} ${d.can_edit ? '' : 'disabled'}>
-        <span><span class="font-bold">${label}</span><span class="block text-[11px] text-gray-500">${desc}</span></span></label>`
+        <span><span class="font-bold">${label}</span><span class="block text-2xs text-neutral-500">${desc}</span></span></label>`
     modal(`
-      <h3 class="font-bold text-lg mb-1"><i class="fas fa-bell text-blue-500 mr-1"></i>シフトの確定・削除の通知（会社の設定）</h3>
-      <p class="text-xs text-gray-500 mb-3">シフト管理でシフトを登録・確定・変更・削除・欠勤にしたときに、スタッフに通知を送るかの初めの値です。操作のたびに、確認の画面の「スタッフに通知を送る」のチェックで変えられます。</p>
+      <h3 class="font-bold text-lg mb-1"><i class="fas fa-bell text-primary-500 mr-1"></i>シフトの確定・削除の通知（会社の設定）</h3>
+      <p class="text-xs text-neutral-500 mb-3">シフト管理でシフトを登録・確定・変更・削除・欠勤にしたときに、スタッフに通知を送るかの初めの値です。操作のたびに、確認の画面の「スタッフに通知を送る」のチェックで変えられます。</p>
       <div class="space-y-1.5 text-sm">
         ${opt('1', '通知を送る（おすすめ）', 'チェックが付いた状態で始まります。外したときだけ送りません')}
         ${opt('0', '通知を送らない', 'チェックが外れた状態で始まります。送りたいときだけチェックを付けます')}
       </div>
-      <ul class="text-[11px] text-gray-500 mt-3 space-y-0.5 list-disc pl-4">
+      <ul class="text-2xs text-neutral-500 mt-3 space-y-0.5 list-disc pl-4">
         <li>送らないときは、アプリ内の通知・プッシュ・メールのどれも送りません。変更履歴に「通知なし」と残します。</li>
         <li>日報へのコメント・実績の修正・募集の結果などの通知は、この設定によらず送ります。</li>
         <li>スタッフ本人がシフトの通知（メール・プッシュ）を止めているときは、送る設定でも届きません。</li>
       </ul>
-      ${d.updated_at ? `<p class="text-[11px] text-gray-400 mt-2">最終変更 ${esc(typeof dashDateTime === 'function' ? dashDateTime(d.updated_at) : String(d.updated_at).slice(0, 16))} ${esc(d.updated_by_name || '')}</p>` : ''}
-      ${d.can_edit ? '' : '<p class="text-xs text-amber-700 mt-2">この設定は会社管理者だけが変更できます。</p>'}
+      ${d.updated_at ? `<p class="text-2xs text-neutral-400 mt-2">最終変更 ${esc(typeof dashDateTime === 'function' ? dashDateTime(d.updated_at) : String(d.updated_at).slice(0, 16))} ${esc(d.updated_by_name || '')}</p>` : ''}
+      ${d.can_edit ? '' : '<p class="text-xs text-warning-700 mt-2">この設定は会社管理者だけが変更できます。</p>'}
       <div class="flex gap-2 mt-4">${MODAL_CANCEL_BTN}${d.can_edit ? '<button class="btn btn-primary flex-1" data-action="shiftNotifySave">保存する</button>' : ''}</div>`)
   })
   delegate('shiftNotifySave', el => withSubmitLock(el, async () => {
@@ -213,11 +213,11 @@
     const canBulk = BS.view === 'slot' && BS.range !== 'month'
     if (!canBulk) BS.bulkDel = false
     pruneBulk()
-    const menuItem = (attrs, icon, label) => `<button type="button" class="board-menu-item" ${attrs}><i class="fas ${icon} w-4 text-gray-400"></i>${label}</button>`
+    const menuItem = (attrs, icon, label) => `<button type="button" class="board-menu-item" ${attrs}><i class="fas ${icon} w-4 text-neutral-400"></i>${label}</button>`
 
     $app.innerHTML = `
       <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
-        <h2 class="text-xl font-bold text-gray-900">シフト管理</h2>
+        <h2 class="text-xl font-bold text-neutral-900">シフト管理</h2>
         <div class="flex gap-2 flex-wrap items-center">
           <button class="btn btn-outline" data-action="boardNewSlot"><i class="fas fa-plus"></i>枠を作成</button>
           ${canBulk ? bulkBtnHtml() : ''}
@@ -235,7 +235,7 @@
               ${menuItem(`data-action="openNologinBulk" data-date="${esc(nologinDefaultDate())}" data-project-id="${BS.projectIds.length === 1 ? Number(BS.projectIds[0]) : ''}" data-tab="links" title="ログインのないスタッフの報告用URLを、日付ごとにまとめて発行・コピーします（未発行・発行済み・未使用の別も出します）"`, 'fa-link', '報告用URL（ログインなし）')}
               ${menuItem('data-action="shiftNotifySetting" title="シフトを確定・削除したときに、スタッフに通知を送るかの会社の設定（確認の画面のチェックの初めの値）"', 'fa-bell', `通知の設定（今は「${SN.def === false ? '送らない' : '送る'}」）`)}
               ${menuItem('data-action="boardReloadMaster" title="案件・スタッフ・開催場所の一覧を読み直します"', 'fa-rotate', '一覧を更新')}
-              <a class="board-menu-item" href="#shifts/week"><i class="fas fa-table-columns w-4 text-gray-400"></i>週表示（従来）</a>
+              <a class="board-menu-item" href="#shifts/week"><i class="fas fa-table-columns w-4 text-neutral-400"></i>週表示（従来）</a>
             </div>
           </details>
         </div>
@@ -247,7 +247,7 @@
           <button class="btn btn-outline" data-action="boardToday">${BS.range === 'month' ? '今月' : '今週'}</button>
           <button class="btn btn-outline px-2.5" data-action="boardShiftPeriod" data-dir="1" title="次の期間" aria-label="次の期間"><i class="fas fa-chevron-right"></i></button>
           <input type="date" class="inp w-auto text-sm" value="${esc(BS.from)}" data-board-input="from" aria-label="表示する日">
-          <span class="font-bold text-gray-700 ml-1 whitespace-nowrap">${esc(periodLabel)}</span>
+          <span class="font-bold text-neutral-700 ml-1 whitespace-nowrap">${esc(periodLabel)}</span>
         </div>
         <div class="board-segs" role="group" aria-label="期間">${seg('range', 'week', '週')}${seg('range', '2w', '2週間')}${seg('range', 'month', '月（カレンダー）')}</div>
         <div class="board-segs" role="group" aria-label="常勤・スポット">${seg('engagement', '', 'すべて')}${seg('engagement', 'regular', '常勤のみ')}${seg('engagement', 'spot', 'スポットのみ')}</div>
@@ -258,9 +258,9 @@
         </select>
         <details class="relative">
           <summary class="inp w-auto text-sm cursor-pointer select-none">案件 ${BS.projectIds.length ? `（${BS.projectIds.length}件選択）` : '（すべて）'}</summary>
-          <div class="absolute z-20 bg-white border border-gray-200 rounded-lg shadow-lg p-2 mt-1 max-h-72 overflow-y-auto w-72">
+          <div class="absolute z-20 bg-surface border border-neutral-200 rounded-lg shadow-lg p-2 mt-1 max-h-72 overflow-y-auto w-72">
             ${projOpts.map(p => `<label class="flex items-center gap-2 py-1 text-xs"><input type="checkbox" value="${Number(p.project_id)}" data-board-project ${BS.projectIds.includes(p.project_id) ? 'checked' : ''}>
-              <span class="badge ${p.engagement_type === 'spot' ? 'badge-purple' : 'badge-blue'}">${p.engagement_type === 'spot' ? 'スポット' : '常勤'}</span>${esc(p.project_name)}</label>`).join('') || '<p class="text-xs text-gray-400">案件がありません</p>'}
+              <span class="badge ${p.engagement_type === 'spot' ? 'badge-purple' : 'badge-blue'}">${p.engagement_type === 'spot' ? 'スポット' : '常勤'}</span>${esc(p.project_name)}</label>`).join('') || '<p class="text-xs text-neutral-400">案件がありません</p>'}
             <button class="btn btn-primary w-full text-xs mt-2" data-action="boardApplyProjects">絞り込む</button>
           </div>
         </details>
@@ -270,12 +270,12 @@
       </section>
 
       <section class="grid grid-cols-2 md:grid-cols-5 gap-2 mb-3" id="board-totals">
-        <div class="card px-3 py-2"><p class="text-xs text-gray-500">充足</p><p class="text-lg font-bold ${fillRate != null && fillRate < 100 ? 'text-red-600' : ''}">${t.filled}/${t.required}${fillRate != null ? `<span class="text-xs font-normal text-gray-400 ml-1">${fillRate}%</span>` : ''}</p></div>
+        <div class="card px-3 py-2"><p class="text-xs text-neutral-500">充足</p><p class="text-lg font-bold ${fillRate != null && fillRate < 100 ? 'text-danger-600' : ''}">${t.filled}/${t.required}${fillRate != null ? `<span class="text-xs font-normal text-neutral-400 ml-1">${fillRate}%</span>` : ''}</p></div>
         ${BS.showMoney ? `
-        <div class="card px-3 py-2"><p class="text-xs text-gray-500">請求合計</p><p class="text-lg font-bold">${yen(t.bill)}</p></div>
-        <div class="card px-3 py-2"><p class="text-xs text-gray-500">支払合計</p><p class="text-lg font-bold">${yen(t.pay)}${t.pay_missing ? `<span class="text-xs text-amber-600 ml-1" title="支払単価が未設定のシフト">未設定${t.pay_missing}件</span>` : ''}</p></div>
-        <div class="card px-3 py-2"><p class="text-xs text-gray-500">粗利</p><p class="text-lg font-bold ${t.profit < 0 ? 'text-red-600' : 'text-emerald-700'}">${yen(t.profit)}</p>${t.pay_missing ? `<p class="text-[10px] text-amber-600" title="支払単価が未設定のシフトは粗利に含めていません">支払未設定 ${Number(t.pay_missing)}件・請求 ${yen(t.pay_missing_bill)} を除外</p>` : ''}</div>
-        <div class="card px-3 py-2"><p class="text-xs text-gray-500">粗利率</p><p class="text-lg font-bold">${t.profit_bill ? Math.round(t.profit / t.profit_bill * 1000) / 10 + '%' : '-'}</p>${t.pay_missing ? '<p class="text-[10px] text-gray-400">支払が決まっているシフトだけで計算</p>' : ''}</div>` : ''}
+        <div class="card px-3 py-2"><p class="text-xs text-neutral-500">請求合計</p><p class="text-lg font-bold">${yen(t.bill)}</p></div>
+        <div class="card px-3 py-2"><p class="text-xs text-neutral-500">支払合計</p><p class="text-lg font-bold">${yen(t.pay)}${t.pay_missing ? `<span class="text-xs text-warning-600 ml-1" title="支払単価が未設定のシフト">未設定${t.pay_missing}件</span>` : ''}</p></div>
+        <div class="card px-3 py-2"><p class="text-xs text-neutral-500">粗利</p><p class="text-lg font-bold ${t.profit < 0 ? 'text-danger-600' : 'text-success-700'}">${yen(t.profit)}</p>${t.pay_missing ? `<p class="text-3xs text-warning-600" title="支払単価が未設定のシフトは粗利に含めていません">支払未設定 ${Number(t.pay_missing)}件・請求 ${yen(t.pay_missing_bill)} を除外</p>` : ''}</div>
+        <div class="card px-3 py-2"><p class="text-xs text-neutral-500">粗利率</p><p class="text-lg font-bold">${t.profit_bill ? Math.round(t.profit / t.profit_bill * 1000) / 10 + '%' : '-'}</p>${t.pay_missing ? '<p class="text-3xs text-neutral-400">支払が決まっているシフトだけで計算</p>' : ''}</div>` : ''}
       </section>
 
       <div id="board-bulkbar" class="board-bulkbar" hidden></div>
@@ -284,7 +284,7 @@
         ${BS.view === 'person' || BS.range === 'month' ? '' : '<aside class="card p-3 board-side" id="board-side" aria-label="選んだ枠と候補のスタッフ"></aside>'}
       </div>
       <div id="board-savebar" class="board-savebar" hidden></div>
-      <div id="board-trash" role="region" aria-label="ここへドラッグすると外します（下書き）" style="display:none;position:fixed;left:50%;bottom:1rem;transform:translateX(-50%);z-index:45;min-width:18rem;max-width:calc(100vw - 2rem);min-height:3.4rem;align-items:center;justify-content:center;gap:.5rem;background:#fef2f2;border:2px dashed #ef4444;color:#b91c1c;border-radius:.9rem;padding:.6rem 1rem;font-weight:700;font-size:.85rem;box-shadow:0 10px 25px rgba(0,0,0,.18)"><i class="fas fa-user-minus"></i>ここへドラッグで外す（下書き）</div>`
+      <div id="board-trash" role="region" aria-label="ここへドラッグすると外します（下書き）" style="display:none;position:fixed;left:50%;bottom:1rem;transform:translateX(-50%);z-index:45;min-width:18rem;max-width:calc(100vw - 2rem);min-height:3.4rem;align-items:center;justify-content:center;gap:.5rem;background:rgb(var(--color-danger-50));border:2px dashed rgb(var(--color-danger-500));color:rgb(var(--color-danger-700));border-radius:.9rem;padding:.6rem 1rem;font-weight:700;font-size:.85rem;box-shadow:0 10px 25px rgba(0,0,0,.18)"><i class="fas fa-user-minus"></i>ここへドラッグで外す（下書き）</div>`
     enableDnD()
     loadRequestCount()
     SIDE_PRICE.key = null
@@ -334,9 +334,9 @@
     }
     // 列の幅（#9922）: 左の列は決まった幅、日の列は残りを等分する（board-fit）。日の列の最小の幅より狭い画面では横にスクロールする
     const w = BS.days > 7 ? 96 : 100
-    const head = `<thead class="sticky top-0 z-10 bg-white"><tr>
-      <th class="board-th text-left sticky left-0 z-20 bg-white" style="width:${BOARD_RH_W}px">案件 / 開催場所 / 役割</th>
-      ${days.map(d => { const wd = dayjs(d).day(); return `<th class="board-th ${d === today ? 'bg-blue-50' : ''} ${wd === 0 ? 'text-red-500' : wd === 6 ? 'text-blue-500' : ''}">
+    const head = `<thead class="sticky top-0 z-10 bg-surface"><tr>
+      <th class="board-th text-left sticky left-0 z-20 bg-surface" style="width:${BOARD_RH_W}px">案件 / 開催場所 / 役割</th>
+      ${days.map(d => { const wd = dayjs(d).day(); return `<th class="board-th ${d === today ? 'bg-primary-50' : ''} ${wd === 0 ? 'text-danger-500' : wd === 6 ? 'text-primary-500' : ''}">
         <button class="hover:underline" data-action="boardSlotOnDate" data-date="${esc(d)}" title="この日に枠を作成">${dayjs(d).format('M/D')}(${WD[wd]})</button>${nologinDayBtn(d)}${daySummary(d)}</th>` }).join('')}
     </tr></thead>`
     let lastProject = null
@@ -344,23 +344,23 @@
       const p = proj.get(r.project_id) || {}
       const header = lastProject !== r.project_id ? `<tr><td colspan="${days.length + 1}" class="board-group sticky left-0">
         <span class="badge ${p.engagement_type === 'spot' ? 'badge-purple' : 'badge-blue'}">${p.engagement_type === 'spot' ? 'スポット' : '常勤'}</span>
-        <a href="#projects/${Number(p.project_id)}" class="font-bold hover:underline ml-1">${esc(p.project_name)}</a><span class="text-gray-400 ml-2">${esc(p.client_name || '')}</span></td></tr>` : ''
+        <a href="#projects/${Number(p.project_id)}" class="font-bold hover:underline ml-1">${esc(p.project_name)}</a><span class="text-neutral-400 ml-2">${esc(p.client_name || '')}</span></td></tr>` : ''
       lastProject = r.project_id
       return header + `<tr>
-        <td class="board-rowhead sticky left-0 bg-white z-10" title="${esc(`${r.site || '（場所未設定）'}\n${r.start}〜${r.end}・${r.role}`)}"><p class="font-bold text-xs truncate">${esc(r.site || '（場所未設定）')}</p>
-          <p class="text-[11px] text-gray-500 truncate">${esc(r.start)}〜${esc(r.end)}・<span class="font-bold text-gray-700">${esc(r.role)}</span></p></td>
+        <td class="board-rowhead sticky left-0 bg-surface z-10" title="${esc(`${r.site || '（場所未設定）'}\n${r.start}〜${r.end}・${r.role}`)}"><p class="font-bold text-xs truncate">${esc(r.site || '（場所未設定）')}</p>
+          <p class="text-2xs text-neutral-500 truncate">${esc(r.start)}〜${esc(r.end)}・<span class="font-bold text-neutral-700">${esc(r.role)}</span></p></td>
         ${days.map(d => `<td class="board-td align-top">${(r.cells[d] || []).map(c => slotCell(c.slot, c.role)).join('')}</td>`).join('')}
       </tr>`
     }).join('')
     const plainRows = BS.onlyShort ? '' : [...plain.values()].map(r => {
       const p = proj.get(r.project_id) || {}
-      return `<tr><td class="board-rowhead sticky left-0 bg-white z-10" title="${esc(`${p.project_name || ''}\n${r.site || ''}`)}"><p class="font-bold text-xs truncate"><span class="badge badge-gray mr-1">枠なし</span>${esc(p.project_name || '')}</p>
-        <p class="text-[11px] text-gray-500 truncate">${esc(r.site)}</p></td>
+      return `<tr><td class="board-rowhead sticky left-0 bg-surface z-10" title="${esc(`${p.project_name || ''}\n${r.site || ''}`)}"><p class="font-bold text-xs truncate"><span class="badge badge-gray mr-1">枠なし</span>${esc(p.project_name || '')}</p>
+        <p class="text-2xs text-neutral-500 truncate">${esc(r.site)}</p></td>
         ${days.map(d => `<td class="board-td align-top"><div class="board-drop-src space-y-0.5">${(r.cells[d] || []).map(s => assignedChip(s)).join('')}</div></td>`).join('')}</tr>`
     }).join('')
-    if (!list.length && !plainRows) return `<div class="p-10 text-center text-sm text-gray-400">
+    if (!list.length && !plainRows) return `<div class="p-10 text-center text-sm text-neutral-400">
       ${BS.onlyShort ? 'この期間に不足の枠はありません' : 'この期間の枠・シフトはありません'}<br><button class="btn btn-primary mt-3" data-action="boardNewSlot"><i class="fas fa-plus"></i>枠を作成</button></div>`
-    return `<table class="board-table board-fit" style="min-width:${BOARD_RH_W + days.length * w}px">${head}<tbody>${body}${plainRows ? `<tr><td colspan="${days.length + 1}" class="board-group sticky left-0 text-gray-500">枠を使わないシフト（従来の登録）</td></tr>` + plainRows : ''}</tbody></table>`
+    return `<table class="board-table board-fit" style="min-width:${BOARD_RH_W + days.length * w}px">${head}<tbody>${body}${plainRows ? `<tr><td colspan="${days.length + 1}" class="board-group sticky left-0 text-neutral-500">枠を使わないシフト（従来の登録）</td></tr>` + plainRows : ''}</tbody></table>`
   }
 
   // 月のカレンダー（月曜始まり）。日ごとに案件の充足を出し、不足は赤くする。日付を押すとその週の表に切り替える
@@ -375,7 +375,7 @@
     const plain = {}
     for (const a of BOARD.unslotted) if (a.status !== 'absent') plain[a.work_date] = (plain[a.work_date] || 0) + 1
     const today = dayjs().format('YYYY-MM-DD')
-    let h = ['月', '火', '水', '木', '金', '土', '日'].map((x, i) => `<div class="board-cal-dow ${i === 5 ? 'text-blue-500' : i === 6 ? 'text-red-500' : ''}">${x}</div>`).join('')
+    let h = ['月', '火', '水', '木', '金', '土', '日'].map((x, i) => `<div class="board-cal-dow ${i === 5 ? 'text-primary-500' : i === 6 ? 'text-danger-500' : ''}">${x}</div>`).join('')
     for (let i = 0; i < (dayjs(days[0]).day() + 6) % 7; i++) h += '<div class="board-cal-day out" aria-hidden="true"></div>'
     for (const d of days) {
       let lines = [...(byDate[d] || new Map()).entries()].map(([pid, x]) => ({ p: proj.get(pid) || {}, ...x, short: x.req - x.fill }))
@@ -384,14 +384,14 @@
       const tot = (BOARD.totals.by_date || {})[d]
       const wd = dayjs(d).day()
       h += `<div class="board-cal-day ${d === today ? 'is-today' : ''}" data-action="boardCalDay" data-date="${esc(d)}" tabindex="0" role="button" aria-label="${esc(fmtDay(d))}を含む週を表示">
-        <div class="flex items-center justify-between gap-1"><span class="text-xs font-bold ${wd === 0 ? 'text-red-500' : wd === 6 ? 'text-blue-500' : 'text-gray-700'}">${dayjs(d).format('M/D')}</span>
-          ${tot && tot.required ? `<span class="text-[10px] font-bold ${tot.filled < tot.required ? 'text-red-600' : 'text-emerald-700'}">${Number(tot.filled)}/${Number(tot.required)}</span>` : ''}</div>
+        <div class="flex items-center justify-between gap-1"><span class="text-xs font-bold ${wd === 0 ? 'text-danger-500' : wd === 6 ? 'text-primary-500' : 'text-neutral-700'}">${dayjs(d).format('M/D')}</span>
+          ${tot && tot.required ? `<span class="text-3xs font-bold ${tot.filled < tot.required ? 'text-danger-600' : 'text-success-700'}">${Number(tot.filled)}/${Number(tot.required)}</span>` : ''}</div>
         ${lines.slice(0, 4).map(l => `<div class="board-cal-line ${l.short > 0 ? 'short' : ''}" title="${esc(l.p.project_name || '')} ${l.fill}/${l.req}${l.short > 0 ? `（${l.short}人不足）` : ''}"><span class="truncate">${l.p.engagement_type === 'spot' ? 'ス' : '常'} ${esc(l.p.project_name || '')}</span><span class="shrink-0">${l.fill}/${l.req}</span></div>`).join('')}
-        ${lines.length > 4 ? `<div class="text-[10px] text-gray-400">ほか${lines.length - 4}件</div>` : ''}
-        ${plain[d] && !BS.onlyShort ? `<div class="text-[10px] text-gray-400">枠なしのシフト ${plain[d]}件</div>` : ''}
+        ${lines.length > 4 ? `<div class="text-3xs text-neutral-400">ほか${lines.length - 4}件</div>` : ''}
+        ${plain[d] && !BS.onlyShort ? `<div class="text-3xs text-neutral-400">枠なしのシフト ${plain[d]}件</div>` : ''}
       </div>`
     }
-    return `<div class="board-cal p-2">${h}</div><p class="text-[11px] text-gray-400 px-3 pb-2">日付を押すと、その日を含む週の表に切り替わります（割り当てはそこで行います）。「常」は常勤、「ス」はスポットの案件です</p>`
+    return `<div class="board-cal p-2">${h}</div><p class="text-2xs text-neutral-400 px-3 pb-2">日付を押すと、その日を含む週の表に切り替わります（割り当てはそこで行います）。「常」は常勤、「ス」はスポットの案件です</p>`
   }
 
 
@@ -403,7 +403,7 @@
     return today >= r.from && today <= r.to ? today : r.from
   }
   function nologinDayBtn(d) {
-    return `<button class="ml-1 text-[10px] text-gray-400 hover:text-blue-600" data-action="openNologinBulk" data-date="${esc(d)}" data-project-id="${BS.projectIds.length === 1 ? Number(BS.projectIds[0]) : ''}" data-tab="links" title="この日のログインのない人の報告用URLをまとめて発行・コピー" aria-label="${esc(dayjs(d).format('M/D'))}の報告用URL（ログインなし）"><i class="fas fa-link"></i></button>`
+    return `<button class="ml-1 text-3xs text-neutral-400 hover:text-primary-600" data-action="openNologinBulk" data-date="${esc(d)}" data-project-id="${BS.projectIds.length === 1 ? Number(BS.projectIds[0]) : ''}" data-tab="links" title="この日のログインのない人の報告用URLをまとめて発行・コピー" aria-label="${esc(dayjs(d).format('M/D'))}の報告用URL（ログインなし）"><i class="fas fa-link"></i></button>`
   }
   // 列の見出しの下に出す、その日の充足（#566）。不足のある日は赤くし、押すとその日の不足の枠を一覧で開く
   function daySummary(d) {
@@ -411,8 +411,8 @@
     if (!x || !x.required) return ''
     const short = x.required - x.filled
     return short > 0
-      ? `<button class="block w-full text-[10px] font-bold text-red-600 bg-red-50 rounded mt-0.5 hover:underline" data-action="boardDayShort" data-date="${esc(d)}" title="この日の不足の枠を表示">${Number(x.filled)}/${Number(x.required)} 不足${short}</button>`
-      : `<span class="block text-[10px] font-normal text-emerald-700 mt-0.5">${Number(x.filled)}/${Number(x.required)} 充足</span>`
+      ? `<button class="block w-full text-3xs font-bold text-danger-600 bg-danger-50 rounded mt-0.5 hover:underline" data-action="boardDayShort" data-date="${esc(d)}" title="この日の不足の枠を表示">${Number(x.filled)}/${Number(x.required)} 不足${short}</button>`
+      : `<span class="block text-3xs font-normal text-success-700 mt-0.5">${Number(x.filled)}/${Number(x.required)} 充足</span>`
   }
   function openDayShort(d) {
     const rows = []
@@ -421,13 +421,13 @@
     rows.sort((a, b) => String(a.s.start_time).localeCompare(b.s.start_time))
     modal(`
       <h3 class="font-bold text-lg mb-1">${dayjs(d).format('M/D')}(${WD[dayjs(d).day()]}) の不足</h3>
-      <p class="text-xs text-gray-500 mb-2">必要人数に足りない枠です（表示中の絞り込みの範囲）。「選ぶ」を押すと、その枠の候補を右の欄に出します</p>
-      <div class="max-h-[60vh] overflow-y-auto divide-y divide-gray-100">
+      <p class="text-xs text-neutral-500 mb-2">必要人数に足りない枠です（表示中の絞り込みの範囲）。「選ぶ」を押すと、その枠の候補を右の欄に出します</p>
+      <div class="max-h-[60vh] overflow-y-auto divide-y divide-neutral-100">
         ${rows.map(({ s, r }) => `<div class="flex items-center gap-2 py-2 text-sm">
           <div class="flex-1 min-w-0"><p class="font-bold truncate">${esc((proj.get(s.project_id) || {}).project_name || '')}</p>
-            <p class="text-xs text-gray-500">${esc(s.start_time)}〜${esc(s.end_time)}・${esc(s.site_name || s.location || '')}・${esc(r.role_name)}</p></div>
-          <span class="text-xs font-bold text-red-600 whitespace-nowrap">${Number(r.filled)}/${Number(r.headcount)}${r.requested ? `<span class="text-amber-600 ml-1">希望${Number(r.requested)}</span>` : ''}</span>
-          <button class="btn btn-outline text-xs" data-action="boardPickRole" data-id="${Number(r.slot_role_id)}">選ぶ</button></div>`).join('') || '<p class="p-3 text-sm text-gray-400">不足の枠はありません</p>'}
+            <p class="text-xs text-neutral-500">${esc(s.start_time)}〜${esc(s.end_time)}・${esc(s.site_name || s.location || '')}・${esc(r.role_name)}</p></div>
+          <span class="text-xs font-bold text-danger-600 whitespace-nowrap">${Number(r.filled)}/${Number(r.headcount)}${r.requested ? `<span class="text-warning-600 ml-1">希望${Number(r.requested)}</span>` : ''}</span>
+          <button class="btn btn-outline text-xs" data-action="boardPickRole" data-id="${Number(r.slot_role_id)}">選ぶ</button></div>`).join('') || '<p class="p-3 text-sm text-neutral-400">不足の枠はありません</p>'}
       </div>`)
   }
   delegate('boardDayShort', el => openDayShort(el.dataset.date))
@@ -467,16 +467,16 @@
     return `<div class="board-cell ${left > 0 ? 'board-short' : over ? 'board-over' : 'board-ok'} ${sel ? 'is-sel' : ''} ${BS.onlyShort && left <= 0 ? 'opacity-40' : ''} ${checked ? 'is-bulk' : ''}" data-action="boardSelect" data-slot-id="${Number(slot.slot_id)}" data-id="${Number(role.slot_role_id)}" data-slot-role-id="${Number(role.slot_role_id)}"
       tabindex="0" role="button" aria-pressed="${bulk ? checked : sel}" aria-label="${esc(`${fmtDay(slot.work_date)} ${slot.start_time}〜${slot.end_time} ${role.role_name} ${left > 0 ? left + '人不足' : '充足'}`)}">
       <div class="flex flex-wrap items-center justify-between gap-x-1 gap-y-0.5 mb-1">
-        <span class="min-w-0 text-[11px] font-bold ${left > 0 ? 'text-red-600' : 'text-emerald-700'}">${bulk ? `<input type="checkbox" class="bulk-check" data-action="boardBulkCheck" data-slot-id="${Number(slot.slot_id)}" ${checked ? 'checked' : ''} aria-label="${esc(`${fmtDay(slot.work_date)} ${slot.start_time}〜${slot.end_time} ${projectOf(slot.project_id).project_name || ''} の枠を選ぶ`)}">` : ''}${Number(role.filled)}/${Number(role.headcount)}${role.requested ? `<span class="text-amber-600 ml-1">希望${Number(role.requested)}</span>` : ''}${role.applicants ? `<a href="#recruit/slot-${Number(role.slot_role_id)}" class="text-[10px] ml-1 px-1 rounded bg-red-100 text-red-700" title="この枠の未対応の応募を開く">応募${Number(role.applicants)}</a>` : ''}</span>
+        <span class="min-w-0 text-2xs font-bold ${left > 0 ? 'text-danger-600' : 'text-success-700'}">${bulk ? `<input type="checkbox" class="bulk-check" data-action="boardBulkCheck" data-slot-id="${Number(slot.slot_id)}" ${checked ? 'checked' : ''} aria-label="${esc(`${fmtDay(slot.work_date)} ${slot.start_time}〜${slot.end_time} ${projectOf(slot.project_id).project_name || ''} の枠を選ぶ`)}">` : ''}${Number(role.filled)}/${Number(role.headcount)}${role.requested ? `<span class="text-warning-600 ml-1">希望${Number(role.requested)}</span>` : ''}${role.applicants ? `<a href="#recruit/slot-${Number(role.slot_role_id)}" class="text-3xs ml-1 px-1 rounded bg-danger-100 text-danger-700" title="この枠の未対応の応募を開く">応募${Number(role.applicants)}</a>` : ''}</span>
         <span class="flex items-center gap-0.5 min-w-0">
-          ${BS.showMoney && money ? `<span class="text-[10px] text-gray-400 truncate min-w-0" title="${esc(yen(money))}">${yen(money)}</span>` : ''}
+          ${BS.showMoney && money ? `<span class="text-3xs text-neutral-400 truncate min-w-0" title="${esc(yen(money))}">${yen(money)}</span>` : ''}
           ${bulk ? '' : `<button type="button" class="cell-tool" data-action="boardEditSlot" data-id="${Number(slot.slot_id)}" title="枠を編集" aria-label="枠を編集"><i class="fas fa-pen"></i></button>
           <button type="button" class="cell-tool danger" data-action="boardDeleteSlot" data-id="${Number(slot.slot_id)}" title="枠を削除" aria-label="枠を削除"><i class="fas fa-trash"></i></button>`}
         </span>
       </div>
       <div class="board-drop space-y-0.5" data-slot-role-id="${Number(role.slot_role_id)}">${role.assigned.map(a => assignedChip(a)).join('')}${movesInto(role.slot_role_id).map(moveChip).join('')}${drafts.map(draftChip).join('')}</div>
       <div class="mt-1">${need}</div>
-      ${role.requested ? `<button class="block w-full text-[10px] text-amber-700 hover:underline mt-0.5" data-action="boardConfirmRequested" data-slot-role-id="${Number(role.slot_role_id)}" title="この役割の希望（仮）を確定にします">希望${Number(role.requested)}件を確定</button>` : ''}
+      ${role.requested ? `<button class="block w-full text-3xs text-warning-700 hover:underline mt-0.5" data-action="boardConfirmRequested" data-slot-role-id="${Number(role.slot_role_id)}" title="この役割の希望（仮）を確定にします">希望${Number(role.requested)}件を確定</button>` : ''}
     </div>`
   }
   // 下書きの人。保存のときに止まった行は赤くし、理由を出す
@@ -484,29 +484,29 @@
   function draftChip(d) {
     const bad = d.problem
     return `<div class="board-chip chip-draft dnd-item ${bad ? 'chip-draft-bad' : ''}" data-draft-key="${esc(dKey(d.slot_role_id, d.staff_id))}" title="${esc(bad ? bad.reasons.join('\n') : '下書き（まだ保存していません）' + (d.status === 'requested' ? '・希望（仮）で登録' : '') + '。ドラッグでほかのマスへ移せます')}">
-      <span class="truncate">${bad ? '<i class="fas fa-triangle-exclamation mr-0.5"></i>' : '<i class="fas fa-pen-to-square mr-0.5"></i>'}${esc(d.staff_name)}${d.status === 'requested' ? '<span class="text-[10px] text-amber-700 ml-0.5">仮</span>' : ''}</span>
-      <button type="button" class="no-drag shrink-0 text-[11px] text-gray-500 hover:text-red-600 px-0.5" data-action="boardDraftRemove" data-id="${Number(d.slot_role_id)}" data-staff-id="${Number(d.staff_id)}" title="下書きを取り消す" aria-label="${esc(d.staff_name)}の下書きを取り消す"><i class="fas fa-xmark"></i></button>
+      <span class="truncate">${bad ? '<i class="fas fa-triangle-exclamation mr-0.5"></i>' : '<i class="fas fa-pen-to-square mr-0.5"></i>'}${esc(d.staff_name)}${d.status === 'requested' ? '<span class="text-3xs text-warning-700 ml-0.5">仮</span>' : ''}</span>
+      <button type="button" class="no-drag shrink-0 text-2xs text-neutral-500 hover:text-danger-600 px-0.5" data-action="boardDraftRemove" data-id="${Number(d.slot_role_id)}" data-staff-id="${Number(d.staff_id)}" title="下書きを取り消す" aria-label="${esc(d.staff_name)}の下書きを取り消す"><i class="fas fa-xmark"></i></button>
     </div>${problemLine(bad)}`
   }
-  const problemLine = (bad) => bad ? `<p class="text-[10px] text-red-600 leading-tight mb-0.5">${esc(bad.reasons[0] || '')}${bad.reasons.length > 1 ? ` ほか${bad.reasons.length - 1}件` : ''}</p>` : ''
-  const opUndoBtn = (o, label) => `<button type="button" class="no-drag shrink-0 text-[11px] text-gray-500 hover:text-red-600 px-0.5" data-action="boardOpUndo" data-shift-id="${Number(o.shift_id)}" title="この下書きを取り消す（元に戻す）" aria-label="${esc(o.staff_name)}の${esc(label)}の下書きを取り消す"><i class="fas fa-rotate-left"></i></button>`
+  const problemLine = (bad) => bad ? `<p class="text-3xs text-danger-600 leading-tight mb-0.5">${esc(bad.reasons[0] || '')}${bad.reasons.length > 1 ? ` ほか${bad.reasons.length - 1}件` : ''}</p>` : ''
+  const opUndoBtn = (o, label) => `<button type="button" class="no-drag shrink-0 text-2xs text-neutral-500 hover:text-danger-600 px-0.5" data-action="boardOpUndo" data-shift-id="${Number(o.shift_id)}" title="この下書きを取り消す（元に戻す）" aria-label="${esc(o.staff_name)}の${esc(label)}の下書きを取り消す"><i class="fas fa-rotate-left"></i></button>`
   // 割り当て済みの人。ドラッグの下書き（移動・外す）があれば、元の場所に「移動」「外す」を薄く出す。確定済みのシフトは動かせない
   function assignedChip(a) {
     const o = SHIFT_OPS.get(a.shift_id)
     if (!o) return staffChip(a, a.settle_status !== 'confirmed')
     const bad = o.problem
     if (o.kind === 'remove') return `<div class="board-chip ${bad ? 'chip-draft-bad' : 'st-absent'}" style="border-style:dashed" title="${esc(bad ? bad.reasons.join('\n') : '外す（下書き。まだ保存していません）')}">
-        <span class="truncate"><i class="fas ${bad ? 'fa-triangle-exclamation' : 'fa-user-minus'} mr-0.5"></i>${esc(a.staff_name)}<span class="text-[10px] ml-0.5">外す</span></span>${opUndoBtn(o, '外す')}</div>${problemLine(bad)}`
+        <span class="truncate"><i class="fas ${bad ? 'fa-triangle-exclamation' : 'fa-user-minus'} mr-0.5"></i>${esc(a.staff_name)}<span class="text-3xs ml-0.5">外す</span></span>${opUndoBtn(o, '外す')}</div>${problemLine(bad)}`
     const to = ROLE_IX.get(o.to_rid)
     const where = to ? (to.slot.work_date === a.work_date ? '' : dayjs(to.slot.work_date).format('M/D') + ' ') + to.role.role_name : '表示外の枠'
     return `<div class="board-chip st-absent" style="border-style:dashed" title="${esc('移動（下書き。まだ保存していません）: ' + where)}">
-      <span class="truncate"><i class="fas fa-arrow-right-from-bracket mr-0.5"></i>${esc(a.staff_name)}<span class="text-[10px] ml-0.5">→${esc(where)}</span></span>${opUndoBtn(o, '移動')}</div>`
+      <span class="truncate"><i class="fas fa-arrow-right-from-bracket mr-0.5"></i>${esc(a.staff_name)}<span class="text-3xs ml-0.5">→${esc(where)}</span></span>${opUndoBtn(o, '移動')}</div>`
   }
   // 移動してくる人（移動先のマスに出す。もう一度ドラッグしてほかのマス・「外す」へ動かせる）
   function moveChip(o) {
     const bad = o.problem
-    return `<div class="board-chip chip-draft dnd-item ${bad ? 'chip-draft-bad' : ''}" data-shift-id="${Number(o.shift_id)}" style="border-color:${bad ? '#ef4444' : '#2563eb'};${bad ? '' : 'background:#eff6ff;color:#1e40af'}" title="${esc(bad ? bad.reasons.join('\n') : '移動（下書き。まだ保存していません）。元: ' + o.from_label)}">
-      <span class="truncate"><i class="fas ${bad ? 'fa-triangle-exclamation' : 'fa-arrows-up-down-left-right'} mr-0.5"></i>${esc(o.staff_name)}<span class="text-[10px] ml-0.5">移動</span></span>${opUndoBtn(o, '移動')}</div>${problemLine(bad)}`
+    return `<div class="board-chip chip-draft dnd-item ${bad ? 'chip-draft-bad' : ''}" data-shift-id="${Number(o.shift_id)}" style="border-color:${bad ? 'rgb(var(--color-danger-500))' : 'rgb(var(--color-primary-600))'};${bad ? '' : 'background:rgb(var(--color-primary-50));color:rgb(var(--color-primary-800))'}" title="${esc(bad ? bad.reasons.join('\n') : '移動（下書き。まだ保存していません）。元: ' + o.from_label)}">
+      <span class="truncate"><i class="fas ${bad ? 'fa-triangle-exclamation' : 'fa-arrows-up-down-left-right'} mr-0.5"></i>${esc(o.staff_name)}<span class="text-3xs ml-0.5">移動</span></span>${opUndoBtn(o, '移動')}</div>${problemLine(bad)}`
   }
 
 
@@ -529,8 +529,8 @@
       BS.showMoney ? `請求 ${yen(a.bill_total)} / 支払 ${a.pay_total == null ? '未設定' : yen(a.pay_total)}` : '',
     ].filter(Boolean).join('\n')
     return `<div class="board-chip shift-chip st-${a.status} ${warn ? 'chip-warn' : ''} ${drag ? 'dnd-item' : ''}" data-shift-id="${a.shift_id}" title="${esc(title)}" data-action="boardShiftDetail" data-id="${Number(a.shift_id)}">
-      <span class="truncate">${warn ? '<i class="fas fa-triangle-exclamation text-red-500 mr-0.5"></i>' : ''}${esc(a.staff_name)}</span>
-      <span class="text-[10px] shrink-0">${unavailableMark(a)}${a.status !== 'confirmed' ? ST_LABEL[a.status] || '' : ''}${replyMark(a)}${a.price_locked ? '<i class="fas fa-pen text-gray-400 ml-0.5" title="金額を手動変更"></i>' : ''}${BS.showMoney && a.pay_total == null && ['confirmed', 'substitute'].includes(a.status) ? '<i class="fas fa-yen-sign text-amber-500 ml-0.5" title="支払単価未設定"></i>' : ''}</span>
+      <span class="truncate">${warn ? '<i class="fas fa-triangle-exclamation text-danger-500 mr-0.5"></i>' : ''}${esc(a.staff_name)}</span>
+      <span class="text-3xs shrink-0">${unavailableMark(a)}${a.status !== 'confirmed' ? ST_LABEL[a.status] || '' : ''}${replyMark(a)}${a.price_locked ? '<i class="fas fa-pen text-neutral-400 ml-0.5" title="金額を手動変更"></i>' : ''}${BS.showMoney && a.pay_total == null && ['confirmed', 'substitute'].includes(a.status) ? '<i class="fas fa-yen-sign text-warning-500 ml-0.5" title="支払単価未設定"></i>' : ''}</span>
     </div>`
   }
 
@@ -551,27 +551,27 @@
     let rows = [...byStaff.entries()]
     if (BS.personIdleOnly) rows = rows.filter(([, r]) => !r.total)
     rows.sort((a, b) => (BS.personSort === 'fewest' ? a[1].workDays - b[1].workDays || a[1].total - b[1].total : 0) || String(a[1].name).localeCompare(b[1].name))
-    const tools = `<div class="flex flex-wrap items-center gap-3 px-3 py-2 text-xs border-b border-gray-100 sticky left-0 bg-white">
+    const tools = `<div class="flex flex-wrap items-center gap-3 px-3 py-2 text-xs border-b border-neutral-100 sticky left-0 bg-surface">
       <label class="flex items-center gap-1">並び<select class="inp text-xs w-auto" data-person-opt="personSort">
         <option value="name" ${BS.personSort !== 'fewest' ? 'selected' : ''}>名前順</option><option value="fewest" ${BS.personSort === 'fewest' ? 'selected' : ''}>稼働が少ない順</option></select></label>
       <label class="flex items-center gap-1"><input type="checkbox" data-person-opt="personIdleOnly" ${BS.personIdleOnly ? 'checked' : ''}>期間中にシフトのない人のみ</label>
-      <span class="text-gray-400">稼働 = 確定・代打のある日数（表示中の案件の範囲）</span></div>`
-    if (!rows.length) return tools + `<div class="p-10 text-center text-sm text-gray-400">${BS.personIdleOnly ? 'シフトのない人はいません' : 'この期間のシフトはありません'}</div>`
+      <span class="text-neutral-400">稼働 = 確定・代打のある日数（表示中の案件の範囲）</span></div>`
+    if (!rows.length) return tools + `<div class="p-10 text-center text-sm text-neutral-400">${BS.personIdleOnly ? 'シフトのない人はいません' : 'この期間のシフトはありません'}</div>`
     const today = dayjs().format('YYYY-MM-DD')
     // 列の幅（#9922）: 名前・稼働の列は決まった幅、日の列は残りを等分する（board-fit）
     const dayW = BS.days > 14 ? 86 : 104
-    return tools + `<table class="board-table board-fit" style="min-width:${BOARD_RH_W + 56 + days.length * dayW}px"><thead class="sticky top-0 z-10 bg-white"><tr>
-      <th class="board-th text-left sticky left-0 z-20 bg-white" style="width:${BOARD_RH_W}px">スタッフ</th><th class="board-th" style="width:56px">稼働</th>
-      ${days.map(d => { const w = dayjs(d).day(); return `<th class="board-th ${d === today ? 'bg-blue-50' : ''} ${w === 0 ? 'text-red-500' : w === 6 ? 'text-blue-500' : ''}">${dayjs(d).format('M/D')}(${WD[w]})${nologinDayBtn(d)}${daySummary(d)}</th>` }).join('')}
+    return tools + `<table class="board-table board-fit" style="min-width:${BOARD_RH_W + 56 + days.length * dayW}px"><thead class="sticky top-0 z-10 bg-surface"><tr>
+      <th class="board-th text-left sticky left-0 z-20 bg-surface" style="width:${BOARD_RH_W}px">スタッフ</th><th class="board-th" style="width:56px">稼働</th>
+      ${days.map(d => { const w = dayjs(d).day(); return `<th class="board-th ${d === today ? 'bg-primary-50' : ''} ${w === 0 ? 'text-danger-500' : w === 6 ? 'text-primary-500' : ''}">${dayjs(d).format('M/D')}(${WD[w]})${nologinDayBtn(d)}${daySummary(d)}</th>` }).join('')}
     </tr></thead><tbody>${rows.map(([sid, r]) => {
-      return `<tr><td class="board-rowhead sticky left-0 bg-white z-10" title="${esc(`${r.name || ''} ${AFF_SHORT[r.aff] || ''}${r.emp === 'leave' ? ' 休職中' : ''}`)}"><p class="truncate"><a href="#staff/${Number(sid)}" class="text-xs font-bold hover:underline">${esc(r.name)}</a> <span class="text-[10px] text-gray-400">${AFF_SHORT[r.aff] || ''}</span>${r.emp === 'leave' ? '<span class="text-[10px] text-amber-600 ml-1">休職中</span>' : ''}</p></td>
-        <td class="board-td text-center text-xs ${r.workDays ? 'font-bold' : 'text-gray-400'}">${r.workDays}日${r.workShifts > r.workDays ? `<span class="block text-[10px] font-normal text-gray-500">${r.workShifts}シフト</span>` : ''}</td>
+      return `<tr><td class="board-rowhead sticky left-0 bg-surface z-10" title="${esc(`${r.name || ''} ${AFF_SHORT[r.aff] || ''}${r.emp === 'leave' ? ' 休職中' : ''}`)}"><p class="truncate"><a href="#staff/${Number(sid)}" class="text-xs font-bold hover:underline">${esc(r.name)}</a> <span class="text-3xs text-neutral-400">${AFF_SHORT[r.aff] || ''}</span>${r.emp === 'leave' ? '<span class="text-3xs text-warning-600 ml-1">休職中</span>' : ''}</p></td>
+        <td class="board-td text-center text-xs ${r.workDays ? 'font-bold' : 'text-neutral-400'}">${r.workDays}日${r.workShifts > r.workDays ? `<span class="block text-3xs font-normal text-neutral-500">${r.workShifts}シフト</span>` : ''}</td>
         ${days.map(d => `<td class="board-td align-top">${(r.cells[d] || []).map(a => {
           const p = proj.get(a.project_id) || {}
           const warn = (a.conflicts && a.conflicts.length) || a.ng || (a.unavailable && a.status !== 'absent')
           return `<div class="board-chip st-${a.status} ${warn ? 'chip-warn' : ''} flex-col items-start" onclick="openShiftDetail(${a.shift_id})" title="${esc(p.project_name + ' / ' + (a._site || ''))}">
-            <span class="truncate w-full text-[11px] font-bold">${warn ? '<i class="fas fa-triangle-exclamation text-red-500 mr-0.5"></i>' : ''}${unavailableMark(a)}${esc(p.project_name || '')}${replyMark(a)}</span>
-            <span class="truncate w-full text-[10px] text-gray-500">${esc(a._site || '')} ${esc(a.start_time)}〜${esc(a.end_time)}</span></div>` }).join('')}</td>`).join('')}</tr>`
+            <span class="truncate w-full text-2xs font-bold">${warn ? '<i class="fas fa-triangle-exclamation text-danger-500 mr-0.5"></i>' : ''}${unavailableMark(a)}${esc(p.project_name || '')}${replyMark(a)}</span>
+            <span class="truncate w-full text-3xs text-neutral-500">${esc(a._site || '')} ${esc(a.start_time)}〜${esc(a.end_time)}</span></div>` }).join('')}</td>`).join('')}</tr>`
     }).join('')}</tbody></table>`
   }
 
@@ -757,7 +757,7 @@
     const top = document.getElementById('board-save-top'); if (top && top.dataset.busy !== '1') top.disabled = !n
     const bar = document.getElementById('board-savebar'); if (!bar) return
     bar.hidden = !n
-    bar.innerHTML = n ? `<span class="text-sm"><i class="fas fa-pen-to-square mr-1 text-emerald-600"></i>下書き <b>${n}</b>件${parts.length > 1 || moves || removes ? `（${esc(parts.join('・'))}）` : ''}<span class="text-gray-500">まだ保存していません</span>${bad ? `<span class="text-red-600 font-bold ml-1">要確認 ${bad}件</span>` : ''}</span>
+    bar.innerHTML = n ? `<span class="text-sm"><i class="fas fa-pen-to-square mr-1 text-success-600"></i>下書き <b>${n}</b>件${parts.length > 1 || moves || removes ? `（${esc(parts.join('・'))}）` : ''}<span class="text-neutral-500">まだ保存していません</span>${bad ? `<span class="text-danger-600 font-bold ml-1">要確認 ${bad}件</span>` : ''}</span>
       ${saveNotifyHtml()}
       <button class="btn btn-outline text-xs py-1.5" data-action="boardDiscardDrafts">下書きを取り消す</button>
       <button class="btn board-save-btn text-xs py-1.5" data-action="boardSaveDrafts"><i class="fas fa-floppy-disk"></i>まとめて保存（${n}件）</button>` : ''
@@ -862,14 +862,14 @@
     const done = saveText(n)
     modal(`
       <h3 class="font-bold text-lg mb-1">まとめて保存</h3>
-      <p class="text-sm text-gray-700 mb-2">${done ? esc(done) + '。' : ''}次の${problems.length}件は保存していません（表に<span class="text-red-600 font-bold">赤い下書き</span>として残しています）</p>
-      <div class="max-h-72 overflow-y-auto border border-gray-100 rounded-lg"><table class="tbl text-xs"><thead><tr><th>日付</th><th>操作</th><th>枠</th><th>スタッフ</th><th>理由</th></tr></thead><tbody>
-        ${problems.map(d => `<tr class="${d.problem.can_force ? '' : 'bg-red-50'}"><td class="whitespace-nowrap">${esc(fmtDay(d.work_date))}</td><td class="whitespace-nowrap">${esc(KIND_LABEL[d.kind])}</td>
-          <td>${esc(projectOf(d.project_id).project_name || '')}<span class="block text-gray-400">${esc(d.start_time)}〜${esc(d.end_time)}・${esc(d.role_name || '')}</span></td>
+      <p class="text-sm text-neutral-700 mb-2">${done ? esc(done) + '。' : ''}次の${problems.length}件は保存していません（表に<span class="text-danger-600 font-bold">赤い下書き</span>として残しています）</p>
+      <div class="max-h-72 overflow-y-auto border border-neutral-100 rounded-lg"><table class="tbl text-xs"><thead><tr><th>日付</th><th>操作</th><th>枠</th><th>スタッフ</th><th>理由</th></tr></thead><tbody>
+        ${problems.map(d => `<tr class="${d.problem.can_force ? '' : 'bg-danger-50'}"><td class="whitespace-nowrap">${esc(fmtDay(d.work_date))}</td><td class="whitespace-nowrap">${esc(KIND_LABEL[d.kind])}</td>
+          <td>${esc(projectOf(d.project_id).project_name || '')}<span class="block text-neutral-400">${esc(d.start_time)}〜${esc(d.end_time)}・${esc(d.role_name || '')}</span></td>
           <td class="whitespace-nowrap">${esc(d.staff_name)}</td><td>${d.problem.reasons.map(r => `<span class="block">${esc(r)}</span>`).join('')}${d.problem.can_force ? '<span class="badge badge-yellow mt-0.5">確認すれば保存できます</span>' : '<span class="badge badge-red mt-0.5">保存できません</span>'}
-            <button type="button" class="block text-[11px] text-gray-500 hover:text-red-600 underline mt-0.5" data-action="boardProblemRemove" ${d.attrs}>この下書きを取り消す</button></td></tr>`).join('')}
+            <button type="button" class="block text-2xs text-neutral-500 hover:text-danger-600 underline mt-0.5" data-action="boardProblemRemove" ${d.attrs}>この下書きを取り消す</button></td></tr>`).join('')}
       </tbody></table></div>
-      <p class="text-[11px] text-gray-400 mt-2">保存できない下書きは、ここの「この下書きを取り消す」か表の下書きの「×」で取り消し、ほかの人を選んでください（表に出ていない枠の下書きも、ここで取り消せます）</p>
+      <p class="text-2xs text-neutral-400 mt-2">保存できない下書きは、ここの「この下書きを取り消す」か表の下書きの「×」で取り消し、ほかの人を選んでください（表に出ていない枠の下書きも、ここで取り消せます）</p>
       ${forceable.length ? `<button class="btn btn-primary w-full mt-3" data-action="boardSaveForce"><i class="fas fa-check"></i>警告を確認しました。このまま保存する（${forceable.length}件）</button>` : ''}
       <button class="btn btn-outline w-full mt-2" onclick="closeModal()">閉じる</button>`)
   }
@@ -926,9 +926,9 @@
     const el = document.getElementById('board-side'); if (!el) return
     const x = BS.sel ? ROLE_IX.get(BS.sel) : null
     if (!x || BS.range === 'month') {
-      el.innerHTML = `<p class="text-sm font-bold text-gray-700 mb-1"><i class="fas fa-user-plus text-blue-500 mr-1"></i>候補のスタッフ</p>
-        <p class="text-xs text-gray-500">${BS.range === 'month' ? '月の表示です。日付を押すと、その日を含む週の表に切り替わります。' : '左の表で、赤い「不足」のマスを押してください。その日に空いている人が、ここに出ます。'}</p>
-        <p class="text-[11px] text-gray-400 mt-2">候補を押すか表のマスへドラッグすると<b class="text-emerald-700">下書き</b>として表に入ります（まだ保存しません）。割り当て済みの人は、ほかのマスへドラッグすると移動、ドラッグ中に画面の下に出る「ここへドラッグで外す」へ落とすと外す下書きになります。組み終わったら「まとめて保存」を押すと、まとめて登録します。</p>`
+      el.innerHTML = `<p class="text-sm font-bold text-neutral-700 mb-1"><i class="fas fa-user-plus text-primary-500 mr-1"></i>候補のスタッフ</p>
+        <p class="text-xs text-neutral-500">${BS.range === 'month' ? '月の表示です。日付を押すと、その日を含む週の表に切り替わります。' : '左の表で、赤い「不足」のマスを押してください。その日に空いている人が、ここに出ます。'}</p>
+        <p class="text-2xs text-neutral-400 mt-2">候補を押すか表のマスへドラッグすると<b class="text-success-700">下書き</b>として表に入ります（まだ保存しません）。割り当て済みの人は、ほかのマスへドラッグすると移動、ドラッグ中に画面の下に出る「ここへドラッグで外す」へ落とすと外す下書きになります。組み終わったら「まとめて保存」を押すと、まとめて登録します。</p>`
       return
     }
     const { slot, role } = x
@@ -939,22 +939,22 @@
     const assigned = role.assigned.filter(a => a.status !== 'absent')
     el.innerHTML = `
       <div class="mb-2">
-        <p class="font-bold text-gray-900 leading-snug"><a href="#projects/${Number(slot.project_id)}" class="hover:underline">${esc(p.project_name || '')}</a>${p.client_name ? `<span class="block text-[11px] font-normal text-gray-400">${esc(p.client_name)}</span>` : ''}</p>
-        <p class="text-xs text-gray-600 mt-0.5">${esc(fmtDay(slot.work_date))} ${esc(slot.start_time)}〜${esc(slot.end_time)}・${esc(slot.site_name || slot.location || '場所未設定')}・<b>${esc(role.role_name)}</b></p>
+        <p class="font-bold text-neutral-900 leading-snug"><a href="#projects/${Number(slot.project_id)}" class="hover:underline">${esc(p.project_name || '')}</a>${p.client_name ? `<span class="block text-2xs font-normal text-neutral-400">${esc(p.client_name)}</span>` : ''}</p>
+        <p class="text-xs text-neutral-600 mt-0.5">${esc(fmtDay(slot.work_date))} ${esc(slot.start_time)}〜${esc(slot.end_time)}・${esc(slot.site_name || slot.location || '場所未設定')}・<b>${esc(role.role_name)}</b></p>
         <p class="text-xs mt-1 flex items-center gap-1 flex-wrap"><span class="badge ${spot ? 'badge-purple' : 'badge-blue'}">${spot ? 'スポット' : '常勤'}</span>
-          ${left > 0 ? `<span class="font-bold text-red-600">あと${left}人</span>` : `<span class="font-bold text-emerald-700">${left < 0 ? '定員を超えています' : '充足しています'}</span>`}
-          <span class="text-gray-400">必要 ${Number(role.headcount)}名・確定 ${Number(role.filled)}名${drafts.length + incoming.length ? `・下書き ${drafts.length + incoming.length}名` : ''}</span></p>
+          ${left > 0 ? `<span class="font-bold text-danger-600">あと${left}人</span>` : `<span class="font-bold text-success-700">${left < 0 ? '定員を超えています' : '充足しています'}</span>`}
+          <span class="text-neutral-400">必要 ${Number(role.headcount)}名・確定 ${Number(role.filled)}名${drafts.length + incoming.length ? `・下書き ${drafts.length + incoming.length}名` : ''}</span></p>
         <div class="flex gap-1.5 mt-2 flex-wrap">
           <button class="btn btn-outline text-xs py-1 px-2" data-action="boardEditSlot" data-id="${Number(slot.slot_id)}"><i class="fas fa-pen"></i>枠を編集</button>
           <button class="btn btn-danger text-xs py-1 px-2" data-action="boardDeleteSlot" data-id="${Number(slot.slot_id)}"><i class="fas fa-trash"></i>枠を削除</button>
         </div>
       </div>
-      ${assigned.length ? `<div class="mb-2"><p class="text-[11px] font-bold text-gray-500 mb-0.5">割り当て済み ${assigned.length}人（押すと確定・欠勤・金額）</p><div class="space-y-0.5">${assigned.map(a => assignedChip(a)).join('')}</div></div>` : ''}
-      ${drafts.length || incoming.length ? `<div class="mb-2"><p class="text-[11px] font-bold text-emerald-700 mb-0.5">下書き ${drafts.length + incoming.length}人（まだ保存していません）</p><div class="space-y-0.5">${incoming.map(moveChip).join('')}${drafts.map(draftChip).join('')}</div></div>` : ''}
+      ${assigned.length ? `<div class="mb-2"><p class="text-2xs font-bold text-neutral-500 mb-0.5">割り当て済み ${assigned.length}人（押すと確定・欠勤・金額）</p><div class="space-y-0.5">${assigned.map(a => assignedChip(a)).join('')}</div></div>` : ''}
+      ${drafts.length || incoming.length ? `<div class="mb-2"><p class="text-2xs font-bold text-success-700 mb-0.5">下書き ${drafts.length + incoming.length}人（まだ保存していません）</p><div class="space-y-0.5">${incoming.map(moveChip).join('')}${drafts.map(draftChip).join('')}</div></div>` : ''}
       <div id="side-price" class="board-inherit mb-2">${sidePriceHtml(x)}</div>
-      <label class="flex items-center gap-1 text-xs text-gray-600 mb-2">下書きにするときの状態
+      <label class="flex items-center gap-1 text-xs text-neutral-600 mb-2">下書きにするときの状態
         <select class="inp text-xs w-auto py-1" data-board-input="draftStatus"><option value="confirmed" ${BS.draftStatus !== 'requested' ? 'selected' : ''}>確定</option><option value="requested" ${BS.draftStatus === 'requested' ? 'selected' : ''}>希望（仮）（本人が可否を返事）</option></select></label>
-      <p class="text-xs font-bold text-gray-700 mb-1"><i class="fas fa-user-plus text-blue-500 mr-1"></i>候補のスタッフ<span class="font-normal text-gray-400 ml-1">押すか、表のマスへドラッグすると下書きに入ります</span></p>
+      <p class="text-xs font-bold text-neutral-700 mb-1"><i class="fas fa-user-plus text-primary-500 mr-1"></i>候補のスタッフ<span class="font-normal text-neutral-400 ml-1">押すか、表のマスへドラッグすると下書きに入ります</span></p>
       <input class="inp text-xs mb-1.5" id="cand-q" placeholder="名前で検索" value="${esc(BS.cf.q)}" aria-label="候補を名前で検索" autocomplete="off">
       <div id="cand-box">${candBoxHtml()}</div>
       <div class="mt-2 space-y-1.5">
@@ -992,8 +992,8 @@
   function candListHtml() {
     const x = ROLE_IX.get(BS.sel)
     if (!x) return ''
-    if (CAND.error && CAND.rid === BS.sel) return `<p class="text-xs text-red-600 p-2">${esc(CAND.error)}</p>`
-    if (!CAND.data || CAND.rid !== BS.sel) return '<p class="text-xs text-gray-400 p-2"><i class="fas fa-spinner fa-spin mr-1"></i>候補を読み込んでいます…</p>'
+    if (CAND.error && CAND.rid === BS.sel) return `<p class="text-xs text-danger-600 p-2">${esc(CAND.error)}</p>`
+    if (!CAND.data || CAND.rid !== BS.sel) return '<p class="text-xs text-neutral-400 p-2"><i class="fas fa-spinner fa-spin mr-1"></i>候補を読み込んでいます…</p>'
     const all = CAND.data.candidates
     const other = draftsOverlapping(x.slot, x.role.slot_role_id)
     const mine = new Set(draftsOf(x.role.slot_role_id).map(d => d.staff_id))
@@ -1006,10 +1006,10 @@
       if (BS.cf.skill && BS.cf.skill !== '__req' && !(c.skills || []).includes(BS.cf.skill)) return false
       return true
     })
-    const head = `<p class="text-[11px] text-gray-400 mb-1">候補 ${list.length}人（割り当てられる ${all.length}人中）・出勤可能日を出している人 → 前回この案件の人の順</p>`
-    if (!list.length) return head + '<p class="text-xs text-gray-400 p-2">条件に合う人がいません。上の絞り込みを外してください</p>'
+    const head = `<p class="text-2xs text-neutral-400 mb-1">候補 ${list.length}人（割り当てられる ${all.length}人中）・出勤可能日を出している人 → 前回この案件の人の順</p>`
+    if (!list.length) return head + '<p class="text-xs text-neutral-400 p-2">条件に合う人がいません。上の絞り込みを外してください</p>'
     return head + list.slice(0, CAND_MAX).map(c => candItem(c, mine.has(c.staff_id), other.get(c.staff_id))).join('')
-      + (list.length > CAND_MAX ? `<p class="text-[11px] text-gray-400 p-1">ほか ${list.length - CAND_MAX}人（名前で検索してください）</p>` : '')
+      + (list.length > CAND_MAX ? `<p class="text-2xs text-neutral-400 p-1">ほか ${list.length - CAND_MAX}人（名前で検索してください）</p>` : '')
   }
   function candItem(c, drafted, otherDraft) {
     const av = c.availability
@@ -1022,18 +1022,18 @@
       !av && !c.availability_exempt ? '出勤可能日 未提出' : '',
       av && av.note ? esc('メモ: ' + av.note) : '',
       c.last_project_date ? `前回この案件 ${esc(dayjs(c.last_project_date).format('M/D'))}` : '',
-      Number(c.run_days) >= 2 ? `<span class="${Number(c.run_days) >= 6 ? 'text-amber-700 font-bold' : ''}">入ると${Number(c.run_days)}連勤</span>` : '',
+      Number(c.run_days) >= 2 ? `<span class="${Number(c.run_days) >= 6 ? 'text-warning-700 font-bold' : ''}">入ると${Number(c.run_days)}連勤</span>` : '',
       `今週 ${Number(c.week_days)}日`,
       c.skill_required ? `スキル ${Number(c.skill_match)}/${Number(c.skill_required)}` : (c.skills && c.skills.length ? esc(c.skills.slice(0, 3).join('・')) : ''),
-      c.ng ? '<span class="text-red-600 font-bold">NG</span>' : '',
-      c.on_leave ? '<span class="text-amber-700">休職中</span>' : '',
-      c.preboarding ? '<span class="text-amber-700">入社予定</span>' : '',
-      c.not_yet_available ? `<span class="text-amber-700">稼働開始 ${esc(dayjs(c.available_from).format('M/D'))}〜</span>` : '',
-      c.busy ? `<span class="text-red-600">${esc(c.busy_detail.join('、'))}</span>` : '',
-      otherDraft ? `<span class="text-amber-700">下書き: ${esc(otherDraft)}</span>` : '',
+      c.ng ? '<span class="text-danger-600 font-bold">NG</span>' : '',
+      c.on_leave ? '<span class="text-warning-700">休職中</span>' : '',
+      c.preboarding ? '<span class="text-warning-700">入社予定</span>' : '',
+      c.not_yet_available ? `<span class="text-warning-700">稼働開始 ${esc(dayjs(c.available_from).format('M/D'))}〜</span>` : '',
+      c.busy ? `<span class="text-danger-600">${esc(c.busy_detail.join('、'))}</span>` : '',
+      otherDraft ? `<span class="text-warning-700">下書き: ${esc(otherDraft)}</span>` : '',
     ].filter(Boolean)
     return `<button type="button" class="cand-item ${c.busy || c.ng ? 'is-warn' : ''} ${drafted ? 'is-drafted' : ''}" data-action="boardDraftAdd" data-staff-id="${Number(c.staff_id)}" title="押すと下書きに入れます">
-      <span class="font-bold truncate">${esc(c.name)} <span class="text-[10px] font-normal text-gray-400">${AFF_SHORT[c.affiliation_type] || ''}</span></span>${badge}
+      <span class="font-bold truncate">${esc(c.name)} <span class="text-3xs font-normal text-neutral-400">${AFF_SHORT[c.affiliation_type] || ''}</span></span>${badge}
       <span class="cand-why">${why.join('・')}</span></button>`
   }
 
@@ -1055,31 +1055,31 @@
   }
   function sidePriceHtml(x) {
     const key = priceKey(x)
-    if (SIDE_PRICE.key !== key) { loadSidePrice(x, key); return '<p class="text-gray-400"><i class="fas fa-yen-sign mr-1"></i>単価を確認しています…</p>' }
+    if (SIDE_PRICE.key !== key) { loadSidePrice(x, key); return '<p class="text-neutral-400"><i class="fas fa-yen-sign mr-1"></i>単価を確認しています…</p>' }
     const spot = projectOf(x.slot.project_id).engagement_type === 'spot'
     const use = !BS.noInherit[x.role.slot_role_id]
     const rate = (u, r) => (r == null ? '未設定' : `${UNIT_LABEL[u] || ''} ${yen(r)}`)
     const names = new Map(draftsOf(x.role.slot_role_id).map(d => [d.staff_id, d.staff_name]))
     let body
-    if (SIDE_PRICE.error) body = `<p class="text-gray-500">${esc(SIDE_PRICE.error)}</p>`
-    else if (!SIDE_PRICE.data) body = '<p class="text-gray-400">単価を確認しています…</p>'
+    if (SIDE_PRICE.error) body = `<p class="text-neutral-500">${esc(SIDE_PRICE.error)}</p>`
+    else if (!SIDE_PRICE.data) body = '<p class="text-neutral-400">単価を確認しています…</p>'
     else {
       const items = SIDE_PRICE.data.items || []
       body = items.length ? items.slice(0, 5).map(it => {
         const ih = use ? it.inherited : null
         const pr = ih ? it.price : it.settings
-        const who = it.staff_id == null ? '' : `<b class="text-gray-700">${esc(names.get(Number(it.staff_id)) || '')}</b> `
-        return `<p class="mt-0.5">${who}請求 <b>${rate(pr.bill_unit_type, pr.bill_rate)}</b> ／ 支払 <b>${rate(pr.pay_unit_type, pr.pay_rate)}</b><span class="block text-[11px] ${ih ? 'text-blue-700' : 'text-gray-500'}">${ih ? `${esc(ih.label)}の単価を引き継ぎ` : it.inherited ? '単価の設定（前回の単価は引き継がない）' : '単価の設定（案件の標準・単価ルール）'}</span></p>`
-      }).join('') + (items.length > 5 ? `<p class="text-[11px] text-gray-400">ほか ${items.length - 5}人</p>` : '')
-        : '<p class="text-gray-500">常勤は、同じスタッフのこの案件の前回のシフトの単価を引き継ぎます。候補を下書きに入れると、その人の単価をここに出します。</p>'
+        const who = it.staff_id == null ? '' : `<b class="text-neutral-700">${esc(names.get(Number(it.staff_id)) || '')}</b> `
+        return `<p class="mt-0.5">${who}請求 <b>${rate(pr.bill_unit_type, pr.bill_rate)}</b> ／ 支払 <b>${rate(pr.pay_unit_type, pr.pay_rate)}</b><span class="block text-2xs ${ih ? 'text-primary-700' : 'text-neutral-500'}">${ih ? `${esc(ih.label)}の単価を引き継ぎ` : it.inherited ? '単価の設定（前回の単価は引き継がない）' : '単価の設定（案件の標準・単価ルール）'}</span></p>`
+      }).join('') + (items.length > 5 ? `<p class="text-2xs text-neutral-400">ほか ${items.length - 5}人</p>` : '')
+        : '<p class="text-neutral-500">常勤は、同じスタッフのこの案件の前回のシフトの単価を引き継ぎます。候補を下書きに入れると、その人の単価をここに出します。</p>'
     }
     const own = x.role.bill_rate != null || x.role.pay_rate != null
-    return `<div class="flex items-center justify-between gap-2"><p class="font-bold text-gray-700"><i class="fas fa-yen-sign mr-1"></i>単価</p><span class="text-[10px] text-gray-500">${spot ? 'この案件の前回のシフトから' : '同じスタッフのこの案件の前回から'}</span></div>
+    return `<div class="flex items-center justify-between gap-2"><p class="font-bold text-neutral-700"><i class="fas fa-yen-sign mr-1"></i>単価</p><span class="text-3xs text-neutral-500">${spot ? 'この案件の前回のシフトから' : '同じスタッフのこの案件の前回から'}</span></div>
       ${body}
-      ${own ? `<p class="text-[11px] text-amber-700 mt-1">この枠だけの単価: 請求 ${rate(x.role.bill_unit_type || 'daily', x.role.bill_rate)} ／ 支払 ${rate(x.role.pay_unit_type || 'daily', x.role.pay_rate)}</p>` : ''}
+      ${own ? `<p class="text-2xs text-warning-700 mt-1">この枠だけの単価: 請求 ${rate(x.role.bill_unit_type || 'daily', x.role.bill_rate)} ／ 支払 ${rate(x.role.pay_unit_type || 'daily', x.role.pay_rate)}</p>` : ''}
       <div class="flex items-center justify-between gap-2 mt-1.5 flex-wrap">
-        <label class="flex items-center gap-1 text-[11px] text-gray-600"><input type="checkbox" data-board-input="inherit" ${use ? 'checked' : ''}>前回のシフトの単価を引き継ぐ</label>
-        <button type="button" class="text-[11px] text-blue-700 hover:underline" data-action="boardEditSlot" data-id="${Number(x.slot.slot_id)}" data-focus="price">この枠だけ単価を変える</button>
+        <label class="flex items-center gap-1 text-2xs text-neutral-600"><input type="checkbox" data-board-input="inherit" ${use ? 'checked' : ''}>前回のシフトの単価を引き継ぐ</label>
+        <button type="button" class="text-2xs text-primary-700 hover:underline" data-action="boardEditSlot" data-id="${Number(x.slot.slot_id)}" data-focus="price">この枠だけ単価を変える</button>
       </div>`
   }
   delegate('boardCandModal', el => openCandidates(Number(el.dataset.id)))
@@ -1096,19 +1096,19 @@
     const wd = dayjs(slot.work_date).day()
     modal(`
       <h3 class="font-bold text-lg mb-1">毎週の繰り返し登録</h3>
-      <p class="text-xs text-gray-500 mb-3">${esc(projectOf(slot.project_id).project_name || '')}・${esc(slot.site_name || slot.location || '場所未設定')}・${esc(slot.start_time)}〜${esc(slot.end_time)}・<b>${esc(role.role_name)}</b></p>
+      <p class="text-xs text-neutral-500 mb-3">${esc(projectOf(slot.project_id).project_name || '')}・${esc(slot.site_name || slot.location || '場所未設定')}・${esc(slot.start_time)}〜${esc(slot.end_time)}・<b>${esc(role.role_name)}</b></p>
       <div class="space-y-3">
-        <label class="text-sm text-gray-600 block">スタッフ
+        <label class="text-sm text-neutral-600 block">スタッフ
           <select id="rp-staff" class="inp">${[...people].map(([id, n]) => `<option value="${Number(id)}">${esc(n)}</option>`).join('')}
             ${others.length ? `<optgroup label="ほかのスタッフ">${others.map(s => `<option value="${Number(s.staff_id)}">${esc(s.name)}</option>`).join('')}</optgroup>` : ''}</select></label>
-        <div><p class="text-sm text-gray-600 mb-1">曜日</p>
-          <div class="flex gap-1">${WD.map((w, i) => `<label class="flex-1 text-center border rounded-lg py-1.5 text-sm cursor-pointer has-[:checked]:bg-blue-600 has-[:checked]:text-white"><input type="checkbox" class="hidden rp-wd" value="${i}" ${i === wd ? 'checked' : ''}>${w}</label>`).join('')}</div></div>
+        <div><p class="text-sm text-neutral-600 mb-1">曜日</p>
+          <div class="flex gap-1">${WD.map((w, i) => `<label class="flex-1 text-center border rounded-lg py-1.5 text-sm cursor-pointer has-[:checked]:bg-primary-600 has-[:checked]:text-white"><input type="checkbox" class="hidden rp-wd" value="${i}" ${i === wd ? 'checked' : ''}>${w}</label>`).join('')}</div></div>
         <div class="grid grid-cols-2 gap-3">
-          <label class="text-sm text-gray-600">開始日<input id="rp-from" type="date" class="inp" value="${esc(slot.work_date)}"></label>
-          <label class="text-sm text-gray-600">終了日<input id="rp-to" type="date" class="inp" value="${esc(dayjs(slot.work_date).add(1, 'month').endOf('month').format('YYYY-MM-DD'))}"></label>
+          <label class="text-sm text-neutral-600">開始日<input id="rp-from" type="date" class="inp" value="${esc(slot.work_date)}"></label>
+          <label class="text-sm text-neutral-600">終了日<input id="rp-to" type="date" class="inp" value="${esc(dayjs(slot.work_date).add(1, 'month').endOf('month').format('YYYY-MM-DD'))}"></label>
         </div>
         <label class="flex items-center gap-2 text-sm"><input type="checkbox" id="rp-inherit" ${BS.noInherit[role.slot_role_id] ? '' : 'checked'}>前回のシフトの単価を引き継ぐ</label>
-        <p class="text-[11px] text-gray-500 bg-gray-50 rounded p-2">選んだ曜日の、同じ時間・役割・開催場所の枠に<b>確定</b>で割り当てます（すぐに登録します）。枠のない日・定員に達した日・割り当て済みの日・重複・NG・退職などの日はスキップし、一覧で表示します。枠がまだない期間は、先に「その他の操作」→「枠の繰り返し登録」で枠を作ってください。</p>
+        <p class="text-2xs text-neutral-500 bg-neutral-50 rounded p-2">選んだ曜日の、同じ時間・役割・開催場所の枠に<b>確定</b>で割り当てます（すぐに登録します）。枠のない日・定員に達した日・割り当て済みの日・重複・NG・退職などの日はスキップし、一覧で表示します。枠がまだない期間は、先に「その他の操作」→「枠の繰り返し登録」で枠を作ってください。</p>
         ${notifyBoxHtml('rp-notify', { note: '登録したシフトを本人に知らせます（1人に1件にまとめます）' })}
         <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="boardRepeatRun" data-id="${Number(role.slot_role_id)}"><i class="fas fa-repeat"></i>毎週の割り当てを登録する</button></div>
       </div>`)
@@ -1155,10 +1155,10 @@
     }
     DEL = { slotId, slot, band: null }
     modal(`
-      <h3 class="font-bold text-lg mb-1"><i class="fas fa-trash text-red-500 mr-1"></i>枠を削除</h3>
-      <p class="text-sm text-gray-800 font-bold">${esc(fmtDay(slot.work_date))} ${esc(slot.start_time)}〜${esc(slot.end_time)}・${esc(projectOf(slot.project_id).project_name || '')}</p>
-      <p class="text-xs text-gray-500 mb-3">${esc(slot.site_name || slot.location || '場所未設定')}・役割: ${esc(slot.roles.map(r => `${r.role_name} ${r.headcount}名`).join('、'))}（枠は役割ごとまとめて削除します）</p>
-      <div id="del-band" class="mb-3 text-xs text-gray-400"><i class="fas fa-spinner fa-spin mr-1"></i>同じ帯（まとめて入れた枠）を確かめています…</div>
+      <h3 class="font-bold text-lg mb-1"><i class="fas fa-trash text-danger-500 mr-1"></i>枠を削除</h3>
+      <p class="text-sm text-neutral-800 font-bold">${esc(fmtDay(slot.work_date))} ${esc(slot.start_time)}〜${esc(slot.end_time)}・${esc(projectOf(slot.project_id).project_name || '')}</p>
+      <p class="text-xs text-neutral-500 mb-3">${esc(slot.site_name || slot.location || '場所未設定')}・役割: ${esc(slot.roles.map(r => `${r.role_name} ${r.headcount}名`).join('、'))}（枠は役割ごとまとめて削除します）</p>
+      <div id="del-band" class="mb-3 text-xs text-neutral-400"><i class="fas fa-spinner fa-spin mr-1"></i>同じ帯（まとめて入れた枠）を確かめています…</div>
       <ul id="del-summary" class="text-sm space-y-1.5 mb-3">${deleteSummaryHtml()}</ul>
       ${notifyBoxHtml('del-notify', { note: '「割り当て済みのシフトも削除する」にしたときに、削除したシフトの本人に取り消しを知らせます' })}
       <div class="flex gap-2 mt-3">
@@ -1184,16 +1184,16 @@
     const b = DEL.band
     const all = delScopeData('all'), today = delScopeData('today')
     if (b.error || !all || all.slots <= 1) {
-      box.innerHTML = b.error ? `<p class="text-amber-700">${esc(b.error)}</p>` : '<p class="text-gray-400">同じ帯の枠はほかにありません（この枠だけを削除します）</p>'
+      box.innerHTML = b.error ? `<p class="text-warning-700">${esc(b.error)}</p>` : '<p class="text-neutral-400">同じ帯の枠はほかにありません（この枠だけを削除します）</p>'
     } else {
       const what = b.kind === 'pattern' ? `「枠の繰り返し登録」で作った枠（${esc(b.pattern ? `${b.pattern.date_from}〜${b.pattern.date_to}` : '')}）` : '同じ案件・開催場所・時間の枠（表の同じ行）'
-      const opt = (scope, s, extra) => `<label class="flex items-start gap-2 text-sm p-2 rounded border border-gray-200 ${s && s.too_many ? 'opacity-50' : 'cursor-pointer'}">
+      const opt = (scope, s, extra) => `<label class="flex items-start gap-2 text-sm p-2 rounded border border-neutral-200 ${s && s.too_many ? 'opacity-50' : 'cursor-pointer'}">
           <input type="radio" name="del-scope" value="${scope}" ${scope === 'one' ? 'checked' : ''} ${s && s.too_many ? 'disabled' : ''} data-action="delScopeChange">
-          <span>${esc(DEL_SCOPE_LABEL[scope])}${s ? `<span class="text-gray-500">（${Number(s.slots)}件${s.first_date ? `・${esc(fmtDay(s.first_date))}〜${esc(fmtDay(s.last_date))}` : ''}）</span>` : ''}${extra || ''}
-            ${s && s.too_many ? `<span class="block text-[11px] text-red-600">一度に削除できるのは${1000}件までです。今日以降の枠を選ぶか、期間を分けて削除してください</span>` : ''}</span></label>`
-      box.innerHTML = `<p class="text-xs font-bold text-gray-600 mb-1">削除する範囲</p>
-        <p class="text-[11px] text-gray-500 mb-1.5">帯: ${what}</p>
-        <div class="space-y-1.5">${opt('one', null)}${today && today.slots ? opt('today', today) : ''}${opt('all', all, b.kind === 'pattern' ? '<span class="block text-[11px] text-gray-500">繰り返し登録も削除します</span>' : '')}</div>`
+          <span>${esc(DEL_SCOPE_LABEL[scope])}${s ? `<span class="text-neutral-500">（${Number(s.slots)}件${s.first_date ? `・${esc(fmtDay(s.first_date))}〜${esc(fmtDay(s.last_date))}` : ''}）</span>` : ''}${extra || ''}
+            ${s && s.too_many ? `<span class="block text-2xs text-danger-600">一度に削除できるのは${1000}件までです。今日以降の枠を選ぶか、期間を分けて削除してください</span>` : ''}</span></label>`
+      box.innerHTML = `<p class="text-xs font-bold text-neutral-600 mb-1">削除する範囲</p>
+        <p class="text-2xs text-neutral-500 mb-1.5">帯: ${what}</p>
+        <div class="space-y-1.5">${opt('one', null)}${today && today.slots ? opt('today', today) : ''}${opt('all', all, b.kind === 'pattern' ? '<span class="block text-2xs text-neutral-500">繰り返し登録も削除します</span>' : '')}</div>`
     }
     drawDeleteSummary()
   }
@@ -1223,11 +1223,11 @@
     const shiftLine = withShifts
       ? `シフトも削除します${kept ? `（勤怠・日報の報告・確定済み・締めた期間のシフト${kept}件は削除せず、「枠を使わないシフト」として残します）` : ''}。`
       : 'シフトは削除せず、「枠を使わないシフト」として残します（勤怠・日報が付いていることがあるため）。'
-    return `${assigned ? `<li class="bg-amber-50 text-amber-900 rounded p-2"><b>割り当て済みの人が${assigned}人います</b>（${esc(names)}）。${shiftLine}</li>`
-        : shifts ? `<li class="text-gray-600">欠勤のシフトは${withShifts ? '削除します' : '「枠を使わないシフト」として残します'}。</li>` : '<li class="text-gray-600">割り当て済みの人はいません。</li>'}
+    return `${assigned ? `<li class="bg-warning-50 text-warning-900 rounded p-2"><b>割り当て済みの人が${assigned}人います</b>（${esc(names)}）。${shiftLine}</li>`
+        : shifts ? `<li class="text-neutral-600">欠勤のシフトは${withShifts ? '削除します' : '「枠を使わないシフト」として残します'}。</li>` : '<li class="text-neutral-600">割り当て済みの人はいません。</li>'}
       ${shifts ? `<li><label class="flex items-center gap-2 text-sm"><input type="checkbox" id="del-with-shifts" data-action="delWithShifts" ${withShifts ? 'checked' : ''}>割り当て済みのシフト（${shifts}件）も削除する</label></li>` : ''}
-      ${applicants ? `<li class="bg-red-50 text-red-800 rounded p-2">未対応の応募が${applicants}件あります。削除すると、これらの応募は「枠の削除」として処理済みになります。</li>` : ''}
-      ${drafts ? `<li class="bg-emerald-50 text-emerald-800 rounded p-2">${scope === 'one' ? 'この枠' : 'これらの枠'}の保存していない下書き${drafts}件も消えます。</li>` : ''}`
+      ${applicants ? `<li class="bg-danger-50 text-danger-800 rounded p-2">未対応の応募が${applicants}件あります。削除すると、これらの応募は「枠の削除」として処理済みになります。</li>` : ''}
+      ${drafts ? `<li class="bg-success-50 text-success-800 rounded p-2">${scope === 'one' ? 'この枠' : 'これらの枠'}の保存していない下書き${drafts}件も消えます。</li>` : ''}`
   }
   // 削除した枠の下書き（追加・移動してくる人）を片づける
   function forgetSlots(slotIds) {
@@ -1318,7 +1318,7 @@
     bar.hidden = !BS.bulkDel
     if (!BS.bulkDel) { bar.innerHTML = ''; return }
     const n = BULK.size
-    bar.innerHTML = `<span class="text-sm"><i class="fas fa-list-check mr-1 text-red-500"></i>削除する枠を選んでください（マスを押すとチェックが付きます）。選択中 <b>${n}</b>件${n > BULK_MAX ? `<span class="text-red-600 font-bold ml-1">一度に削除できるのは${BULK_MAX}件までです</span>` : ''}</span>
+    bar.innerHTML = `<span class="text-sm"><i class="fas fa-list-check mr-1 text-danger-500"></i>削除する枠を選んでください（マスを押すとチェックが付きます）。選択中 <b>${n}</b>件${n > BULK_MAX ? `<span class="text-danger-600 font-bold ml-1">一度に削除できるのは${BULK_MAX}件までです</span>` : ''}</span>
       <span class="flex-1"></span>
       <button class="btn btn-outline text-xs py-1.5" data-action="boardBulkAll">表示中の枠をすべて選ぶ</button>
       <button class="btn btn-outline text-xs py-1.5" data-action="boardBulkClear" ${n ? '' : 'disabled'}>選択を外す</button>
@@ -1364,18 +1364,18 @@
     const names = people.slice(0, 8).map(a => a.staff_name).join('、') + (people.length > 8 ? ` ほか${people.length - 8}人` : '')
     const sorted = [...slots].sort((a, b) => String(a.work_date + a.start_time).localeCompare(b.work_date + b.start_time))
     modal(`
-      <h3 class="font-bold text-lg mb-1"><i class="fas fa-trash text-red-500 mr-1"></i>選んだ枠を削除</h3>
-      <p class="text-sm text-gray-800 font-bold mb-1">${slots.length}件の枠を、役割ごとまとめて削除します</p>
-      <div class="max-h-48 overflow-y-auto border border-gray-100 rounded-lg divide-y divide-gray-100 mb-3">
+      <h3 class="font-bold text-lg mb-1"><i class="fas fa-trash text-danger-500 mr-1"></i>選んだ枠を削除</h3>
+      <p class="text-sm text-neutral-800 font-bold mb-1">${slots.length}件の枠を、役割ごとまとめて削除します</p>
+      <div class="max-h-48 overflow-y-auto border border-neutral-100 rounded-lg divide-y divide-neutral-100 mb-3">
         ${sorted.map(s => `<div class="px-2 py-1.5 text-xs"><span class="font-bold">${esc(fmtDay(s.work_date))} ${esc(s.start_time)}〜${esc(s.end_time)}</span>・${esc(projectOf(s.project_id).project_name || '')}
-          <span class="block text-gray-500">${esc(s.site_name || s.location || '場所未設定')}・${esc(s.roles.map(r => `${r.role_name} ${r.headcount}名`).join('、'))}</span></div>`).join('')}
+          <span class="block text-neutral-500">${esc(s.site_name || s.location || '場所未設定')}・${esc(s.roles.map(r => `${r.role_name} ${r.headcount}名`).join('、'))}</span></div>`).join('')}
       </div>
       <ul class="text-sm space-y-1.5 mb-3">
-        ${people.length ? `<li class="bg-amber-50 text-amber-900 rounded p-2"><b>割り当て済みの人が${people.length}人います</b>（${esc(names)}）。シフトは削除せず、「枠を使わないシフト」として残します（勤怠・日報が付いていることがあるため）。シフトも要らないときは、下の「割り当て済みのシフトも削除する」にチェックを入れてください。</li>`
-          : anyShift ? '<li class="text-gray-600">欠勤のシフトは「枠を使わないシフト」として残します。</li>' : '<li class="text-gray-600">割り当て済みの人はいません。</li>'}
-        ${anyShift ? '<li><label class="flex items-start gap-2 text-sm"><input type="checkbox" id="bulk-with-shifts" class="mt-1" data-action="bulkWithShifts"><span>割り当て済みのシフトも削除する<span class="block text-[11px] text-gray-500">勤怠・日報の報告・確定済み・締めた期間のシフトは削除せず、「枠を使わないシフト」として残します</span></span></label></li>' : ''}
-        ${applicants ? `<li class="bg-red-50 text-red-800 rounded p-2">未対応の応募が${applicants}件あります。削除すると、これらの応募は「枠の削除」として処理済みになります。</li>` : ''}
-        ${drafts.length ? `<li class="bg-emerald-50 text-emerald-800 rounded p-2">これらの枠の保存していない下書き${drafts.length}件も消えます。</li>` : ''}
+        ${people.length ? `<li class="bg-warning-50 text-warning-900 rounded p-2"><b>割り当て済みの人が${people.length}人います</b>（${esc(names)}）。シフトは削除せず、「枠を使わないシフト」として残します（勤怠・日報が付いていることがあるため）。シフトも要らないときは、下の「割り当て済みのシフトも削除する」にチェックを入れてください。</li>`
+          : anyShift ? '<li class="text-neutral-600">欠勤のシフトは「枠を使わないシフト」として残します。</li>' : '<li class="text-neutral-600">割り当て済みの人はいません。</li>'}
+        ${anyShift ? '<li><label class="flex items-start gap-2 text-sm"><input type="checkbox" id="bulk-with-shifts" class="mt-1" data-action="bulkWithShifts"><span>割り当て済みのシフトも削除する<span class="block text-2xs text-neutral-500">勤怠・日報の報告・確定済み・締めた期間のシフトは削除せず、「枠を使わないシフト」として残します</span></span></label></li>' : ''}
+        ${applicants ? `<li class="bg-danger-50 text-danger-800 rounded p-2">未対応の応募が${applicants}件あります。削除すると、これらの応募は「枠の削除」として処理済みになります。</li>` : ''}
+        ${drafts.length ? `<li class="bg-success-50 text-success-800 rounded p-2">これらの枠の保存していない下書き${drafts.length}件も消えます。</li>` : ''}
       </ul>
       ${anyShift ? notifyBoxHtml('bdel-notify', { note: '削除したシフトの本人に取り消しを知らせます' }) : ''}
       <div class="flex gap-2 mt-3">
@@ -1438,14 +1438,14 @@
     const off = (a) => a.staff_reply === 'ng' || (a.unavailable && a.status !== 'absent')
     modal(`
       <h3 class="font-bold text-lg mb-1">希望（仮）をまとめて確定</h3>
-      <p class="text-xs text-gray-500 mb-2">チェックしたシフトを確定にします（${slotRoleId ? 'この役割' : '表示中の期間・絞り込みの範囲'}）。重複・NG・必要人数の超過があるときは、確認してから確定します</p>
+      <p class="text-xs text-neutral-500 mb-2">チェックしたシフトを確定にします（${slotRoleId ? 'この役割' : '表示中の期間・絞り込みの範囲'}）。重複・NG・必要人数の超過があるときは、確認してから確定します</p>
       <label class="flex items-center gap-1 text-xs mb-1"><input type="checkbox" id="cr-all" checked>すべて選択</label>
-      <div class="max-h-[60vh] overflow-y-auto divide-y divide-gray-100 border border-gray-100 rounded-lg">
-        ${list.map(a => `<label class="flex items-start gap-2 px-2 py-1.5 text-sm ${off(a) ? 'bg-red-50' : ''}">
+      <div class="max-h-[60vh] overflow-y-auto divide-y divide-neutral-100 border border-neutral-100 rounded-lg">
+        ${list.map(a => `<label class="flex items-start gap-2 px-2 py-1.5 text-sm ${off(a) ? 'bg-danger-50' : ''}">
           <input type="checkbox" class="cr-check mt-1" value="${Number(a.shift_id)}" ${off(a) ? '' : 'checked'}>
           <span class="flex-1 min-w-0"><span class="font-bold">${esc(a.staff_name)}</span>${replyMark(a)}${unavailableMark(a)}
-            <span class="block text-xs text-gray-500">${esc(fmtDay(a.work_date))} ${esc(a.start_time)}〜${esc(a.end_time)}・${esc((proj.get(a.project_id) || {}).project_name || '')}${a._site ? '・' + esc(a._site) : ''}${a._role ? '・' + esc(a._role) : ''}</span>
-            ${a.staff_reply ? `<span class="block text-[11px] ${a.staff_reply === 'ng' ? 'text-red-600' : 'text-gray-500'}">${esc(replyText(a))}</span>` : ''}</span>
+            <span class="block text-xs text-neutral-500">${esc(fmtDay(a.work_date))} ${esc(a.start_time)}〜${esc(a.end_time)}・${esc((proj.get(a.project_id) || {}).project_name || '')}${a._site ? '・' + esc(a._site) : ''}${a._role ? '・' + esc(a._role) : ''}</span>
+            ${a.staff_reply ? `<span class="block text-2xs ${a.staff_reply === 'ng' ? 'text-danger-600' : 'text-neutral-500'}">${esc(replyText(a))}</span>` : ''}</span>
         </label>`).join('')}
       </div>
       ${notifyBoxHtml('cr-notify', { note: '確定にしたシフトの本人に知らせます' })}
@@ -1467,8 +1467,8 @@
     const skipped = data.skipped || []
     if (skipped.length) {
       modal(`<h3 class="font-bold text-lg mb-1">希望（仮）をまとめて確定</h3>
-        <p class="text-sm text-gray-700 mb-2">${Number(data.confirmed)}件を確定にしました。次の${skipped.length}件は確定にしていません</p>
-        <div class="max-h-72 overflow-y-auto border border-gray-100 rounded-lg"><table class="tbl text-xs"><thead><tr><th>日付</th><th>スタッフ</th><th>理由</th></tr></thead><tbody>
+        <p class="text-sm text-neutral-700 mb-2">${Number(data.confirmed)}件を確定にしました。次の${skipped.length}件は確定にしていません</p>
+        <div class="max-h-72 overflow-y-auto border border-neutral-100 rounded-lg"><table class="tbl text-xs"><thead><tr><th>日付</th><th>スタッフ</th><th>理由</th></tr></thead><tbody>
           ${skipped.map(x => `<tr><td class="whitespace-nowrap">${esc(fmtDay(x.work_date))}</td><td>${esc(x.staff_name)}</td><td>${esc(x.reason)}</td></tr>`).join('')}</tbody></table></div>
         <button class="btn btn-outline w-full mt-3" onclick="closeModal()">閉じる</button>`)
     } else { closeModal(); toast(`${Number(data.confirmed)}件を確定にしました`) }
@@ -1623,18 +1623,18 @@
     const r = data.slot_role
     modal(`
       <h3 class="font-bold text-lg mb-1">スタッフを割り当て</h3>
-      <p class="text-xs text-gray-500 mb-3">${dayjs(r.work_date).format('M/D')}(${WD[dayjs(r.work_date).day()]}) ${esc(r.start_time)}〜${esc(r.end_time)}・${esc(r.location || '')}・<b>${esc(r.role_name)}</b>（必要 ${r.headcount}名）</p>
+      <p class="text-xs text-neutral-500 mb-3">${dayjs(r.work_date).format('M/D')}(${WD[dayjs(r.work_date).day()]}) ${esc(r.start_time)}〜${esc(r.end_time)}・${esc(r.location || '')}・<b>${esc(r.role_name)}</b>（必要 ${r.headcount}名）</p>
       <input class="inp text-sm mb-2" placeholder="名前・稼働エリアで絞り込み" id="cand-filter">
-      <div class="max-h-96 overflow-y-auto border border-gray-100 rounded-lg divide-y divide-gray-50">
-        ${data.candidates.map(c => `<label class="cand-row flex items-center gap-2 px-2 py-1.5 text-sm ${c.busy || c.ng ? 'bg-red-50' : ''}" data-key="${esc(c.name + ' ' + (c.work_area || ''))}">
+      <div class="max-h-96 overflow-y-auto border border-neutral-100 rounded-lg divide-y divide-neutral-50">
+        ${data.candidates.map(c => `<label class="cand-row flex items-center gap-2 px-2 py-1.5 text-sm ${c.busy || c.ng ? 'bg-danger-50' : ''}" data-key="${esc(c.name + ' ' + (c.work_area || ''))}">
           <input type="checkbox" class="cand-check" value="${c.staff_id}">
-          <span class="flex-1 min-w-0"><span class="font-bold">${esc(c.name)}</span> <span class="text-[11px] text-gray-400">${AFF_SHORT[c.affiliation_type] || ''}</span>
-            ${c.work_area ? `<span class="text-[11px] text-gray-500 ml-1"><i class="fas fa-location-dot text-gray-400 mr-0.5"></i>${esc(c.work_area)}</span>` : ''}
-            <span class="block text-[11px] text-gray-500">
-              ${c.busy ? `<span class="text-red-600"><i class="fas fa-clock mr-0.5"></i>${esc(c.busy_detail.join('、'))}</span>` : '<span class="text-emerald-600">空き</span>'}
-              ${c.ng ? '<span class="text-red-600 ml-1">NG</span>' : ''}${c.on_leave ? '<span class="text-amber-600 ml-1">休職中</span>' : ''}${c.preboarding ? '<span class="text-amber-600 ml-1">入社予定</span>' : ''}${c.not_yet_available ? `<span class="text-amber-600 ml-1">稼働開始 ${esc(dayjs(c.available_from).format('M/D'))}〜</span>` : ''}
+          <span class="flex-1 min-w-0"><span class="font-bold">${esc(c.name)}</span> <span class="text-2xs text-neutral-400">${AFF_SHORT[c.affiliation_type] || ''}</span>
+            ${c.work_area ? `<span class="text-2xs text-neutral-500 ml-1"><i class="fas fa-location-dot text-neutral-400 mr-0.5"></i>${esc(c.work_area)}</span>` : ''}
+            <span class="block text-2xs text-neutral-500">
+              ${c.busy ? `<span class="text-danger-600"><i class="fas fa-clock mr-0.5"></i>${esc(c.busy_detail.join('、'))}</span>` : '<span class="text-success-600">空き</span>'}
+              ${c.ng ? '<span class="text-danger-600 ml-1">NG</span>' : ''}${c.on_leave ? '<span class="text-warning-600 ml-1">休職中</span>' : ''}${c.preboarding ? '<span class="text-warning-600 ml-1">入社予定</span>' : ''}${c.not_yet_available ? `<span class="text-warning-600 ml-1">稼働開始 ${esc(dayjs(c.available_from).format('M/D'))}〜</span>` : ''}
               ・この場所 ${c.site_count}回・この案件 ${c.project_count}回${c.skill_required ? `・スキル ${c.skill_match}/${c.skill_required}` : ''}・今週（月〜日）${c.week_days}日${c.transport_default != null ? `・交通費の標準 ¥${Number(c.transport_default).toLocaleString()}` : ''}</span></span>
-        </label>`).join('') || '<p class="p-3 text-sm text-gray-400">候補がいません</p>'}
+        </label>`).join('') || '<p class="p-3 text-sm text-neutral-400">候補がいません</p>'}
       </div>
       <div class="grid grid-cols-2 gap-2 mt-3">
         <select id="cand-status" class="inp text-sm"><option value="confirmed">確定で登録</option><option value="requested">希望（仮）で登録（本人が可否を返事）</option></select>
@@ -1668,15 +1668,15 @@
   const PRICE_BOX = {}
   const PRICE_LIST_MAX = 30
   function priceBoxHtml(prefix, bulk) {
-    return `<div class="rounded-lg border border-gray-100 p-2 mt-3 text-xs space-y-1.5" id="${prefix}-price">
-      <div class="flex items-center justify-between gap-2 flex-wrap"><p class="font-bold text-gray-700"><i class="fas fa-yen-sign mr-1"></i>単価</p>
-        <label class="flex items-center gap-1 text-gray-600"><input type="checkbox" id="${prefix}-inherit" checked>前回のシフトの単価を引き継ぐ</label></div>
-      <div id="${prefix}-price-list" class="text-gray-400">スタッフを選ぶと、単価を表示します</div>
+    return `<div class="rounded-lg border border-neutral-100 p-2 mt-3 text-xs space-y-1.5" id="${prefix}-price">
+      <div class="flex items-center justify-between gap-2 flex-wrap"><p class="font-bold text-neutral-700"><i class="fas fa-yen-sign mr-1"></i>単価</p>
+        <label class="flex items-center gap-1 text-neutral-600"><input type="checkbox" id="${prefix}-inherit" checked>前回のシフトの単価を引き継ぐ</label></div>
+      <div id="${prefix}-price-list" class="text-neutral-400">スタッフを選ぶと、単価を表示します</div>
       <div class="grid grid-cols-2 gap-2">
-        <label class="text-gray-600">請求単価を変える<input id="${prefix}-bill-rate" type="number" min="0" class="inp text-xs" placeholder="空欄ならそのまま"></label>
-        <label class="text-gray-600">支払単価を変える<input id="${prefix}-pay-rate" type="number" min="0" class="inp text-xs" placeholder="空欄ならそのまま"></label>
+        <label class="text-neutral-600">請求単価を変える<input id="${prefix}-bill-rate" type="number" min="0" class="inp text-xs" placeholder="空欄ならそのまま"></label>
+        <label class="text-neutral-600">支払単価を変える<input id="${prefix}-pay-rate" type="number" min="0" class="inp text-xs" placeholder="空欄ならそのまま"></label>
       </div>
-      <p class="text-[11px] text-gray-400">単価を入れると、選んだ全員${bulk ? '・全日' : ''}に同じ単価を入れ、金額は手動変更になります${bulk ? '。表示は開始日の時点の見込みです' : ''}</p>
+      <p class="text-2xs text-neutral-400">単価を入れると、選んだ全員${bulk ? '・全日' : ''}に同じ単価を入れ、金額は手動変更になります${bulk ? '。表示は開始日の時点の見込みです' : ''}</p>
     </div>`
   }
   async function loadPriceBox(prefix, params, names) {
@@ -1697,9 +1697,9 @@
   function renderPriceBox(prefix) {
     const el = document.getElementById(prefix + '-price-list'); if (!el) return
     const st = PRICE_BOX[prefix] || {}
-    if (!st.data) { el.innerHTML = `<span class="text-gray-400">${esc(st.error || 'スタッフを選ぶと、単価を表示します')}</span>`; return }
+    if (!st.data) { el.innerHTML = `<span class="text-neutral-400">${esc(st.error || 'スタッフを選ぶと、単価を表示します')}</span>`; return }
     const items = st.data.items || []
-    if (!items.length) { el.innerHTML = '<span class="text-gray-400">スタッフを選ぶと、単価を表示します</span>'; return }
+    if (!items.length) { el.innerHTML = '<span class="text-neutral-400">スタッフを選ぶと、単価を表示します</span>'; return }
     const use = document.getElementById(prefix + '-inherit').checked
     const rate = (u, r) => (r == null ? '未設定' : `${UNIT_LABEL[u] || ''} ${yen(r)}`)
     const rows = items.slice(0, PRICE_LIST_MAX).map(it => {
@@ -1707,11 +1707,11 @@
       const p = ih ? it.price : it.settings
       const who = it.staff_id == null ? 'この案件' : (st.names.get(Number(it.staff_id)) || 'ID ' + it.staff_id)
       const from = ih ? `<span class="badge badge-blue whitespace-nowrap">${esc(ih.label)}から引き継ぎ</span>`
-        : it.inherited ? '<span class="text-gray-400 whitespace-nowrap">単価の設定（引き継がない）</span>' : '<span class="text-gray-400 whitespace-nowrap">単価の設定</span>'
-      return `<div class="flex items-center justify-between gap-2 py-0.5"><span class="font-bold text-gray-700 truncate">${esc(who)}</span>
-        <span class="text-right text-gray-600">請求 ${rate(p.bill_unit_type, p.bill_rate)} ／ 支払 ${rate(p.pay_unit_type, p.pay_rate)} ${from}</span></div>`
+        : it.inherited ? '<span class="text-neutral-400 whitespace-nowrap">単価の設定（引き継がない）</span>' : '<span class="text-neutral-400 whitespace-nowrap">単価の設定</span>'
+      return `<div class="flex items-center justify-between gap-2 py-0.5"><span class="font-bold text-neutral-700 truncate">${esc(who)}</span>
+        <span class="text-right text-neutral-600">請求 ${rate(p.bill_unit_type, p.bill_rate)} ／ 支払 ${rate(p.pay_unit_type, p.pay_rate)} ${from}</span></div>`
     }).join('')
-    el.innerHTML = `<div class="max-h-40 overflow-y-auto divide-y divide-gray-50">${rows}</div>${items.length > PRICE_LIST_MAX ? `<p class="text-gray-400">ほか ${items.length - PRICE_LIST_MAX}人</p>` : ''}`
+    el.innerHTML = `<div class="max-h-40 overflow-y-auto divide-y divide-neutral-50">${rows}</div>${items.length > PRICE_LIST_MAX ? `<p class="text-neutral-400">ほか ${items.length - PRICE_LIST_MAX}人</p>` : ''}`
   }
   // 送信に足す値（引き継ぐか、変えた単価）。マイナスの単価は送らない
   function priceExtra(prefix) {
@@ -1739,20 +1739,20 @@
     const opt = (map, v) => Object.entries(map).map(([k, l]) => `<option value="${k}" ${v === k ? 'selected' : ''}>${l}</option>`).join('')
     modal(`
       <h3 class="font-bold text-lg mb-1">${esc(a.staff_name)}</h3>
-      <p class="text-xs text-gray-500 mb-3">${dayjs(a.work_date).format('M/D')}(${WD[dayjs(a.work_date).day()]}) ${esc(a.start_time)}〜${esc(a.end_time)}・${esc(a.site_name || a.location || '')}・${esc(a.role || '')}
+      <p class="text-xs text-neutral-500 mb-3">${dayjs(a.work_date).format('M/D')}(${WD[dayjs(a.work_date).day()]}) ${esc(a.start_time)}〜${esc(a.end_time)}・${esc(a.site_name || a.location || '')}・${esc(a.role || '')}
         <span class="badge badge-gray ml-1">${ST_LABEL[a.status]}</span></p>
-      ${a.status === 'requested' ? `<p class="text-xs ${a.staff_reply === 'ng' ? 'text-red-600 bg-red-50' : 'text-gray-600 bg-amber-50'} rounded p-2 mb-2">${replyMark(a)} ${esc(replyText(a))}${a.staff_reply_at ? `<span class="text-gray-400 ml-1">${esc(a.staff_reply_at)}</span>` : ''}</p>` : ''}
-      ${a.conflicts && a.conflicts.length ? `<p class="text-xs text-red-600 bg-red-50 rounded p-2 mb-2"><i class="fas fa-triangle-exclamation mr-1"></i>同じ時間帯に別のシフト: ${esc(a.conflicts.map(conflictText).join(' / '))}</p>` : ''}
-      ${a.ng ? '<p class="text-xs text-red-600 bg-red-50 rounded p-2 mb-2">クライアントのNGスタッフに指定されています</p>' : ''}
-      ${a.settle_status === 'confirmed' ? '<p class="text-xs text-emerald-700 bg-emerald-50 rounded p-2 mb-2" id="shift-settled-notice"><i class="fas fa-lock mr-1"></i>実績が確定済みのため、状態・時間・金額は変更できません（<a class="underline" href="#settlement">精算</a>で取り消せます）</p>' : ''}
-      ${a.actual_start ? `<p class="text-xs text-gray-600 mb-2"><i class="fas fa-clock mr-1"></i>実績 ${esc(a.actual_start)}〜${esc(a.actual_end)}（${a.actual_source === 'manual' ? '手入力' : '報告'}）</p>` : ''}
+      ${a.status === 'requested' ? `<p class="text-xs ${a.staff_reply === 'ng' ? 'text-danger-600 bg-danger-50' : 'text-neutral-600 bg-warning-50'} rounded p-2 mb-2">${replyMark(a)} ${esc(replyText(a))}${a.staff_reply_at ? `<span class="text-neutral-400 ml-1">${esc(a.staff_reply_at)}</span>` : ''}</p>` : ''}
+      ${a.conflicts && a.conflicts.length ? `<p class="text-xs text-danger-600 bg-danger-50 rounded p-2 mb-2"><i class="fas fa-triangle-exclamation mr-1"></i>同じ時間帯に別のシフト: ${esc(a.conflicts.map(conflictText).join(' / '))}</p>` : ''}
+      ${a.ng ? '<p class="text-xs text-danger-600 bg-danger-50 rounded p-2 mb-2">クライアントのNGスタッフに指定されています</p>' : ''}
+      ${a.settle_status === 'confirmed' ? '<p class="text-xs text-success-700 bg-success-50 rounded p-2 mb-2" id="shift-settled-notice"><i class="fas fa-lock mr-1"></i>実績が確定済みのため、状態・時間・金額は変更できません（<a class="underline" href="#settlement">精算</a>で取り消せます）</p>' : ''}
+      ${a.actual_start ? `<p class="text-xs text-neutral-600 mb-2"><i class="fas fa-clock mr-1"></i>実績 ${esc(a.actual_start)}〜${esc(a.actual_end)}（${a.actual_source === 'manual' ? '手入力' : '報告'}）</p>` : ''}
       <div class="grid grid-cols-4 gap-1.5 mb-4">
-        ${['confirmed', 'requested', 'substitute', 'absent'].map(st => `<button class="btn btn-outline text-xs ${a.status === st ? 'ring-2 ring-blue-400' : ''}" data-action="boardShiftStatus" data-id="${id}" data-status="${st}">${ST_LABEL[st]}</button>`).join('')}
+        ${['confirmed', 'requested', 'substitute', 'absent'].map(st => `<button class="btn btn-outline text-xs ${a.status === st ? 'ring-2 ring-primary-400' : ''}" data-action="boardShiftStatus" data-id="${id}" data-status="${st}">${ST_LABEL[st]}</button>`).join('')}
       </div>
       ${a.work_date >= dayjs().format('YYYY-MM-DD') && a.settle_status !== 'confirmed' ? `<div class="-mt-2 mb-3">${notifyBoxHtml('sd-notify', { note: '上の状態の変更と、下の「シフトを削除」のときに本人に知らせます' })}</div>` : ''}
-      <div class="rounded-lg border border-gray-100 p-3 mb-3 text-xs space-y-2" id="shift-price-form">
-        <div class="flex items-center justify-between"><p class="font-bold text-gray-700"><i class="fas fa-yen-sign mr-1"></i>金額（管理画面のみ表示）</p>
-          ${a.price_locked ? `<button class="text-blue-600 hover:underline" data-action="boardResetPrice" data-id="${id}">単価ルールに戻す</button>` : '<span class="text-gray-400">単価ルールから自動計算</span>'}</div>
+      <div class="rounded-lg border border-neutral-100 p-3 mb-3 text-xs space-y-2" id="shift-price-form">
+        <div class="flex items-center justify-between"><p class="font-bold text-neutral-700"><i class="fas fa-yen-sign mr-1"></i>金額（管理画面のみ表示）</p>
+          ${a.price_locked ? `<button class="text-primary-600 hover:underline" data-action="boardResetPrice" data-id="${id}">単価ルールに戻す</button>` : '<span class="text-neutral-400">単価ルールから自動計算</span>'}</div>
         <div class="grid grid-cols-3 gap-2 items-end">
           <label>請求<select id="sp-bill-unit" class="inp text-xs">${opt(UNIT_LABEL, a.bill_unit_type || 'daily')}</select></label>
           <label>請求単価<input id="sp-bill-rate" type="number" class="inp text-xs" value="${a.bill_rate ?? ''}"></label>
@@ -1770,11 +1770,11 @@
           <label>支払の調整<input id="sp-pay-adj" type="number" class="inp text-xs" value="${a.pay_adjust || ''}" placeholder="0"></label>
           <label>調整の内容<input id="sp-adj-note" class="inp text-xs" value="${esc(a.adjust_note || '')}" placeholder="手当・控除など"></label>
         </div>
-        <p class="text-[11px] text-gray-400">深夜（22〜5時）・時間外（1日8時間超）・休日の割増は、精算の画面の「割増の設定」を ON にすると自動で計算します（調整に入れる必要はありません。下の支払には、確定するまで含みません）</p>
-        <div class="grid grid-cols-3 gap-2 bg-gray-50 rounded p-2">
-          <p>請求 <b>${yen(a.bill_total)}</b><span class="block text-gray-400">基本${yen(a.unit_price)}＋交通費${yen(a.bill_transport)}</span></p>
-          <p>支払 <b>${a.pay_total == null ? '未設定' : yen(a.pay_total)}</b><span class="block text-gray-400">基本${a.pay_amount == null ? '-' : yen(a.pay_amount)}＋交通費${yen(a.pay_transport)}</span></p>
-          <p>粗利 <b>${a.pay_total == null ? '-' : yen(a.bill_total - a.pay_total)}</b><span class="block text-gray-400">${esc(src.manual || src.bill || '')}${src.pay && !src.manual ? ' / 支払: ' + esc(src.pay) : ''}</span></p>
+        <p class="text-2xs text-neutral-400">深夜（22〜5時）・時間外（1日8時間超）・休日の割増は、精算の画面の「割増の設定」を ON にすると自動で計算します（調整に入れる必要はありません。下の支払には、確定するまで含みません）</p>
+        <div class="grid grid-cols-3 gap-2 bg-neutral-50 rounded p-2">
+          <p>請求 <b>${yen(a.bill_total)}</b><span class="block text-neutral-400">基本${yen(a.unit_price)}＋交通費${yen(a.bill_transport)}</span></p>
+          <p>支払 <b>${a.pay_total == null ? '未設定' : yen(a.pay_total)}</b><span class="block text-neutral-400">基本${a.pay_amount == null ? '-' : yen(a.pay_amount)}＋交通費${yen(a.pay_transport)}</span></p>
+          <p>粗利 <b>${a.pay_total == null ? '-' : yen(a.bill_total - a.pay_total)}</b><span class="block text-neutral-400">${esc(src.manual || src.bill || '')}${src.pay && !src.manual ? ' / 支払: ' + esc(src.pay) : ''}</span></p>
         </div>
         <button class="btn btn-primary w-full text-xs" data-action="boardSavePrice" data-id="${id}">金額を保存（このシフトだけ手動で変更）</button>
       </div>
@@ -1827,18 +1827,18 @@
       return deleteOneShift(id, np)
     }
     SHIFT_BAND = { id, band }
-    const kept = (s) => s.kept ? `<span class="block text-[11px] text-amber-700">${Number(s.kept)}件は削除できないため残します（${esc(Object.entries(s.kept_reasons || {}).map(([r, n]) => `${r} ${n}件`).join('、'))}）</span>` : ''
-    const opt = (scope, s) => `<label class="flex items-start gap-2 text-sm p-2 rounded border border-gray-200 ${s && s.too_many ? 'opacity-50' : 'cursor-pointer'}">
+    const kept = (s) => s.kept ? `<span class="block text-2xs text-warning-700">${Number(s.kept)}件は削除できないため残します（${esc(Object.entries(s.kept_reasons || {}).map(([r, n]) => `${r} ${n}件`).join('、'))}）</span>` : ''
+    const opt = (scope, s) => `<label class="flex items-start gap-2 text-sm p-2 rounded border border-neutral-200 ${s && s.too_many ? 'opacity-50' : 'cursor-pointer'}">
         <input type="radio" name="sd-scope" value="${scope}" ${scope === 'one' ? 'checked' : ''} ${s && s.too_many ? 'disabled' : ''}>
-        <span>${esc(SD_LABEL[scope])}${s ? `<span class="text-gray-500">（${Number(s.shifts)}件${s.first_date ? `・${esc(fmtDay(s.first_date))}〜${esc(fmtDay(s.last_date))}` : ''}）</span>${kept(s)}` : ''}
-          ${s && s.too_many ? '<span class="block text-[11px] text-red-600">一度に削除できるのは1000件までです。今日以降を選んでください</span>' : ''}</span></label>`
+        <span>${esc(SD_LABEL[scope])}${s ? `<span class="text-neutral-500">（${Number(s.shifts)}件${s.first_date ? `・${esc(fmtDay(s.first_date))}〜${esc(fmtDay(s.last_date))}` : ''}）</span>${kept(s)}` : ''}
+          ${s && s.too_many ? '<span class="block text-2xs text-danger-600">一度に削除できるのは1000件までです。今日以降を選んでください</span>' : ''}</span></label>`
     modal(`
-      <h3 class="font-bold text-lg mb-1"><i class="fas fa-trash text-red-500 mr-1"></i>シフトを削除</h3>
-      <p class="text-sm text-gray-800 font-bold">${esc(a ? a.staff_name : '')}・${esc(a ? fmtDay(a.work_date) : '')} ${esc(a ? a.start_time : '')}〜${esc(a ? a.end_time : '')}・${esc(a ? projectOf(a.project_id).project_name || '' : '')}</p>
-      <p class="text-[11px] text-gray-500 mb-3">帯: 同じスタッフ・案件・開催場所・時間・役割の、枠を使わないシフト（常勤の一括登録などでまとめて入れたもの）</p>
-      <p class="text-xs font-bold text-gray-600 mb-1">削除する範囲</p>
+      <h3 class="font-bold text-lg mb-1"><i class="fas fa-trash text-danger-500 mr-1"></i>シフトを削除</h3>
+      <p class="text-sm text-neutral-800 font-bold">${esc(a ? a.staff_name : '')}・${esc(a ? fmtDay(a.work_date) : '')} ${esc(a ? a.start_time : '')}〜${esc(a ? a.end_time : '')}・${esc(a ? projectOf(a.project_id).project_name || '' : '')}</p>
+      <p class="text-2xs text-neutral-500 mb-3">帯: 同じスタッフ・案件・開催場所・時間・役割の、枠を使わないシフト（常勤の一括登録などでまとめて入れたもの）</p>
+      <p class="text-xs font-bold text-neutral-600 mb-1">削除する範囲</p>
       <div class="space-y-1.5 mb-3">${opt('one', null)}${today && today.shifts ? opt('today', today) : ''}${opt('all', all)}</div>
-      <p class="text-[11px] text-gray-500">勤怠・日報の報告があるシフト・実績が確定済みのシフト・精算を締めた期間のシフトは削除しません（欠勤などに変更してください）</p>
+      <p class="text-2xs text-neutral-500">勤怠・日報の報告があるシフト・実績が確定済みのシフト・精算を締めた期間のシフトは削除しません（欠勤などに変更してください）</p>
       ${notifyBoxHtml('sdb-notify', { init: np, note: '削除したシフトの本人に取り消しを知らせます' })}
       <div class="flex gap-2 mt-3">
         <button class="btn btn-outline flex-1" onclick="closeModal()">やめる</button>
@@ -1921,11 +1921,11 @@
         <div class="flex items-start justify-between gap-2">
           <div class="min-w-0">
             <p><span class="font-bold">${dayjs(q.work_date).format('M/D')}(${WD[dayjs(q.work_date).day()]}) ${esc(q.start_time)}〜${esc(q.end_time)}</span>
-              <a href="#staff/${q.staff_id}" class="ml-1 font-bold text-blue-700 hover:underline">${esc(q.staff_name)}</a></p>
-            <p class="text-xs text-gray-500">${q.project_name ? esc(q.project_name) : '案件の指定なし'}${q.memo ? '・' + esc(q.memo) : ''}</p>
-            <p class="text-[11px] ${q.shifts_on_date ? 'text-emerald-700' : 'text-gray-400'}">${q.shifts_on_date ? `この日のシフト ${q.shifts_on_date}件あり` : 'この日のシフトはまだありません'}</p>
-            ${q.status !== 'pending' && q.response_note ? `<p class="text-[11px] text-gray-500">返事: ${esc(q.response_note)}</p>` : ''}
-            ${q.responded_by_name ? `<p class="text-[11px] text-gray-400">${esc(q.responded_by_name)} ${esc(q.responded_at || '')}</p>` : ''}
+              <a href="#staff/${q.staff_id}" class="ml-1 font-bold text-primary-700 hover:underline">${esc(q.staff_name)}</a></p>
+            <p class="text-xs text-neutral-500">${q.project_name ? esc(q.project_name) : '案件の指定なし'}${q.memo ? '・' + esc(q.memo) : ''}</p>
+            <p class="text-2xs ${q.shifts_on_date ? 'text-success-700' : 'text-neutral-400'}">${q.shifts_on_date ? `この日のシフト ${q.shifts_on_date}件あり` : 'この日のシフトはまだありません'}</p>
+            ${q.status !== 'pending' && q.response_note ? `<p class="text-2xs text-neutral-500">返事: ${esc(q.response_note)}</p>` : ''}
+            ${q.responded_by_name ? `<p class="text-2xs text-neutral-400">${esc(q.responded_by_name)} ${esc(q.responded_at || '')}</p>` : ''}
           </div>
           <span class="badge ${st[1]} shrink-0">${esc(st[0])}</span>
         </div>
@@ -1938,10 +1938,10 @@
     }
     modal(`
       <h3 class="font-bold text-lg mb-1">過去のシフト希望</h3>
-      <p class="text-xs text-gray-500 mb-2">シフト希望の受け付けは終了しました。スタッフの希望は「出勤可能日」で受け付けています。ここでは以前に出された希望を表示します。</p>
-      <p class="text-xs text-gray-500 mb-2">${dayjs(data.from).format('M/D')}〜${dayjs(data.to).format('M/D')}（ボードの表示期間）・返事待ち ${Number(data.pending)}件${data.pending ? '。返事待ちの希望には、採用・見送りの返事ができます（本人のシフト画面に表示されます）。採用したら、枠への割り当てでシフトを登録してください' : ''}</p>
-      <div class="max-h-[60vh] overflow-y-auto divide-y divide-gray-100" id="shift-request-list">
-        ${data.requests.map(row).join('') || '<p class="p-3 text-sm text-gray-400">シフト希望はありません</p>'}
+      <p class="text-xs text-neutral-500 mb-2">シフト希望の受け付けは終了しました。スタッフの希望は「出勤可能日」で受け付けています。ここでは以前に出された希望を表示します。</p>
+      <p class="text-xs text-neutral-500 mb-2">${dayjs(data.from).format('M/D')}〜${dayjs(data.to).format('M/D')}（ボードの表示期間）・返事待ち ${Number(data.pending)}件${data.pending ? '。返事待ちの希望には、採用・見送りの返事ができます（本人のシフト画面に表示されます）。採用したら、枠への割り当てでシフトを登録してください' : ''}</p>
+      <div class="max-h-[60vh] overflow-y-auto divide-y divide-neutral-100" id="shift-request-list">
+        ${data.requests.map(row).join('') || '<p class="p-3 text-sm text-neutral-400">シフト希望はありません</p>'}
       </div>`)
   }
   delegate('openShiftRequests', () => openShiftRequests())
@@ -1961,9 +1961,9 @@
   // 管理者が『希望（仮）』で入れたシフトへの本人の返事（#411）
   function replyMark(a) {
     if (a.status !== 'requested') return ''
-    if (a.staff_reply === 'ok') return '<i class="fas fa-circle-check text-emerald-600 ml-0.5" title="本人: 入れます"></i>'
-    if (a.staff_reply === 'ng') return '<i class="fas fa-circle-xmark text-red-500 ml-0.5" title="本人: 入れません"></i>'
-    return '<i class="fas fa-hourglass-half text-gray-400 ml-0.5" title="本人の返事待ち"></i>'
+    if (a.staff_reply === 'ok') return '<i class="fas fa-circle-check text-success-600 ml-0.5" title="本人: 入れます"></i>'
+    if (a.staff_reply === 'ng') return '<i class="fas fa-circle-xmark text-danger-500 ml-0.5" title="本人: 入れません"></i>'
+    return '<i class="fas fa-hourglass-half text-neutral-400 ml-0.5" title="本人の返事待ち"></i>'
   }
   function replyText(a) {
     if (a.status !== 'requested') return ''
@@ -1980,10 +1980,10 @@
     return roles.map((r, i) => `<div class="grid grid-cols-12 gap-1.5 items-center role-row" data-id="${r.slot_role_id || ''}">
       <input class="inp text-xs col-span-8 rr-name" placeholder="役割（販売・リーダー等）" value="${esc(r.role_name || '')}" list="role-suggest">
       <input class="inp text-xs col-span-3 rr-count" type="number" min="1" max="200" value="${r.headcount || 1}" title="必要人数">
-      <button class="text-gray-400 hover:text-red-500 col-span-1" onclick="this.closest('.role-row').classList.toggle('opacity-40'); this.closest('.role-row').dataset.del = this.closest('.role-row').dataset.del ? '' : '1'" title="削除"><i class="fas fa-xmark"></i></button>
+      <button class="text-neutral-400 hover:text-danger-500 col-span-1" onclick="this.closest('.role-row').classList.toggle('opacity-40'); this.closest('.role-row').dataset.del = this.closest('.role-row').dataset.del ? '' : '1'" title="削除"><i class="fas fa-xmark"></i></button>
       <div class="col-span-6 flex gap-1">${unitSelect('rr-bill-unit', r.bill_unit_type || 'daily')}<input class="inp text-xs flex-1 min-w-0 rr-bill" type="number" min="0" placeholder="請求単価（任意）" value="${r.bill_rate ?? ''}" title="この枠だけ請求単価を変える場合"></div>
       <div class="col-span-6 flex gap-1">${unitSelect('rr-pay-unit', r.pay_unit_type || 'daily')}<input class="inp text-xs flex-1 min-w-0 rr-pay" type="number" min="0" placeholder="支払単価（任意）" value="${r.pay_rate ?? ''}" title="この枠だけ支払単価を変える場合"></div>
-      ${r.rate_role_name && r.rate_role_name !== r.role_name ? `<p class="col-span-12 text-[11px] text-amber-600">単価ルールは「${esc(r.rate_role_name)}」の役割のものを使います</p>` : ''}
+      ${r.rate_role_name && r.rate_role_name !== r.role_name ? `<p class="col-span-12 text-2xs text-warning-600">単価ルールは「${esc(r.rate_role_name)}」の役割のものを使います</p>` : ''}
     </div>`).join('')
   }
   function collectRoles() {
@@ -2028,26 +2028,26 @@
     return `
       <div class="space-y-3">
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <label class="text-sm text-gray-600">案件 *
+          <label class="text-sm text-neutral-600">案件 *
             <select id="slot-project" class="inp" onchange="slotProjectChanged()" required ${s.slot_id ? 'disabled' : ''}>
               <option value="" ${s.project_id ? '' : 'selected'}>選択してください</option>
               ${m.projects.filter(p => p.status === 'active' || String(p.project_id) === String(s.project_id)).map(p => `<option value="${p.project_id}" ${String(p.project_id) === String(s.project_id) ? 'selected' : ''}>${p.engagement_type === 'spot' ? '[スポット] ' : '[常勤] '}${esc(p.project_name)}</option>`).join('')}
             </select></label>
-          <label class="text-sm text-gray-600">開催場所
+          <label class="text-sm text-neutral-600">開催場所
             <select id="slot-site" class="inp" data-orig="${esc(s.site_id || '')}">${siteOptions(m, s.project_id || '', s.site_id)}</select></label>
         </div>
         <input id="slot-location" class="inp text-sm" placeholder="場所の補足（開催場所マスタにない場合はここに入力）" value="${esc(extra)}">
         <div class="grid grid-cols-3 gap-3">
-          <label class="text-sm text-gray-600">開始<input id="slot-start" type="time" class="inp" value="${esc(s.start_time || '10:00')}"></label>
-          <label class="text-sm text-gray-600">終了<input id="slot-end" type="time" class="inp" value="${esc(s.end_time || '19:00')}"></label>
-          <label class="text-sm text-gray-600">休憩（分）<input id="slot-break" type="number" class="inp" value="${s.break_minutes ?? ''}" placeholder="案件の設定"></label>
+          <label class="text-sm text-neutral-600">開始<input id="slot-start" type="time" class="inp" value="${esc(s.start_time || '10:00')}"></label>
+          <label class="text-sm text-neutral-600">終了<input id="slot-end" type="time" class="inp" value="${esc(s.end_time || '19:00')}"></label>
+          <label class="text-sm text-neutral-600">休憩（分）<input id="slot-break" type="number" class="inp" value="${s.break_minutes ?? ''}" placeholder="案件の設定"></label>
         </div>
         <div>
-          <div class="flex items-center justify-between mb-1"><p class="text-sm text-gray-600">役割と必要人数 *</p>
-            <button class="text-xs text-blue-600 hover:underline" onclick="addRoleRow()"><i class="fas fa-plus mr-0.5"></i>役割を追加</button></div>
+          <div class="flex items-center justify-between mb-1"><p class="text-sm text-neutral-600">役割と必要人数 *</p>
+            <button class="text-xs text-primary-600 hover:underline" onclick="addRoleRow()"><i class="fas fa-plus mr-0.5"></i>役割を追加</button></div>
           <div id="slot-roles" class="space-y-1.5">${roleRowsHtml(roles)}</div>
           <datalist id="role-suggest"><option value="販売"><option value="リーダー"><option value="MC"><option value="設営"><option value="サポート"></datalist>
-          <p class="text-[11px] text-gray-400 mt-1">単価を空欄にすると、案件の単価ルール（役割・開催場所・スタッフ別）に従います。単価を入れるときは日額・時給を選んでください</p>
+          <p class="text-2xs text-neutral-400 mt-1">単価を空欄にすると、案件の単価ルール（役割・開催場所・スタッフ別）に従います。単価を入れるときは日額・時給を選んでください</p>
         </div>
         <input id="slot-memo" class="inp text-sm" placeholder="メモ（任意）" value="${esc(s.memo || '')}">
       </div>`
@@ -2065,12 +2065,12 @@
     modal(`
       <h3 class="font-bold text-lg mb-3">${slotId ? '枠を編集' : '枠を作成'}</h3>
       ${slotFormHtml(m, s, roles)}
-      ${slotId ? `<label class="text-sm text-gray-600 block mt-3">日付<input id="slot-date" type="date" class="inp" value="${esc(s.work_date)}"></label>
-        <p class="text-[11px] text-gray-400 mt-1">日付・時間・場所・休憩を変えると、割り当て済みのシフトにも反映し、単価を再計算します（休憩をシフトごとに直したもの、手動で変えた金額はそのまま。勤怠・日報の報告があるシフトと確定済みのシフトは日時を動かしません）</p>
+      ${slotId ? `<label class="text-sm text-neutral-600 block mt-3">日付<input id="slot-date" type="date" class="inp" value="${esc(s.work_date)}"></label>
+        <p class="text-2xs text-neutral-400 mt-1">日付・時間・場所・休憩を変えると、割り当て済みのシフトにも反映し、単価を再計算します（休憩をシフトごとに直したもの、手動で変えた金額はそのまま。勤怠・日報の報告があるシフトと確定済みのシフトは日時を動かしません）</p>
         ${slotAssignedCount(slotId) ? notifyBoxHtml('slot-notify', { note: '日付・時間・場所を変えたときに、割り当て済みの人に変更を知らせます' }) : ''}` :
-        `<div class="mt-3"><p class="text-sm text-gray-600 mb-1">日付 *（複数選択できます）</p>
+        `<div class="mt-3"><p class="text-sm text-neutral-600 mb-1">日付 *（複数選択できます）</p>
           <div class="flex gap-2"><input id="slot-date-input" type="date" class="inp" value="${esc(s.work_date || BS.from)}" onchange="addSlotDate()"><button id="slot-date-add" class="btn btn-outline shrink-0 whitespace-nowrap" onclick="addSlotDate()">日付を追加</button></div>
-          <p class="text-[11px] text-gray-400 mt-1">日付を選ぶと追加されます。同じ内容の枠を選んだ日付すべてに作成します</p>
+          <p class="text-2xs text-neutral-400 mt-1">日付を選ぶと追加されます。同じ内容の枠を選んだ日付すべてに作成します</p>
           <div id="slot-dates" class="flex flex-wrap gap-1 mt-2"></div></div>`}
       <div class="flex gap-2 mt-4">
         ${slotId ? `<button class="btn btn-danger" data-action="deleteSlot" data-id="${slotId}"><i class="fas fa-trash"></i></button>` : ''}
@@ -2100,7 +2100,7 @@
     const el = document.getElementById(id)
     if (el && el.value) return true
     toast('案件を選択してください（「選択してください」のままでは登録できません）')
-    if (el) { el.focus(); el.classList.add('ring-2', 'ring-red-300'); el.addEventListener('change', () => el.classList.remove('ring-2', 'ring-red-300'), { once: true }) }
+    if (el) { el.focus(); el.classList.add('ring-2', 'ring-danger-300'); el.addEventListener('change', () => el.classList.remove('ring-2', 'ring-danger-300'), { once: true }) }
     return false
   }
   window.saveSlot = async function (slotId) {
@@ -2148,13 +2148,13 @@
     if (!s.project_id && BS.projectIds.length === 1) s.project_id = BS.projectIds[0]
     modal(`
       <h3 class="font-bold text-lg mb-1">繰り返し登録</h3>
-      <p class="text-xs text-gray-500 mb-3">例: 毎週土日・10:00〜19:00・販売3名＋リーダー1名・10月〜12月。作成後も、案件詳細の「繰り返し登録」から時間・人数の変更と期間の延長ができます（日ごとの変更は各枠で行えます）</p>
+      <p class="text-xs text-neutral-500 mb-3">例: 毎週土日・10:00〜19:00・販売3名＋リーダー1名・10月〜12月。作成後も、案件詳細の「繰り返し登録」から時間・人数の変更と期間の延長ができます（日ごとの変更は各枠で行えます）</p>
       ${slotFormHtml(m, s, [{ role_name: '販売', headcount: 3 }, { role_name: 'リーダー', headcount: 1 }])}
-      <div class="mt-3"><p class="text-sm text-gray-600 mb-1">曜日 *</p>
-        <div class="flex gap-1">${WD.map((w, i) => `<label class="flex-1 text-center border rounded-lg py-1.5 text-sm cursor-pointer has-[:checked]:bg-blue-600 has-[:checked]:text-white"><input type="checkbox" class="hidden pt-wd" value="${i}" ${[0, 6].includes(i) ? 'checked' : ''}>${w}</label>`).join('')}</div></div>
+      <div class="mt-3"><p class="text-sm text-neutral-600 mb-1">曜日 *</p>
+        <div class="flex gap-1">${WD.map((w, i) => `<label class="flex-1 text-center border rounded-lg py-1.5 text-sm cursor-pointer has-[:checked]:bg-primary-600 has-[:checked]:text-white"><input type="checkbox" class="hidden pt-wd" value="${i}" ${[0, 6].includes(i) ? 'checked' : ''}>${w}</label>`).join('')}</div></div>
       <div class="grid grid-cols-2 gap-3 mt-3">
-        <label class="text-sm text-gray-600">開始日<input id="pt-from" type="date" class="inp" value="${BS.from}"></label>
-        <label class="text-sm text-gray-600">終了日<input id="pt-to" type="date" class="inp" value="${dayjs(BS.from).add(2, 'month').endOf('month').format('YYYY-MM-DD')}"></label>
+        <label class="text-sm text-neutral-600">開始日<input id="pt-from" type="date" class="inp" value="${BS.from}"></label>
+        <label class="text-sm text-neutral-600">終了日<input id="pt-to" type="date" class="inp" value="${dayjs(BS.from).add(2, 'month').endOf('month').format('YYYY-MM-DD')}"></label>
       </div>
       <div class="flex gap-2 mt-4">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" onclick="savePattern()">枠をまとめて作成</button></div>`)
   }
@@ -2197,8 +2197,8 @@
     if (!error && !job.skipped.length) { closeModal(); toast(job.summary(job.counts)); return }
     modal(`
       <h3 class="font-bold text-lg mb-1">${esc(job.title)}</h3>
-      ${error ? `<p class="text-sm text-red-600 mb-2"><i class="fas fa-triangle-exclamation mr-1"></i>途中で止まりました（${esc(error)}）。ここまでの結果を表示しています。「続きから実行」で残りを処理できます（処理済みの分は二重に作りません）</p>` : ''}
-      <p class="text-sm text-gray-700">${esc(job.summary(job.counts))}</p>
+      ${error ? `<p class="text-sm text-danger-600 mb-2"><i class="fas fa-triangle-exclamation mr-1"></i>途中で止まりました（${esc(error)}）。ここまでの結果を表示しています。「続きから実行」で残りを処理できます（処理済みの分は二重に作りません）</p>` : ''}
+      <p class="text-sm text-neutral-700">${esc(job.summary(job.counts))}</p>
       ${skippedTable(job.skipped)}
       ${error ? '<button class="btn btn-primary w-full mt-4" data-action="bulkResume"><i class="fas fa-play"></i>続きから実行</button>' : ''}
       <button class="btn btn-outline w-full mt-2" onclick="closeModal()">閉じる</button>`)
@@ -2213,12 +2213,12 @@
     const byReason = {}
     for (const s of skipped) byReason[s.reason] = (byReason[s.reason] || 0) + 1
     return `<div class="mt-3">
-      <p class="text-sm font-bold text-gray-700 mb-1">スキップ ${skipped.length}件 ${Object.entries(byReason).map(([r, n]) => `<span class="badge ${REASON_BADGE[r] || 'badge-gray'}">${esc(r)} ${n}</span>`).join(' ')}</p>
-      <div class="max-h-72 overflow-y-auto border border-gray-100 rounded-lg"><table class="tbl text-xs"><thead><tr><th>日付</th><th>スタッフ</th><th>理由</th><th>内容</th><th></th></tr></thead><tbody>
+      <p class="text-sm font-bold text-neutral-700 mb-1">スキップ ${skipped.length}件 ${Object.entries(byReason).map(([r, n]) => `<span class="badge ${REASON_BADGE[r] || 'badge-gray'}">${esc(r)} ${n}</span>`).join(' ')}</p>
+      <div class="max-h-72 overflow-y-auto border border-neutral-100 rounded-lg"><table class="tbl text-xs"><thead><tr><th>日付</th><th>スタッフ</th><th>理由</th><th>内容</th><th></th></tr></thead><tbody>
         ${skipped.map(s => `<tr><td class="whitespace-nowrap">${esc(fmtDay(s.date))}</td><td>${esc(s.staff_name || 'ID ' + s.staff_id)}</td>
           <td><span class="badge ${REASON_BADGE[s.reason] || 'badge-gray'}">${esc(s.reason)}</span></td>
           <td>${esc([s.project_name, s.start_time ? s.start_time + '〜' + s.end_time : '', s.detail].filter(Boolean).join(' / '))}</td>
-          <td>${s.slot_role_id ? `<button class="text-blue-600 hover:underline whitespace-nowrap" data-action="bulkSkipCandidates" data-id="${Number(s.slot_role_id)}">候補</button>` : ''}</td></tr>`).join('')}
+          <td>${s.slot_role_id ? `<button class="text-primary-600 hover:underline whitespace-nowrap" data-action="bulkSkipCandidates" data-id="${Number(s.slot_role_id)}">候補</button>` : ''}</td></tr>`).join('')}
       </tbody></table></div></div>`
   }
 
@@ -2230,21 +2230,21 @@
     const preset = BS.projectIds.length === 1 && active.some(p => p.project_id === BS.projectIds[0]) ? BS.projectIds[0] : null
     modal(`
       <h3 class="font-bold text-lg mb-1">常勤の一括登録</h3>
-      <p class="text-xs text-gray-500 mb-3">スタッフ × 曜日 × 期間でシフトをまとめて登録します（退職・NG のスタッフと、同じ時間帯に別のシフトがある日はスキップし、一覧で表示します）</p>
+      <p class="text-xs text-neutral-500 mb-3">スタッフ × 曜日 × 期間でシフトをまとめて登録します（退職・NG のスタッフと、同じ時間帯に別のシフトがある日はスキップし、一覧で表示します）</p>
       <div class="space-y-3">
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <label class="text-sm text-gray-600">案件 *<select id="bk-project" class="inp" required><option value="" ${preset ? '' : 'selected'}>選択してください</option>${active.map(p => `<option value="${p.project_id}" ${p.project_id === preset ? 'selected' : ''}>${p.engagement_type === 'spot' ? '[スポット] ' : '[常勤] '}${esc(p.project_name)}</option>`).join('')}</select></label>
-          <label class="text-sm text-gray-600">役割<input id="bk-role" class="inp" value="販売スタッフ" list="role-suggest"></label>
+          <label class="text-sm text-neutral-600">案件 *<select id="bk-project" class="inp" required><option value="" ${preset ? '' : 'selected'}>選択してください</option>${active.map(p => `<option value="${p.project_id}" ${p.project_id === preset ? 'selected' : ''}>${p.engagement_type === 'spot' ? '[スポット] ' : '[常勤] '}${esc(p.project_name)}</option>`).join('')}</select></label>
+          <label class="text-sm text-neutral-600">役割<input id="bk-role" class="inp" value="販売スタッフ" list="role-suggest"></label>
         </div>
-        <div><p class="text-sm text-gray-600 mb-1">スタッフ *</p>
-          <div class="max-h-40 overflow-y-auto border border-gray-100 rounded-lg p-2 grid grid-cols-2 gap-1">${m.staff.map(s => `<label class="text-xs flex items-center gap-1"><input type="checkbox" class="bk-staff" value="${s.staff_id}">${esc(s.name)}</label>`).join('')}</div></div>
-        <div class="flex gap-1">${WD.map((w, i) => `<label class="flex-1 text-center border rounded-lg py-1.5 text-sm cursor-pointer has-[:checked]:bg-blue-600 has-[:checked]:text-white"><input type="checkbox" class="hidden bk-wd" value="${i}" ${i >= 1 && i <= 5 ? 'checked' : ''}>${w}</label>`).join('')}</div>
+        <div><p class="text-sm text-neutral-600 mb-1">スタッフ *</p>
+          <div class="max-h-40 overflow-y-auto border border-neutral-100 rounded-lg p-2 grid grid-cols-2 gap-1">${m.staff.map(s => `<label class="text-xs flex items-center gap-1"><input type="checkbox" class="bk-staff" value="${s.staff_id}">${esc(s.name)}</label>`).join('')}</div></div>
+        <div class="flex gap-1">${WD.map((w, i) => `<label class="flex-1 text-center border rounded-lg py-1.5 text-sm cursor-pointer has-[:checked]:bg-primary-600 has-[:checked]:text-white"><input type="checkbox" class="hidden bk-wd" value="${i}" ${i >= 1 && i <= 5 ? 'checked' : ''}>${w}</label>`).join('')}</div>
         <div class="grid grid-cols-2 gap-3">
-          <label class="text-sm text-gray-600">開始日<input id="bk-from" type="date" class="inp" value="${BS.from}"></label>
-          <label class="text-sm text-gray-600">終了日<input id="bk-to" type="date" class="inp" value="${dayjs(BS.from).endOf('month').format('YYYY-MM-DD')}"></label>
-          <label class="text-sm text-gray-600">開始<input id="bk-start" type="time" class="inp" value="09:30"></label>
-          <label class="text-sm text-gray-600">終了<input id="bk-end" type="time" class="inp" value="19:00"></label>
-          <label class="text-sm text-gray-600">交通費の実費<input id="bk-fee" type="number" class="inp" placeholder="空欄でスタッフの標準"></label>
+          <label class="text-sm text-neutral-600">開始日<input id="bk-from" type="date" class="inp" value="${BS.from}"></label>
+          <label class="text-sm text-neutral-600">終了日<input id="bk-to" type="date" class="inp" value="${dayjs(BS.from).endOf('month').format('YYYY-MM-DD')}"></label>
+          <label class="text-sm text-neutral-600">開始<input id="bk-start" type="time" class="inp" value="09:30"></label>
+          <label class="text-sm text-neutral-600">終了<input id="bk-end" type="time" class="inp" value="19:00"></label>
+          <label class="text-sm text-neutral-600">交通費の実費<input id="bk-fee" type="number" class="inp" placeholder="空欄でスタッフの標準"></label>
         </div>
         <datalist id="role-suggest"><option value="販売スタッフ"><option value="リーダー"></datalist>
         ${priceBoxHtml('bk', true)}
@@ -2313,22 +2313,22 @@
     if (!r) { el.innerHTML = ''; return }
     const b = r.body
     el.innerHTML = `<span class="font-bold">${fmtDay(b.source_from)}〜${fmtDay(r.srcTo)}</span> → <span class="font-bold">${fmtDay(b.target_from)}〜${fmtDay(r.tgtTo)}</span>
-      ${r.overlap ? '<span class="block text-xs text-red-600 mt-1">コピー元とコピー先の期間が重なっています。コピー先の開始日を後ろにしてください</span>'
-        : r.shift ? `<span class="block text-xs text-amber-600 mt-1"><i class="fas fa-triangle-exclamation mr-1"></i>コピー先の曜日が${r.shift}日ずれます（例: ${fmtDay(b.source_from)} → ${fmtDay(b.target_from)}）</span>` : ''}`
+      ${r.overlap ? '<span class="block text-xs text-danger-600 mt-1">コピー元とコピー先の期間が重なっています。コピー先の開始日を後ろにしてください</span>'
+        : r.shift ? `<span class="block text-xs text-warning-600 mt-1"><i class="fas fa-triangle-exclamation mr-1"></i>コピー先の曜日が${r.shift}日ずれます（例: ${fmtDay(b.source_from)} → ${fmtDay(b.target_from)}）</span>` : ''}`
   }
   window.openCopyModal = async function () {
     const m = await loadMaster()
     const weeks = Math.max(1, Math.floor(BS.days / 7))
     modal(`
       <h3 class="font-bold text-lg mb-1">枠とシフトをコピー</h3>
-      <p class="text-xs text-gray-500 mb-3">対象: ${esc(copyScopeText(m))}（シフトボードの絞り込みと同じ条件）</p>
+      <p class="text-xs text-neutral-500 mb-3">対象: ${esc(copyScopeText(m))}（シフトボードの絞り込みと同じ条件）</p>
       <div class="grid grid-cols-2 gap-3">
-        <label class="text-sm text-gray-600">コピーする期間<select id="cp-days" class="inp">${Array.from({ length: weeks }, (_, i) => `<option value="${(i + 1) * 7}" ${i + 1 === weeks ? 'selected' : ''}>${i + 1}週間（${(i + 1) * 7}日）</option>`).join('')}</select></label>
-        <label class="text-sm text-gray-600">コピー先の開始日<input id="cp-to" type="date" class="inp" value="${dayjs(BS.from).add(weeks * 7, 'day').format('YYYY-MM-DD')}"></label>
+        <label class="text-sm text-neutral-600">コピーする期間<select id="cp-days" class="inp">${Array.from({ length: weeks }, (_, i) => `<option value="${(i + 1) * 7}" ${i + 1 === weeks ? 'selected' : ''}>${i + 1}週間（${(i + 1) * 7}日）</option>`).join('')}</select></label>
+        <label class="text-sm text-neutral-600">コピー先の開始日<input id="cp-to" type="date" class="inp" value="${dayjs(BS.from).add(weeks * 7, 'day').format('YYYY-MM-DD')}"></label>
       </div>
-      <p id="cp-range" class="text-sm text-gray-700 mt-2"></p>
+      <p id="cp-range" class="text-sm text-neutral-700 mt-2"></p>
       <label class="flex items-center gap-2 text-sm mt-3"><input type="checkbox" id="cp-assign" checked>割り当て（確定・代打）もコピーする</label>
-      <p class="text-[11px] text-gray-400 mt-1">退職・NG のスタッフと、同じ時間帯に別のシフトがあるスタッフはスキップします。希望・欠勤はコピーしません。コピー済みの枠・シフトは二重に作りません</p>
+      <p class="text-2xs text-neutral-400 mt-1">退職・NG のスタッフと、同じ時間帯に別のシフトがあるスタッフはスキップします。希望・欠勤はコピーしません。コピー済みの枠・シフトは二重に作りません</p>
       <div id="cp-preview" class="mt-3"></div>
       ${notifyBoxHtml('cp-notify', { note: '割り当てもコピーしたときに、コピーしたシフトを本人に知らせます' })}
       <button id="cp-check" class="btn btn-outline w-full mt-3" data-action="copyPreview">コピーする内容を確認</button>
@@ -2347,9 +2347,9 @@
       const { data } = await axios.post('/api/admin/shifts/copy-week', { ...r.body, dry_run: true })
       const names = data.projects.map(p => (p.client_name ? p.client_name + ' / ' : '') + p.project_name)
       const empty = !data.slots && !data.slots_reused && !data.shifts
-      document.getElementById('cp-preview').innerHTML = `<div class="rounded-lg bg-gray-50 p-3 text-sm">
-        ${empty && !data.already && !data.skipped.length ? '<p class="text-gray-500">コピーする枠・シフトはありません</p>' : `
-        <p class="text-xs text-gray-500 mb-1">対象の案件 ${names.length}件: ${esc(names.slice(0, 8).join('、'))}${names.length > 8 ? ` ほか${names.length - 8}件` : ''}</p>
+      document.getElementById('cp-preview').innerHTML = `<div class="rounded-lg bg-neutral-50 p-3 text-sm">
+        ${empty && !data.already && !data.skipped.length ? '<p class="text-neutral-500">コピーする枠・シフトはありません</p>' : `
+        <p class="text-xs text-neutral-500 mb-1">対象の案件 ${names.length}件: ${esc(names.slice(0, 8).join('、'))}${names.length > 8 ? ` ほか${names.length - 8}件` : ''}</p>
         <p>枠: 作成 <b>${data.slots}</b>件${data.slots_reused ? `・コピー先の既存の枠を使う ${data.slots_reused}件` : ''}</p>
         <p>シフト: 作成 <b>${data.shifts}</b>件${data.already ? `・コピー済み ${data.already}件（作りません）` : ''}</p>`}
         ${skippedTable(data.skipped)}</div>`
@@ -2384,7 +2384,7 @@
     return parts.join(' / ')
   }
   // 単価ルールの備考（経験者加算など。同じ条件のルールを見分けるため、一覧にも出す #388）
-  const ruleMemo = (r) => (r.memo ? `<span class="text-gray-400 ml-1">（${esc(r.memo)}）</span>` : '')
+  const ruleMemo = (r) => (r.memo ? `<span class="text-neutral-400 ml-1">（${esc(r.memo)}）</span>` : '')
   // 一覧に出した単価ルール（編集のモーダルで今の値を入れるため）
   const RULES = new Map()
   function ruleScope(r) {
@@ -2401,15 +2401,15 @@
     const billUnit = UNIT_LABEL[p.unit_price_type === 'hourly' ? 'hourly' : 'daily'] || ''
     return `<section class="card p-4" id="project-base-price">
       <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
-        <h3 class="text-sm font-bold text-gray-700"><i class="fas fa-yen-sign text-blue-500 mr-1"></i>基本単価<span class="text-[11px] font-normal text-gray-400 ml-1">（管理画面のみ）</span></h3>
+        <h3 class="text-sm font-bold text-neutral-700"><i class="fas fa-yen-sign text-primary-500 mr-1"></i>基本単価<span class="text-2xs font-normal text-neutral-400 ml-1">（管理画面のみ）</span></h3>
         <button type="button" class="btn btn-outline text-xs" data-action="projectOpenPricing" data-id="${Number(p.project_id)}"><i class="fas fa-scale-balanced"></i>精算画面の「単価の設定」で変更</button>
       </div>
       <dl class="grid grid-cols-1 sm:grid-cols-3 gap-2 text-sm">
-        <div class="rounded-lg bg-gray-50 p-2"><dt class="text-[11px] text-gray-500">請求</dt><dd class="font-bold">${esc(billUnit)} ${yen(p.unit_price)}</dd></div>
-        <div class="rounded-lg bg-gray-50 p-2"><dt class="text-[11px] text-gray-500">支払</dt><dd class="font-bold">${p.pay_rate == null ? '<span class="text-amber-600">未設定</span>' : `${esc(payUnit)} ${yen(p.pay_rate)}`}</dd></div>
-        <div class="rounded-lg bg-gray-50 p-2"><dt class="text-[11px] text-gray-500">交通費</dt><dd class="text-xs">${transportText(p)}</dd></div>
+        <div class="rounded-lg bg-neutral-50 p-2"><dt class="text-2xs text-neutral-500">請求</dt><dd class="font-bold">${esc(billUnit)} ${yen(p.unit_price)}</dd></div>
+        <div class="rounded-lg bg-neutral-50 p-2"><dt class="text-2xs text-neutral-500">支払</dt><dd class="font-bold">${p.pay_rate == null ? '<span class="text-warning-600">未設定</span>' : `${esc(payUnit)} ${yen(p.pay_rate)}`}</dd></div>
+        <div class="rounded-lg bg-neutral-50 p-2"><dt class="text-2xs text-neutral-500">交通費</dt><dd class="text-xs">${transportText(p)}</dd></div>
       </dl>
-      <p class="text-[11px] text-gray-400 mt-2">案件の標準の単価です${p.price_valid_from ? `（${esc(p.price_valid_from)}〜）` : ''}。開催場所・役割・スタッフ別の単価やインセンティブは、精算画面の「単価の設定」で決めます</p>
+      <p class="text-2xs text-neutral-400 mt-2">案件の標準の単価です${p.price_valid_from ? `（${esc(p.price_valid_from)}〜）` : ''}。開催場所・役割・スタッフ別の単価やインセンティブは、精算画面の「単価の設定」で決めます</p>
     </section>`
   }
   delegate('projectOpenPricing', el => { if (window.openSettlePricing) openSettlePricing(Number(el.dataset.id)) })
@@ -2418,19 +2418,19 @@
   window.renderProjectPatternsPanel = async function (p) {
     const host = document.getElementById('project-patterns-panel'); if (!host) return
     let pt
-    try { pt = (await axios.get('/api/admin/slot-patterns?project_id=' + p.project_id)).data } catch (e) { host.innerHTML = `<p class="text-xs text-red-600">${esc(errMsg(e, '繰り返し登録を読み込めませんでした'))}</p>`; return }
+    try { pt = (await axios.get('/api/admin/slot-patterns?project_id=' + p.project_id)).data } catch (e) { host.innerHTML = `<p class="text-xs text-danger-600">${esc(errMsg(e, '繰り返し登録を読み込めませんでした'))}</p>`; return }
     host.innerHTML = `
       <div class="grid lg:grid-cols-2 gap-4">
         <section class="card p-4 lg:col-span-2" id="project-report-settings"></section>
         <section class="card p-4 lg:col-span-2" id="project-patterns">
           <div class="flex items-center justify-between mb-2">
-            <h3 class="text-sm font-bold text-gray-700"><i class="fas fa-repeat text-blue-500 mr-1"></i>繰り返し登録</h3>
+            <h3 class="text-sm font-bold text-neutral-700"><i class="fas fa-repeat text-primary-500 mr-1"></i>繰り返し登録</h3>
             <button class="btn btn-outline text-xs" data-action="projectPatternAdd" data-id="${Number(p.project_id)}"><i class="fas fa-plus"></i>追加</button>
           </div>
           <div class="overflow-x-auto"><table class="tbl"><thead><tr><th>曜日</th><th>期間</th><th>時間</th><th>開催場所</th><th>役割</th><th>枠</th><th></th></tr></thead><tbody>
             ${pt.patterns.map(x => `<tr><td>${x.weekdays.split(',').map(i => WD[i]).join('・')}</td><td class="whitespace-nowrap">${esc(x.date_from)}〜${esc(x.date_to)}${patternEndBadge(x)}</td><td>${esc(x.start_time)}〜${esc(x.end_time)}</td>
-              <td>${esc(x.site_name || x.location || '-')}</td><td>${x.roles.map(r => esc(r.role_name) + Number(r.headcount) + '名').join('・')}</td><td class="whitespace-nowrap">${Number(x.slot_count)}件<span class="block text-[11px] text-gray-400">今日以降 ${Number(x.future_slot_count || 0)}件</span></td>
-              <td class="text-right whitespace-nowrap"><button class="text-xs text-blue-600 hover:underline mr-2" data-action="editPattern" data-id="${Number(x.pattern_id)}">編集・延長</button><button class="text-xs text-red-600 hover:underline" data-action="deletePattern" data-id="${Number(x.pattern_id)}">削除</button></td></tr>`).join('') || '<tr><td colspan="7" class="text-center text-gray-400">繰り返し登録はありません</td></tr>'}
+              <td>${esc(x.site_name || x.location || '-')}</td><td>${x.roles.map(r => esc(r.role_name) + Number(r.headcount) + '名').join('・')}</td><td class="whitespace-nowrap">${Number(x.slot_count)}件<span class="block text-2xs text-neutral-400">今日以降 ${Number(x.future_slot_count || 0)}件</span></td>
+              <td class="text-right whitespace-nowrap"><button class="text-xs text-primary-600 hover:underline mr-2" data-action="editPattern" data-id="${Number(x.pattern_id)}">編集・延長</button><button class="text-xs text-danger-600 hover:underline" data-action="deletePattern" data-id="${Number(x.pattern_id)}">削除</button></td></tr>`).join('') || '<tr><td colspan="7" class="text-center text-neutral-400">繰り返し登録はありません</td></tr>'}
           </tbody></table></div>
         </section>
       </div>`
@@ -2445,8 +2445,8 @@
   window.renderSettlePricingPanel = async function (pid) {
     const host = document.getElementById('settle-pricing-panel'); if (!host) return
     host.dataset.pid = String(Number(pid) || '')
-    if (!pid) { host.innerHTML = '<p class="text-sm text-gray-400 py-6 text-center">案件を選ぶと、その案件の単価の設定が出ます</p>'; return }
-    host.innerHTML = '<p class="text-sm text-gray-400 py-6 text-center"><i class="fas fa-spinner fa-spin mr-1"></i>読み込み中…</p>'
+    if (!pid) { host.innerHTML = '<p class="text-sm text-neutral-400 py-6 text-center">案件を選ぶと、その案件の単価の設定が出ます</p>'; return }
+    host.innerHTML = '<p class="text-sm text-neutral-400 py-6 text-center"><i class="fas fa-spinner fa-spin mr-1"></i>読み込み中…</p>'
     let m, rr, ph
     try {
       m = await loadMaster()
@@ -2454,24 +2454,24 @@
       if (!m.projects.some(x => Number(x.project_id) === Number(pid))) { invalidateMaster(); m = await loadMaster() }
       ;[{ data: rr }, ph] = await Promise.all([axios.get('/api/admin/rate-rules?project_id=' + Number(pid)),
         axios.get(`/api/admin/projects/${Number(pid)}/price-history`).then(r => r.data).catch(() => null)])
-    } catch (e) { host.innerHTML = `<p class="text-sm text-red-600">${esc(errMsg(e, '単価の設定を読み込めませんでした'))}</p>`; return }
+    } catch (e) { host.innerHTML = `<p class="text-sm text-danger-600">${esc(errMsg(e, '単価の設定を読み込めませんでした'))}</p>`; return }
     // 別の案件に切り替えた後に古い応答が届いたら描かない
     if (Number(host.dataset.pid || 0) !== Number(pid)) return
     const p = m.projects.find(x => Number(x.project_id) === Number(pid))
-    if (!p) { host.innerHTML = '<p class="text-sm text-red-600">案件が見つかりません</p>'; return }
+    if (!p) { host.innerHTML = '<p class="text-sm text-danger-600">案件が見つかりません</p>'; return }
     const opt = (map, v) => Object.entries(map).map(([k, l]) => `<option value="${k}" ${v === k ? 'selected' : ''}>${l}</option>`).join('')
     const eng = p.engagement_type || 'regular'
     const id = Number(p.project_id), cid = Number(p.client_id) || ''
     host.innerHTML = `
       <div class="flex items-center gap-2 mb-3 flex-wrap text-sm">
-        <span class="font-bold text-gray-800">${esc(p.project_name)}</span>${p.client_name ? `<span class="text-gray-500">${esc(p.client_name)}</span>` : ''}
+        <span class="font-bold text-neutral-800">${esc(p.project_name)}</span>${p.client_name ? `<span class="text-neutral-500">${esc(p.client_name)}</span>` : ''}
         ${p.status && p.status !== 'active' ? '<span class="badge badge-gray">終了</span>' : ''}
-        <a class="text-xs text-blue-600 hover:underline ml-auto" href="#projects/${id}">案件詳細を開く</a>
-        <a class="text-xs text-blue-600 hover:underline" href="#shifts" data-action="pricingOpenBoard" data-id="${id}">シフトボードで開く</a>
+        <a class="text-xs text-primary-600 hover:underline ml-auto" href="#projects/${id}">案件詳細を開く</a>
+        <a class="text-xs text-primary-600 hover:underline" href="#shifts" data-action="pricingOpenBoard" data-id="${id}">シフトボードで開く</a>
       </div>
       <div class="grid lg:grid-cols-2 gap-4">
         <section class="card p-4" id="project-pricing">
-          <h3 class="text-sm font-bold text-gray-700 mb-3"><i class="fas fa-yen-sign text-blue-500 mr-1"></i>区分・標準単価<span class="text-[11px] font-normal text-gray-400 ml-1">（管理画面のみ）</span></h3>
+          <h3 class="text-sm font-bold text-neutral-700 mb-3"><i class="fas fa-yen-sign text-primary-500 mr-1"></i>区分・標準単価<span class="text-2xs font-normal text-neutral-400 ml-1">（管理画面のみ）</span></h3>
           <div class="grid grid-cols-2 gap-2 text-xs">
             <label class="col-span-2">区分<select id="pp-eng" class="inp text-sm"><option value="regular" ${eng === 'regular' ? 'selected' : ''}>常勤案件</option><option value="spot" ${eng === 'spot' ? 'selected' : ''}>スポット案件（イベント・週末のみ等）</option></select></label>
             <label>請求の単位<select id="pp-bill-unit" class="inp text-sm">${opt(UNIT_LABEL, p.unit_price_type === 'hourly' ? 'hourly' : 'daily')}</select></label>
@@ -2483,32 +2483,32 @@
             <label>交通費の支払<select id="pp-pt" class="inp text-sm">${opt(PT_LABEL, p.pay_transport_type || 'actual')}</select></label>
             <label>上限 / 定額の金額<input id="pp-pt-amt" type="number" min="0" class="inp text-sm" value="${Number(p.pay_transport_amount || 0)}"></label>
             <label class="col-span-2">単価を変えるときの適用開始日<input id="pp-valid-from" type="date" class="inp text-sm" value="">
-              <span class="block text-[11px] text-gray-400">入れると、その前日までの稼働日は今の単価のまま計算します。空欄なら今の単価${p.price_valid_from ? `（${esc(p.price_valid_from)}〜）` : ''}を直します</span></label>
+              <span class="block text-2xs text-neutral-400">入れると、その前日までの稼働日は今の単価のまま計算します。空欄なら今の単価${p.price_valid_from ? `（${esc(p.price_valid_from)}〜）` : ''}を直します</span></label>
             <label>休憩（時給計算用・分）<input id="pp-break" type="number" min="0" max="600" class="inp text-sm" value="${Number(p.default_break_minutes ?? 60)}"></label>
             <label>時給の時間の数え方<select id="pp-hours-basis" class="inp text-sm">${opt({ clipped: '実働（予定の範囲内）', actual: '実働どおり', scheduled: '予定どおり' }, p.hours_basis || 'clipped')}</select></label>
             <label>時刻の丸め<select id="pp-round" class="inp text-sm">${opt({ 0: '丸めない', 5: '5分', 10: '10分', 15: '15分', 30: '30分' }, String(p.time_round_minutes || 0))}</select></label>
             <label>支払の丸め<select id="pp-pay-round" class="inp text-sm">${opt({ none: '支払は丸めない（1分単位）', same: '支払も同じく丸める' }, p.pay_time_round === 'same' ? 'same' : 'none')}</select></label>
           </div>
-          <p class="text-[11px] text-gray-400 mt-1">時給は入店・退店の実績から計算します。「予定の範囲内」は早く来た・遅く残った分を含めません。丸めは開始を切り上げ、終了を切り捨てます</p>
-          ${p.pay_time_round === 'same' && Number(p.time_round_minutes || 0) > 0 ? '<p class="text-[11px] text-amber-600 mt-1"><i class="fas fa-triangle-exclamation mr-1"></i>支払も丸めています。自社給与・日雇い給与のスタッフの労働時間を日ごとに切り捨てると、賃金の未払いになるおそれがあります（給与は1分単位で計算してください）</p>' : ''}
+          <p class="text-2xs text-neutral-400 mt-1">時給は入店・退店の実績から計算します。「予定の範囲内」は早く来た・遅く残った分を含めません。丸めは開始を切り上げ、終了を切り捨てます</p>
+          ${p.pay_time_round === 'same' && Number(p.time_round_minutes || 0) > 0 ? '<p class="text-2xs text-warning-600 mt-1"><i class="fas fa-triangle-exclamation mr-1"></i>支払も丸めています。自社給与・日雇い給与のスタッフの労働時間を日ごとに切り捨てると、賃金の未払いになるおそれがあります（給与は1分単位で計算してください）</p>' : ''}
           ${priceHistoryHtml(ph)}
           <button class="btn btn-primary w-full mt-3 text-sm" data-action="pricingSave" data-id="${id}">保存する</button>
-          <p class="text-[11px] text-gray-400 mt-2">保存しても、登録済みのシフトの金額は変わりません。変更を反映するには「単価ルールを再適用」を使ってください</p>
+          <p class="text-2xs text-neutral-400 mt-2">保存しても、登録済みのシフトの金額は変わりません。変更を反映するには「単価ルールを再適用」を使ってください</p>
           <button class="btn btn-outline w-full mt-2 text-xs" data-action="pricingReprice" data-id="${id}"><i class="fas fa-rotate"></i>今後のシフトに単価ルールを再適用</button>
         </section>
 
         <section class="card p-4" id="project-rate-rules">
           <div class="flex items-center justify-between mb-2">
-            <h3 class="text-sm font-bold text-gray-700"><i class="fas fa-list-check text-blue-500 mr-1"></i>単価ルール（開催場所・役割・スタッフ別）</h3>
+            <h3 class="text-sm font-bold text-neutral-700"><i class="fas fa-list-check text-primary-500 mr-1"></i>単価ルール（開催場所・役割・スタッフ別）</h3>
             <button class="btn btn-outline text-xs" data-action="ruleAdd" data-pid="${id}" data-cid="${cid}"><i class="fas fa-plus"></i>追加</button>
           </div>
-          <p class="text-[11px] text-gray-400 mb-2">人によって単価を変えるときはスタッフを選び、インセンティブ（加算額）・備考も入れられます。優先順: スタッフ ＞ 役割 ＞ 開催場所 ＞ 案件の標準。項目ごとに最も具体的なルールを使います。クライアントの全案件に共通のルールは、クライアント詳細の「単価ルール（クライアント共通）」で設定します（同じ条件なら案件のルールが優先）</p>
+          <p class="text-2xs text-neutral-400 mb-2">人によって単価を変えるときはスタッフを選び、インセンティブ（加算額）・備考も入れられます。優先順: スタッフ ＞ 役割 ＞ 開催場所 ＞ 案件の標準。項目ごとに最も具体的なルールを使います。クライアントの全案件に共通のルールは、クライアント詳細の「単価ルール（クライアント共通）」で設定します（同じ条件なら案件のルールが優先）</p>
           <div class="space-y-1.5 max-h-96 overflow-y-auto">
-            ${rr.rules.map(r => `<div class="flex items-start gap-2 p-2 rounded-lg bg-gray-50 text-xs">
-              <div class="flex-1 min-w-0"><p class="font-bold">${ruleScope(r)}</p><p class="text-gray-600">${ruleSummary(r)}${ruleMemo(r)}</p></div>
-              <button class="text-blue-600 hover:underline whitespace-nowrap" data-action="editRule" data-id="${Number(r.rule_id)}" data-pid="${id}" data-cid="${cid}">編集</button>
-              <button class="text-blue-600 hover:underline whitespace-nowrap" data-action="ruleSetEnd" data-id="${Number(r.rule_id)}" data-to="${esc(r.valid_to || '')}" data-pid="${id}" title="単価の改定: 旧ルールに終了日を付けて残します">終了日</button>
-              <button class="text-gray-400 hover:text-red-500" data-action="ruleDelete" data-id="${Number(r.rule_id)}" data-pid="${id}" title="削除"><i class="fas fa-trash"></i></button></div>`).join('') || '<p class="text-xs text-gray-400">ルールはありません（案件の標準単価を使います）</p>'}
+            ${rr.rules.map(r => `<div class="flex items-start gap-2 p-2 rounded-lg bg-neutral-50 text-xs">
+              <div class="flex-1 min-w-0"><p class="font-bold">${ruleScope(r)}</p><p class="text-neutral-600">${ruleSummary(r)}${ruleMemo(r)}</p></div>
+              <button class="text-primary-600 hover:underline whitespace-nowrap" data-action="editRule" data-id="${Number(r.rule_id)}" data-pid="${id}" data-cid="${cid}">編集</button>
+              <button class="text-primary-600 hover:underline whitespace-nowrap" data-action="ruleSetEnd" data-id="${Number(r.rule_id)}" data-to="${esc(r.valid_to || '')}" data-pid="${id}" title="単価の改定: 旧ルールに終了日を付けて残します">終了日</button>
+              <button class="text-neutral-400 hover:text-danger-500" data-action="ruleDelete" data-id="${Number(r.rule_id)}" data-pid="${id}" title="削除"><i class="fas fa-trash"></i></button></div>`).join('') || '<p class="text-xs text-neutral-400">ルールはありません（案件の標準単価を使います）</p>'}
           </div>
         </section>
       </div>`
@@ -2529,8 +2529,8 @@
   const unitShort = (u) => (u === 'hourly' ? '/時' : '/日')
   function priceHistoryHtml(ph) {
     if (!ph || (!ph.price_valid_from && !(ph.history || []).length)) return ''
-    return `<div class="mt-2 text-[11px] text-gray-500 bg-gray-50 rounded p-2">
-      <p class="font-bold text-gray-600">標準単価の適用期間</p>
+    return `<div class="mt-2 text-2xs text-neutral-500 bg-neutral-50 rounded p-2">
+      <p class="font-bold text-neutral-600">標準単価の適用期間</p>
       ${ph.price_valid_from ? `<p>今の単価: ${esc(ph.price_valid_from)}〜</p>` : ''}
       ${(ph.history || []).map(h => `<p>${h.valid_from ? esc(h.valid_from) : ''}〜${esc(h.valid_to)}: 請求 ${yen(h.unit_price)}${unitShort(h.unit_price_type)} / 支払 ${h.pay_rate == null ? '未設定' : yen(h.pay_rate) + unitShort(h.pay_unit_type)}</p>`).join('')}
     </div>`
@@ -2554,7 +2554,7 @@
     window.__repriceCtx = { pid: pid || null, staffId: staffId || null, clientId: clientId || null }
     modal(`
       <h3 class="font-bold text-lg mb-1">単価ルールの再適用</h3>
-      <p class="text-xs text-gray-500 mb-3">期間内のシフトに、今の単価ルールと案件の標準単価を当て直します（金額を手動で変更したシフト・確定済みのシフトは除きます）。単価ルールの適用期間は、シフトの稼働日で選びます</p>
+      <p class="text-xs text-neutral-500 mb-3">期間内のシフトに、今の単価ルールと案件の標準単価を当て直します（金額を手動で変更したシフト・確定済みのシフトは除きます）。単価ルールの適用期間は、シフトの稼働日で選びます</p>
       <div class="grid grid-cols-2 gap-2 text-sm">
         <label>開始日<input id="rp-from" type="date" class="inp" value="${dayjs().startOf('month').format('YYYY-MM-DD')}"></label>
         <label>終了日<input id="rp-to" type="date" class="inp" value="${dayjs().add(1, 'year').format('YYYY-MM-DD')}"></label>
@@ -2574,16 +2574,16 @@
     try {
       const { data } = await axios.post('/api/admin/shifts/reprice', { ...body, dry_run: true })
       window.__repriceBody = body
-      if (!data.count) { box.innerHTML = '<p class="text-sm text-gray-500">対象のシフトはありません</p>'; return }
+      if (!data.count) { box.innerHTML = '<p class="text-sm text-neutral-500">対象のシフトはありません</p>'; return }
       box.innerHTML = `
         <p class="text-sm">対象 ${data.count}件のうち、金額・支払先が変わるのは <b>${data.changed}件</b>${data.truncated ? `（先頭の${data.checked}件で確認しました）` : ''}</p>
         <p class="text-sm">請求 <b>${signedYen(data.bill_diff)}</b>・支払 <b>${signedYen(data.pay_diff)}</b>${data.pay_set_changed ? `・支払単価の設定が変わる ${data.pay_set_changed}件` : ''}${data.payee_changed ? `・支払先が変わる ${data.payee_changed}件` : ''}</p>
-        ${data.changes.length ? `<div class="max-h-72 overflow-y-auto border border-gray-100 rounded-lg mt-2"><table class="tbl text-xs"><thead><tr><th>日付</th><th>スタッフ</th><th>案件</th><th>請求</th><th>支払</th><th>支払先</th></tr></thead><tbody>
+        ${data.changes.length ? `<div class="max-h-72 overflow-y-auto border border-neutral-100 rounded-lg mt-2"><table class="tbl text-xs"><thead><tr><th>日付</th><th>スタッフ</th><th>案件</th><th>請求</th><th>支払</th><th>支払先</th></tr></thead><tbody>
           ${data.changes.map(x => `<tr><td class="whitespace-nowrap">${esc(fmtDay(x.work_date))}</td><td>${esc(x.staff_name)}</td><td>${esc(x.project_name)}</td>
             <td class="whitespace-nowrap">${yen(x.bill_before)} → <b>${yen(x.bill_after)}</b></td>
             <td class="whitespace-nowrap">${x.pay_before == null ? '未設定' : yen(x.pay_before)} → <b>${x.pay_after == null ? '未設定' : yen(x.pay_after)}</b></td>
             <td class="whitespace-nowrap">${x.payee_changed ? `${esc(PAYEE_SHORT[x.payee_before] || x.payee_before || '-')} → <b>${esc(PAYEE_SHORT[x.payee_after] || x.payee_after || '-')}</b>` : ''}</td></tr>`).join('')}
-        </tbody></table></div>${data.changed > data.changes.length ? `<p class="text-[11px] text-gray-400 mt-1">先頭の${data.changes.length}件を表示しています</p>` : ''}` : ''}
+        </tbody></table></div>${data.changed > data.changes.length ? `<p class="text-2xs text-neutral-400 mt-1">先頭の${data.changes.length}件を表示しています</p>` : ''}` : ''}
         <button class="btn btn-primary w-full mt-3" data-action="repriceRun"><i class="fas fa-rotate"></i>${data.count}件に再適用する</button>`
     } catch (e) { box.innerHTML = ''; toast(errMsg(e)) }
   }))
@@ -2606,7 +2606,7 @@
     return roles.map(r => `<div class="grid grid-cols-12 gap-1.5 items-center pe-role" data-orig="${r.orig ? esc(r.role_name) : ''}">
       <input class="inp text-xs col-span-6 pe-name" value="${esc(r.role_name || '')}" ${r.orig ? 'readonly title="役割名の変更は枠の編集で行います"' : 'placeholder="役割（追加）" list="role-suggest"'}>
       <input class="inp text-xs col-span-4 pe-count" type="number" min="1" max="200" value="${Number(r.headcount) || 1}" title="必要人数">
-      <label class="col-span-2 text-[11px] text-gray-500 flex items-center gap-1"><input type="checkbox" class="pe-del">外す</label>
+      <label class="col-span-2 text-2xs text-neutral-500 flex items-center gap-1"><input type="checkbox" class="pe-del">外す</label>
     </div>`).join('')
   }
   function openPatternEdit(id) {
@@ -2614,22 +2614,22 @@
     const today = dayjs().format('YYYY-MM-DD')
     modal(`
       <h3 class="font-bold text-lg mb-1">繰り返し登録の編集・延長</h3>
-      <p class="text-xs text-gray-500 mb-3">${esc(x.weekdays.split(',').map(i => WD[i]).join('・'))}・${esc(x.date_from)}〜${esc(x.date_to)}・${esc(x.site_name || x.location || '')}。
+      <p class="text-xs text-neutral-500 mb-3">${esc(x.weekdays.split(',').map(i => WD[i]).join('・'))}・${esc(x.date_from)}〜${esc(x.date_to)}・${esc(x.site_name || x.location || '')}。
         変えた項目だけを、反映を始める日以降のこの登録の枠に反映します（勤怠・日報の報告があるシフト、実績が確定済みのシフトがある枠は変えません。枠ごと・シフトごとに直した時刻・休憩はそのまま残します）</p>
       <div class="space-y-3">
         <div class="grid grid-cols-3 gap-3">
-          <label class="text-sm text-gray-600">開始<input id="pe-start" type="time" class="inp" value="${esc(x.start_time)}"></label>
-          <label class="text-sm text-gray-600">終了<input id="pe-end" type="time" class="inp" value="${esc(x.end_time)}"></label>
-          <label class="text-sm text-gray-600">休憩（分）<input id="pe-break" type="number" min="0" class="inp" value="${x.break_minutes ?? ''}" placeholder="案件の設定"></label>
+          <label class="text-sm text-neutral-600">開始<input id="pe-start" type="time" class="inp" value="${esc(x.start_time)}"></label>
+          <label class="text-sm text-neutral-600">終了<input id="pe-end" type="time" class="inp" value="${esc(x.end_time)}"></label>
+          <label class="text-sm text-neutral-600">休憩（分）<input id="pe-break" type="number" min="0" class="inp" value="${x.break_minutes ?? ''}" placeholder="案件の設定"></label>
         </div>
-        <div><div class="flex items-center justify-between mb-1"><p class="text-sm text-gray-600">役割と必要人数</p>
-          <button class="text-xs text-blue-600 hover:underline" data-action="patternAddRole"><i class="fas fa-plus mr-0.5"></i>役割を追加</button></div>
+        <div><div class="flex items-center justify-between mb-1"><p class="text-sm text-neutral-600">役割と必要人数</p>
+          <button class="text-xs text-primary-600 hover:underline" data-action="patternAddRole"><i class="fas fa-plus mr-0.5"></i>役割を追加</button></div>
           <div id="pe-roles" class="space-y-1.5">${patternRoleRows(x.roles.map(r => ({ ...r, orig: true })))}</div>
           <datalist id="role-suggest"><option value="販売"><option value="リーダー"><option value="MC"><option value="設営"><option value="サポート"></datalist>
-          <p class="text-[11px] text-gray-400 mt-1">割り当て・未対応の応募がある枠の役割は外しません</p></div>
+          <p class="text-2xs text-neutral-400 mt-1">割り当て・未対応の応募がある枠の役割は外しません</p></div>
         <div class="grid grid-cols-2 gap-3">
-          <label class="text-sm text-gray-600">反映を始める日<input id="pe-from" type="date" class="inp" min="${today}" value="${esc(x.date_from > today ? x.date_from : today)}"></label>
-          <label class="text-sm text-gray-600">終了日（延ばすと枠を追加）<input id="pe-to" type="date" class="inp" min="${esc(x.date_to)}" value="${esc(x.date_to)}"></label>
+          <label class="text-sm text-neutral-600">反映を始める日<input id="pe-from" type="date" class="inp" min="${today}" value="${esc(x.date_from > today ? x.date_from : today)}"></label>
+          <label class="text-sm text-neutral-600">終了日（延ばすと枠を追加）<input id="pe-to" type="date" class="inp" min="${esc(x.date_to)}" value="${esc(x.date_to)}"></label>
         </div>
         <div id="pe-preview"></div>
         <button class="btn btn-outline w-full" data-action="patternPreview" data-id="${Number(id)}">反映する内容を確認</button>
@@ -2669,8 +2669,8 @@
     // warnings は時間の重なりと必要人数の不足（headcount_warnings）の両方を含む（#456）
     const hc = d.headcount_warnings || []
     const overlap = d.warnings.filter(w => !hc.includes(w))
-    const warnBlock = (title, list) => list.length ? `<div class="text-xs text-red-600 mt-2"><p class="font-bold"><i class="fas fa-triangle-exclamation mr-1"></i>${esc(title)}</p>${list.slice(0, 10).map(w => `<p>${esc(w)}</p>`).join('')}${list.length > 10 ? `<p>ほか${list.length - 10}件</p>` : ''}</div>` : ''
-    document.getElementById('pe-preview').innerHTML = `<div class="rounded-lg bg-gray-50 p-3 text-sm">
+    const warnBlock = (title, list) => list.length ? `<div class="text-xs text-danger-600 mt-2"><p class="font-bold"><i class="fas fa-triangle-exclamation mr-1"></i>${esc(title)}</p>${list.slice(0, 10).map(w => `<p>${esc(w)}</p>`).join('')}${list.length > 10 ? `<p>ほか${list.length - 10}件</p>` : ''}</div>` : ''
+    document.getElementById('pe-preview').innerHTML = `<div class="rounded-lg bg-neutral-50 p-3 text-sm">
       <p>${esc(patternSummary(d))}</p>
       ${warnBlock('割り当て済みの人の時間が、別のシフトと重なります', overlap)}
       ${warnBlock('必要人数が、割り当て済みの確定・代打の人数より少なくなります（反映しても割り当ては外れません。必要ならシフトから外してください）', hc)}</div>`
@@ -2689,12 +2689,12 @@
     const x = PATTERNS.get(Number(el.dataset.id)); if (!x) return
     modal(`
       <h3 class="font-bold text-lg mb-1">繰り返し登録を削除</h3>
-      <p class="text-xs text-gray-500 mb-3">${esc(x.weekdays.split(',').map(i => WD[i]).join('・'))}・${esc(x.date_from)}〜${esc(x.date_to)}・${esc(x.start_time)}〜${esc(x.end_time)}（作成済みの枠 ${Number(x.slot_count)}件・今日以降 ${Number(x.future_slot_count || 0)}件）</p>
-      <label class="flex items-start gap-2 text-sm p-2 rounded border border-gray-200 mb-2"><input type="radio" name="pd-mode" value="keep" checked><span>作成済みの枠は残し、繰り返し登録だけを削除する</span></label>
-      <label class="flex items-start gap-2 text-sm p-2 rounded border border-gray-200"><input type="radio" name="pd-mode" value="future"><span>今日以降の、割り当てのない枠も削除する<span class="block text-[11px] text-gray-400">割り当てのある枠は残ります</span>
+      <p class="text-xs text-neutral-500 mb-3">${esc(x.weekdays.split(',').map(i => WD[i]).join('・'))}・${esc(x.date_from)}〜${esc(x.date_to)}・${esc(x.start_time)}〜${esc(x.end_time)}（作成済みの枠 ${Number(x.slot_count)}件・今日以降 ${Number(x.future_slot_count || 0)}件）</p>
+      <label class="flex items-start gap-2 text-sm p-2 rounded border border-neutral-200 mb-2"><input type="radio" name="pd-mode" value="keep" checked><span>作成済みの枠は残し、繰り返し登録だけを削除する</span></label>
+      <label class="flex items-start gap-2 text-sm p-2 rounded border border-neutral-200"><input type="radio" name="pd-mode" value="future"><span>今日以降の、割り当てのない枠も削除する<span class="block text-2xs text-neutral-400">割り当てのある枠は残ります</span>
         ${Number(x.future_pending_applications) > 0 || x.future_pending_applications == null
-          ? `<span class="block text-[11px] text-amber-700">${x.future_pending_applications != null ? `削除する枠への未対応の応募 ${Number(x.future_pending_applications)}件` : '削除する枠に未対応の応募があれば、その応募'}は「枠の削除」で処理済みになり、承認できなくなります</span>`
-          : '<span class="block text-[11px] text-gray-400">削除する枠への未対応の応募はありません</span>'}</span></label>
+          ? `<span class="block text-2xs text-warning-700">${x.future_pending_applications != null ? `削除する枠への未対応の応募 ${Number(x.future_pending_applications)}件` : '削除する枠に未対応の応募があれば、その応募'}は「枠の削除」で処理済みになり、承認できなくなります</span>`
+          : '<span class="block text-2xs text-neutral-400">削除する枠への未対応の応募はありません</span>'}</span></label>
       <div class="flex gap-2 mt-4">${MODAL_CANCEL_BTN}<button class="btn btn-danger flex-1" data-action="deletePatternRun" data-id="${Number(x.pattern_id)}"><i class="fas fa-trash"></i>削除する</button></div>`)
   })
   delegate('deletePatternRun', el => withSubmitLock(el, async () => {
@@ -2722,7 +2722,7 @@
     const linked = sid && ((MASTER && MASTER.staff) || []).some(s => Number(s.staff_id) === sid && s.affiliation_type === 'linked_external')
     box.innerHTML = !sid ? '' : linked ? '<i class="fas fa-circle-info mr-1"></i>他社から連携したスタッフのため、参考単価は出ません（所属元の会社が管理します）' : ref
       ? `<i class="fas fa-circle-info mr-1"></i>参考単価: ${esc(REF_UNIT[ref.reference_pay_unit] || '')} ${yen(ref.reference_pay_amount)}（スタッフマスタで入力した目安。計算には使いません）
-         <button type="button" class="text-blue-600 hover:underline ml-1" data-action="ruleUseReference">支払単価（基本）に入れる</button>`
+         <button type="button" class="text-primary-600 hover:underline ml-1" data-action="ruleUseReference">支払単価（基本）に入れる</button>`
       : '<i class="fas fa-circle-info mr-1"></i>この人の参考単価は入力されていません（スタッフマスタのスタッフ詳細で入力できます）'
     const wrap = document.getElementById('rl-staff-scope-wrap'); if (wrap) wrap.classList.toggle('hidden', !sid)
   }
@@ -2757,12 +2757,12 @@
     const payBase = r.pay_rate == null ? null : Number(r.pay_rate) - (inc || 0)
     modal(`
       <h3 class="font-bold text-lg mb-1">${rule ? '単価ルールを編集' : '単価ルールを追加'}</h3>
-      <p class="text-xs text-gray-500 mb-3">条件に合うシフトで、入力した項目だけを上書きします（空欄の項目は上書きしません）${rule ? '。保存しても、登録済みのシフトの金額は再適用するまで変わりません' : ''}</p>
+      <p class="text-xs text-neutral-500 mb-3">条件に合うシフトで、入力した項目だけを上書きします（空欄の項目は上書きしません）${rule ? '。保存しても、登録済みのシフトの金額は再適用するまで変わりません' : ''}</p>
       <div class="grid grid-cols-2 gap-2 text-xs">
         ${ctx.project_id || ctx.client_scope ? `<label>開催場所<select id="rl-site" class="inp text-sm"><option value="">すべて</option>${sites.map(s => `<option value="${Number(s.site_id)}" ${sel(s.site_id, r.site_id)}>${esc(s.site_name)}${s.status === 'inactive' ? '（無効）' : ''}</option>`).join('')}</select></label>
         <label>役割<input id="rl-role" class="inp text-sm" placeholder="すべて" list="role-suggest" value="${val(r.role_name)}"></label>` : ''}
         ${ctx.project_id ? `<label class="col-span-2">スタッフ（人によって単価を変えるとき）<select id="rl-staff" class="inp text-sm"><option value="">すべて</option>${staff.map(s => `<option value="${Number(s.staff_id)}" ${sel(s.staff_id, r.staff_id)}>${esc(s.name)}</option>`).join('')}</select></label>
-        <p class="col-span-2 text-[11px] text-gray-500 -mt-1" id="rl-staff-ref"></p>
+        <p class="col-span-2 text-2xs text-neutral-500 -mt-1" id="rl-staff-ref"></p>
         <label class="col-span-2 ${r.staff_id ? '' : 'hidden'}" id="rl-staff-scope-wrap">このスタッフの単価を使う案件<select id="rl-staff-scope" class="inp text-sm">
           <option value="project">この案件だけ</option><option value="all" ${r.staff_id && !r.project_id ? 'selected' : ''}>すべての案件（このスタッフの全案件に共通）</option></select></label>` : ''}
         <label>請求の単位<select id="rl-bill-unit" class="inp text-sm">${unitOpt(r.bill_unit_type)}</select></label>
@@ -2770,15 +2770,15 @@
         <label>支払の単位<select id="rl-pay-unit" class="inp text-sm">${unitOpt(r.pay_unit_type)}</select></label>
         <label>支払単価（基本）<input id="rl-pay" type="number" min="0" class="inp text-sm" placeholder="変更しない" value="${val(payBase)}"></label>
         <label class="col-span-2">インセンティブ（加算額・任意）<input id="rl-inc" type="number" min="0" class="inp text-sm" placeholder="例: 2000" value="${val(inc)}">
-          <span class="block text-[11px] text-gray-400">支払単価（基本）に足した金額で計算します（時給なら1時間あたりの加算）</span>
-          <span class="block text-[11px] text-blue-700" id="rl-pay-total"></span></label>
+          <span class="block text-2xs text-neutral-400">支払単価（基本）に足した金額で計算します（時給なら1時間あたりの加算）</span>
+          <span class="block text-2xs text-primary-700" id="rl-pay-total"></span></label>
         <label>交通費の請求<select id="rl-bt" class="inp text-sm">${opt(BT_LABEL, r.bill_transport_type)}</select></label>
         <label>定額の金額<input id="rl-bt-amt" type="number" class="inp text-sm" value="${val(r.bill_transport_amount)}"></label>
         <label>交通費の支払<select id="rl-pt" class="inp text-sm">${opt(PT_LABEL, r.pay_transport_type)}</select></label>
         <label>上限 / 定額の金額<input id="rl-pt-amt" type="number" class="inp text-sm" value="${val(r.pay_transport_amount)}"></label>
         <label>適用開始日<input id="rl-from" type="date" class="inp text-sm" value="${val(r.valid_from)}"></label>
         <label>適用終了日<input id="rl-to" type="date" class="inp text-sm" value="${val(r.valid_to)}"></label>
-        <p class="col-span-2 text-[11px] text-gray-400">空欄は期限なし。単価を改定するときは、旧ルールに終了日を付けて残し、新しいルールに開始日を入れます（シフトの稼働日で選びます）</p>
+        <p class="col-span-2 text-2xs text-neutral-400">空欄は期限なし。単価を改定するときは、旧ルールに終了日を付けて残し、新しいルールに開始日を入れます（シフトの稼働日で選びます）</p>
         <label class="col-span-2">備考<input id="rl-memo" class="inp text-sm" maxlength="200" placeholder="例: 経験者加算・リーダー手当" value="${val(r.memo)}"></label>
       </div>
       <datalist id="role-suggest"><option value="販売"><option value="リーダー"><option value="MC"><option value="設営"></datalist>
@@ -2862,15 +2862,15 @@
     if (!p || ['linked_external', 'skillsheet_only'].includes(p.affiliation_type) || p.merged_into_staff_id) { host.innerHTML = ''; return }
     const amount = p.reference_pay_amount == null ? '' : Number(p.reference_pay_amount)
     host.innerHTML = `<section class="card p-4" id="staff-reference-pay">
-      <h3 class="text-sm font-bold text-gray-700 mb-1"><i class="fas fa-yen-sign text-blue-500 mr-1"></i>支払の参考単価<span class="text-[11px] font-normal text-gray-400 ml-1">（管理画面のみ・連携先には共有されません）</span></h3>
-      <p class="text-xs text-gray-500 mb-2">参考価格を入力してください。計算には使いません（精算画面で人ごとの単価を決めるときの目安として表示します）</p>
+      <h3 class="text-sm font-bold text-neutral-700 mb-1"><i class="fas fa-yen-sign text-primary-500 mr-1"></i>支払の参考単価<span class="text-2xs font-normal text-neutral-400 ml-1">（管理画面のみ・連携先には共有されません）</span></h3>
+      <p class="text-xs text-neutral-500 mb-2">参考価格を入力してください。計算には使いません（精算画面で人ごとの単価を決めるときの目安として表示します）</p>
       <div class="flex gap-2 items-center flex-wrap">
         <select id="staff-ref-unit" class="inp text-sm w-28" aria-label="参考単価の単位"><option value="daily">日給</option><option value="hourly" ${p.reference_pay_unit === 'hourly' ? 'selected' : ''}>時給</option></select>
         <input id="staff-ref-amount" type="number" min="0" step="1" class="inp text-sm w-40" value="${amount}" placeholder="例: 12000" aria-label="参考単価（円）">
-        <span class="text-xs text-gray-500">円</span>
+        <span class="text-xs text-neutral-500">円</span>
         <button type="button" class="btn btn-primary text-xs" data-action="staffRefPaySave" data-id="${Number(sid)}"><i class="fas fa-floppy-disk"></i>保存</button>
       </div>
-      <p class="text-[11px] text-gray-400 mt-1">空欄で保存すると消します。実際の単価は、精算画面の「単価の設定」で案件を選び、スタッフ別の単価ルールとして決めます</p>
+      <p class="text-2xs text-neutral-400 mt-1">空欄で保存すると消します。実際の単価は、精算画面の「単価の設定」で案件を選び、スタッフ別の単価ルールとして決めます</p>
     </section>`
   }
   delegate('staffRefPaySave', el => withSubmitLock(el, async () => {
@@ -2893,32 +2893,32 @@
     const today = data.today || dayjs().format('YYYY-MM-DD')
     const rows = (list) => list.map(s => `<tr>
       <td class="whitespace-nowrap">${esc(dayjs(s.work_date).format('M/D'))}(${WD[dayjs(s.work_date).day()]})</td>
-      <td><span class="font-bold">${esc(s.project_name || '')}</span>${s.client_name ? `<span class="block text-[11px] text-gray-400">${esc(s.client_name)}</span>` : ''}</td>
+      <td><span class="font-bold">${esc(s.project_name || '')}</span>${s.client_name ? `<span class="block text-2xs text-neutral-400">${esc(s.client_name)}</span>` : ''}</td>
       <td class="whitespace-nowrap">${esc(s.start_time)}〜${esc(s.end_time)}</td>
-      <td class="text-xs text-gray-500">${esc([s.site_name || s.location, s.role].filter(Boolean).join('・') || '-')}</td>
+      <td class="text-xs text-neutral-500">${esc([s.site_name || s.location, s.role].filter(Boolean).join('・') || '-')}</td>
       <td class="whitespace-nowrap"><span class="badge ${ST_BADGE[s.status] || 'badge-gray'}">${esc(ST_LABEL[s.status] || s.status)}</span>${s.settle_status === 'confirmed' ? '<span class="badge badge-green ml-1">実績確定</span>' : ''}</td>
-      <td class="text-right whitespace-nowrap"><button class="text-xs text-blue-600 hover:underline" data-action="boardOpenDate" data-date="${esc(s.work_date)}">ボードで開く</button>
-        ${s.status !== 'absent' && s.status !== 'requested' && s.work_date <= today ? `<button class="text-xs text-blue-600 hover:underline ml-2" data-action="corrNew" data-shift-id="${Number(s.shift_id)}" title="打刻の修正・打刻漏れの追加を、管理者として申請します">打刻を修正</button>` : ''}
-        <button class="text-xs text-gray-500 hover:underline ml-2" data-action="opLogShow" data-entity="shift" data-id="${Number(s.shift_id)}" data-title="変更履歴（${esc(dayjs(s.work_date).format('M/D'))} ${esc(s.project_name || '')}）" title="このシフトの変更を、誰がいつ行ったか">履歴</button></td></tr>`).join('')
+      <td class="text-right whitespace-nowrap"><button class="text-xs text-primary-600 hover:underline" data-action="boardOpenDate" data-date="${esc(s.work_date)}">ボードで開く</button>
+        ${s.status !== 'absent' && s.status !== 'requested' && s.work_date <= today ? `<button class="text-xs text-primary-600 hover:underline ml-2" data-action="corrNew" data-shift-id="${Number(s.shift_id)}" title="打刻の修正・打刻漏れの追加を、管理者として申請します">打刻を修正</button>` : ''}
+        <button class="text-xs text-neutral-500 hover:underline ml-2" data-action="opLogShow" data-entity="shift" data-id="${Number(s.shift_id)}" data-title="変更履歴（${esc(dayjs(s.work_date).format('M/D'))} ${esc(s.project_name || '')}）" title="このシフトの変更を、誰がいつ行ったか">履歴</button></td></tr>`).join('')
     const table = (list, empty) => `<div class="overflow-x-auto max-h-80 overflow-y-auto"><table class="tbl"><thead><tr><th>日付</th><th>案件</th><th>時間</th><th>開催場所・役割</th><th>状態</th><th></th></tr></thead>
-      <tbody>${rows(list) || `<tr><td colspan="6" class="text-center text-gray-400">${empty}</td></tr>`}</tbody></table></div>`
+      <tbody>${rows(list) || `<tr><td colspan="6" class="text-center text-neutral-400">${empty}</td></tr>`}</tbody></table></div>`
     const absent = past.filter(s => s.status === 'absent').length
     host.innerHTML = `<section class="card p-4" id="staff-shifts">
       <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
-        <h3 class="text-sm font-bold text-gray-700"><i class="fas fa-calendar-days text-blue-500 mr-1"></i>シフト</h3>
-        <div class="flex rounded-lg border border-gray-200 overflow-hidden text-xs">
-          <button class="px-3 py-1.5 bg-blue-600 text-white" data-action="staffShiftTab" data-tab="up">今後（${up.length}${up.length >= 20 ? '件〜' : '件'}）</button>
-          <button class="px-3 py-1.5 bg-white" data-action="staffShiftTab" data-tab="past">過去の稼働（直近${past.length}件${absent ? `・欠勤${absent}` : ''}）</button>
+        <h3 class="text-sm font-bold text-neutral-700"><i class="fas fa-calendar-days text-primary-500 mr-1"></i>シフト</h3>
+        <div class="flex rounded-lg border border-neutral-200 overflow-hidden text-xs">
+          <button class="px-3 py-1.5 bg-primary-600 text-white" data-action="staffShiftTab" data-tab="up">今後（${up.length}${up.length >= 20 ? '件〜' : '件'}）</button>
+          <button class="px-3 py-1.5 bg-surface" data-action="staffShiftTab" data-tab="past">過去の稼働（直近${past.length}件${absent ? `・欠勤${absent}` : ''}）</button>
         </div>
       </div>
-      ${ng.length ? `<p class="text-xs text-red-600 bg-red-50 rounded p-2 mb-2"><i class="fas fa-ban mr-1"></i>NGに指定しているクライアント: ${ng.map(c => `<a href="#clients/${Number(c.client_id)}" class="underline">${esc(c.client_name)}</a>${c.reason ? `（${esc(c.reason)}）` : ''}`).join('、')}</p>` : ''}
-      <div data-shift-tab="up">${table(up, '今日以降のシフトはありません')}${up.length >= 20 ? '<p class="text-[11px] text-gray-400 mt-1">先頭の20件を表示しています。続きはシフトボードの「人ごと」で確認できます</p>' : ''}</div>
+      ${ng.length ? `<p class="text-xs text-danger-600 bg-danger-50 rounded p-2 mb-2"><i class="fas fa-ban mr-1"></i>NGに指定しているクライアント: ${ng.map(c => `<a href="#clients/${Number(c.client_id)}" class="underline">${esc(c.client_name)}</a>${c.reason ? `（${esc(c.reason)}）` : ''}`).join('、')}</p>` : ''}
+      <div data-shift-tab="up">${table(up, '今日以降のシフトはありません')}${up.length >= 20 ? '<p class="text-2xs text-neutral-400 mt-1">先頭の20件を表示しています。続きはシフトボードの「人ごと」で確認できます</p>' : ''}</div>
       <div data-shift-tab="past" class="hidden">${table(past, '過去の稼働はありません')}</div>
     </section>`
   }
   delegate('staffShiftTab', (el) => {
     const box = el.closest('#staff-shifts'); if (!box) return
-    box.querySelectorAll('[data-action="staffShiftTab"]').forEach(b => { const on = b === el; b.classList.toggle('bg-blue-600', on); b.classList.toggle('text-white', on); b.classList.toggle('bg-white', !on) })
+    box.querySelectorAll('[data-action="staffShiftTab"]').forEach(b => { const on = b === el; b.classList.toggle('bg-primary-600', on); b.classList.toggle('text-white', on); b.classList.toggle('bg-surface', !on) })
     box.querySelectorAll('[data-shift-tab]').forEach(t => t.classList.toggle('hidden', t.dataset.shiftTab !== el.dataset.tab))
   })
   // シフトボードをその日の週で開く（絞り込みは外す）
@@ -2935,33 +2935,33 @@
     const host = document.getElementById('project-sites-panel'); if (!host || !p) return
     const pid = Number(p.project_id), cid = Number(p.client_id) || 0
     SITE_CTX = { pid, cid }
-    const head = '<h3 class="text-sm font-bold text-gray-700"><i class="fas fa-location-dot text-blue-500 mr-1"></i>開催場所<span class="text-[11px] font-normal text-gray-400 ml-1">（シフト枠・単価ルールで選択できます）</span></h3>'
+    const head = '<h3 class="text-sm font-bold text-neutral-700"><i class="fas fa-location-dot text-primary-500 mr-1"></i>開催場所<span class="text-2xs font-normal text-neutral-400 ml-1">（シフト枠・単価ルールで選択できます）</span></h3>'
     if (!cid) {
       host.innerHTML = `<section class="card p-4" id="project-sites">
         <div class="mb-2">${head}</div>
-        <p class="text-xs text-gray-600 bg-yellow-50 rounded p-2" id="project-sites-no-client"><i class="fas fa-circle-info text-yellow-600 mr-1"></i>開催場所はクライアントごとに登録するため、クライアントのない案件では登録できません。案件にクライアントを設定してください
-          <button type="button" class="text-blue-600 hover:underline ml-1" data-action="editProject" data-id="${pid}">案件を編集</button></p>
+        <p class="text-xs text-neutral-600 bg-warning-2-50 rounded p-2" id="project-sites-no-client"><i class="fas fa-circle-info text-warning-2-600 mr-1"></i>開催場所はクライアントごとに登録するため、クライアントのない案件では登録できません。案件にクライアントを設定してください
+          <button type="button" class="text-primary-600 hover:underline ml-1" data-action="editProject" data-id="${pid}">案件を編集</button></p>
       </section>`
       return
     }
     let data
-    try { data = (await axios.get('/api/admin/sites?client_id=' + cid)).data } catch (e) { host.innerHTML = `<p class="text-xs text-red-600">${esc(errMsg(e, '開催場所を読み込めませんでした'))}</p>`; return }
+    try { data = (await axios.get('/api/admin/sites?client_id=' + cid)).data } catch (e) { host.innerHTML = `<p class="text-xs text-danger-600">${esc(errMsg(e, '開催場所を読み込めませんでした'))}</p>`; return }
     // 読み込みの間に別の案件へ移ったときは描かない
     if (!SITE_CTX || SITE_CTX.pid !== pid || !document.getElementById('project-sites-panel')) return
     host.innerHTML = `<section class="card p-4" id="project-sites">
       <div class="mb-1">${head}</div>
-      <p class="text-[11px] text-gray-400 mb-2">このクライアント（${esc(p.client_name || '')}）の開催場所の一覧です。シフトや募集枠を作るときに、この中から場所を選びます（案件や日ごとに違う場所を選べます）。同じクライアントのほかの案件とも共通の一覧なので、名前・住所・位置を変えると、この場所を使うほかの案件にも反映されます。</p>
+      <p class="text-2xs text-neutral-400 mb-2">このクライアント（${esc(p.client_name || '')}）の開催場所の一覧です。シフトや募集枠を作るときに、この中から場所を選びます（案件や日ごとに違う場所を選べます）。同じクライアントのほかの案件とも共通の一覧なので、名前・住所・位置を変えると、この場所を使うほかの案件にも反映されます。</p>
       <div class="flex gap-2 mb-3 flex-wrap"><input id="site-new-name" class="inp text-sm flex-1 min-w-[10rem]" maxlength="100" placeholder="開催場所名（例: ○○店 1F 催事場）"><input id="site-new-addr" class="inp text-sm flex-1 min-w-[10rem]" maxlength="200" placeholder="住所（任意）">
         <button class="btn btn-primary text-sm shrink-0" data-action="addSite"><i class="fas fa-plus"></i>追加</button></div>
       <div class="overflow-x-auto"><table class="tbl"><thead><tr><th>開催場所</th><th>住所</th><th title="このクライアントの全案件のシフトの件数">シフト（全案件）</th><th>状態</th><th></th></tr></thead><tbody>
-        ${data.sites.map(s => `<tr><td><span class="font-bold">${esc(s.site_name)}</span>${s.memo ? `<span class="block text-[11px] text-gray-400 whitespace-pre-wrap">${esc(s.memo)}</span>` : ''}</td>
-          <td class="text-xs text-gray-500">${esc(s.address || '-')}${s.lat != null && s.lng != null ? `<a class="block text-blue-600 hover:underline" target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(s.lat + ',' + s.lng)}"><i class="fas fa-location-dot mr-0.5"></i>位置を登録済み</a>` : ''}</td><td>${Number(s.shift_count) || 0}件</td>
+        ${data.sites.map(s => `<tr><td><span class="font-bold">${esc(s.site_name)}</span>${s.memo ? `<span class="block text-2xs text-neutral-400 whitespace-pre-wrap">${esc(s.memo)}</span>` : ''}</td>
+          <td class="text-xs text-neutral-500">${esc(s.address || '-')}${s.lat != null && s.lng != null ? `<a class="block text-primary-600 hover:underline" target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(s.lat + ',' + s.lng)}"><i class="fas fa-location-dot mr-0.5"></i>位置を登録済み</a>` : ''}</td><td>${Number(s.shift_count) || 0}件</td>
           <td>${s.status === 'inactive' ? '<span class="badge badge-gray">無効</span>' : '<span class="badge badge-green">有効</span>'}</td>
-          <td class="text-right whitespace-nowrap"><button class="text-xs text-blue-600 hover:underline ml-2" data-action="editSite" data-id="${Number(s.site_id)}">編集</button>
+          <td class="text-right whitespace-nowrap"><button class="text-xs text-primary-600 hover:underline ml-2" data-action="editSite" data-id="${Number(s.site_id)}">編集</button>
             ${s.status === 'inactive'
-              ? `<button class="text-xs text-blue-600 hover:underline ml-2" data-action="toggleSite" data-id="${Number(s.site_id)}" data-status="active">有効に戻す</button>`
-              : `<button class="text-xs text-gray-600 hover:underline ml-2" data-action="toggleSite" data-id="${Number(s.site_id)}" data-status="inactive" title="シフト枠・単価ルールで選べなくします（登録済みのシフトはそのまま）">無効にする</button>`}
-            <button class="text-xs text-red-600 hover:underline ml-2" data-action="removeSite" data-id="${Number(s.site_id)}"${s.status === 'inactive' ? ' data-inactive="1"' : ''}>削除</button></td></tr>`).join('') || '<tr><td colspan="5" class="text-center text-gray-400">開催場所はありません</td></tr>'}
+              ? `<button class="text-xs text-primary-600 hover:underline ml-2" data-action="toggleSite" data-id="${Number(s.site_id)}" data-status="active">有効に戻す</button>`
+              : `<button class="text-xs text-neutral-600 hover:underline ml-2" data-action="toggleSite" data-id="${Number(s.site_id)}" data-status="inactive" title="シフト枠・単価ルールで選べなくします（登録済みのシフトはそのまま）">無効にする</button>`}
+            <button class="text-xs text-danger-600 hover:underline ml-2" data-action="removeSite" data-id="${Number(s.site_id)}"${s.status === 'inactive' ? ' data-inactive="1"' : ''}>削除</button></td></tr>`).join('') || '<tr><td colspan="5" class="text-center text-neutral-400">開催場所はありません</td></tr>'}
       </tbody></table></div>
     </section>`
     SITES = new Map(data.sites.map(s => [s.site_id, s]))
@@ -2978,23 +2978,23 @@
     // 差し込み先はクライアント詳細の #client-rate-panel（admin.js の renderClientDetail。9914 で開催場所の欄を外した）
     const host = document.getElementById('client-rate-panel'); if (!host) return
     let data
-    try { data = (await axios.get('/api/admin/rate-rules?client_id=' + Number(cid))).data } catch (e) { host.innerHTML = `<p class="text-xs text-red-600">${esc(errMsg(e, '単価ルールを読み込めませんでした'))}</p>`; return }
+    try { data = (await axios.get('/api/admin/rate-rules?client_id=' + Number(cid))).data } catch (e) { host.innerHTML = `<p class="text-xs text-danger-600">${esc(errMsg(e, '単価ルールを読み込めませんでした'))}</p>`; return }
     for (const r of data.rules) RULES.set(r.rule_id, r)
     const id = Number(cid)
     host.innerHTML = `<section class="card p-4" id="client-rate-rules">
       <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
-        <h3 class="text-sm font-bold text-gray-700"><i class="fas fa-yen-sign text-blue-500 mr-1"></i>単価ルール（クライアント共通）<span class="text-[11px] font-normal text-gray-400 ml-1">（管理画面のみ）</span></h3>
+        <h3 class="text-sm font-bold text-neutral-700"><i class="fas fa-yen-sign text-primary-500 mr-1"></i>単価ルール（クライアント共通）<span class="text-2xs font-normal text-neutral-400 ml-1">（管理画面のみ）</span></h3>
         <div class="flex gap-2">
           <button class="btn btn-outline text-xs" data-action="clientRuleReprice" data-client="${id}"><i class="fas fa-rotate"></i>今後のシフトに再適用</button>
           <button class="btn btn-outline text-xs" data-action="clientRuleAdd" data-client="${id}"><i class="fas fa-plus"></i>追加</button>
         </div>
       </div>
-      <p class="text-[11px] text-gray-400 mb-2">このクライアントの全案件に当てる単価・交通費です（例: リーダー役割は +2,000円、○○店は交通費定額）。開催場所・役割で条件を付けられます。同じ条件なら案件・スタッフのルールが優先します</p>
-      <div class="space-y-1.5">${data.rules.map(r => `<div class="flex items-start gap-2 p-2 rounded-lg bg-gray-50 text-xs">
-        <div class="flex-1 min-w-0"><p class="font-bold">${ruleScope(r)}</p><p class="text-gray-600">${ruleSummary(r) + ruleMemo(r)}</p></div>
-        <button class="text-blue-600 hover:underline whitespace-nowrap" data-action="editRule" data-id="${Number(r.rule_id)}" data-client="${id}">編集</button>
-        <button class="text-blue-600 hover:underline whitespace-nowrap" data-action="ruleSetEnd" data-id="${Number(r.rule_id)}" data-to="${esc(r.valid_to || '')}" data-client="${id}" title="単価の改定: 旧ルールに終了日を付けて残します">終了日</button>
-        <button class="text-gray-400 hover:text-red-500" data-action="clientRuleDelete" data-id="${Number(r.rule_id)}" data-client="${id}" title="削除"><i class="fas fa-trash"></i></button></div>`).join('') || '<p class="text-xs text-gray-400">クライアント共通のルールはありません（案件ごとの単価を使います）</p>'}</div>
+      <p class="text-2xs text-neutral-400 mb-2">このクライアントの全案件に当てる単価・交通費です（例: リーダー役割は +2,000円、○○店は交通費定額）。開催場所・役割で条件を付けられます。同じ条件なら案件・スタッフのルールが優先します</p>
+      <div class="space-y-1.5">${data.rules.map(r => `<div class="flex items-start gap-2 p-2 rounded-lg bg-neutral-50 text-xs">
+        <div class="flex-1 min-w-0"><p class="font-bold">${ruleScope(r)}</p><p class="text-neutral-600">${ruleSummary(r) + ruleMemo(r)}</p></div>
+        <button class="text-primary-600 hover:underline whitespace-nowrap" data-action="editRule" data-id="${Number(r.rule_id)}" data-client="${id}">編集</button>
+        <button class="text-primary-600 hover:underline whitespace-nowrap" data-action="ruleSetEnd" data-id="${Number(r.rule_id)}" data-to="${esc(r.valid_to || '')}" data-client="${id}" title="単価の改定: 旧ルールに終了日を付けて残します">終了日</button>
+        <button class="text-neutral-400 hover:text-danger-500" data-action="clientRuleDelete" data-id="${Number(r.rule_id)}" data-client="${id}" title="削除"><i class="fas fa-trash"></i></button></div>`).join('') || '<p class="text-xs text-neutral-400">クライアント共通のルールはありません（案件ごとの単価を使います）</p>'}</div>
     </section>`
   }
   delegate('clientRuleAdd', el => openRuleModal({ client_id: Number(el.dataset.client), client_scope: true }))
@@ -3010,12 +3010,12 @@
     modal(`
       <h3 class="font-bold text-lg mb-3">開催場所を編集</h3>
       <div class="space-y-3">
-        <label class="text-sm text-gray-600 block">開催場所名 *<input id="se-name" class="inp" maxlength="100" value="${esc(s.site_name)}"></label>
-        <label class="text-sm text-gray-600 block">住所<input id="se-addr" class="inp" maxlength="200" value="${esc(s.address || '')}"></label>
-        <label class="text-sm text-gray-600 block">位置（緯度, 経度）<input id="se-latlng" class="inp" placeholder="例: 35.681236, 139.767125" value="${s.lat != null && s.lng != null ? esc(s.lat + ', ' + s.lng) : ''}">
-          <span class="block text-[11px] text-gray-400">地図アプリで場所を長押し（右クリック）すると表示される数値を貼り付けます。空欄にすると消します</span></label>
-        <label class="text-sm text-gray-600 block">メモ<textarea id="se-memo" class="inp" rows="3" maxlength="500" placeholder="入口・搬入口・集合場所など">${esc(s.memo || '')}</textarea></label>
-        <p class="text-[11px] text-gray-400">名前を変えると、今日以降の枠・シフト（実績が確定済みのものを除く）と繰り返し登録の場所名も新しい名前になります</p>
+        <label class="text-sm text-neutral-600 block">開催場所名 *<input id="se-name" class="inp" maxlength="100" value="${esc(s.site_name)}"></label>
+        <label class="text-sm text-neutral-600 block">住所<input id="se-addr" class="inp" maxlength="200" value="${esc(s.address || '')}"></label>
+        <label class="text-sm text-neutral-600 block">位置（緯度, 経度）<input id="se-latlng" class="inp" placeholder="例: 35.681236, 139.767125" value="${s.lat != null && s.lng != null ? esc(s.lat + ', ' + s.lng) : ''}">
+          <span class="block text-2xs text-neutral-400">地図アプリで場所を長押し（右クリック）すると表示される数値を貼り付けます。空欄にすると消します</span></label>
+        <label class="text-sm text-neutral-600 block">メモ<textarea id="se-memo" class="inp" rows="3" maxlength="500" placeholder="入口・搬入口・集合場所など">${esc(s.memo || '')}</textarea></label>
+        <p class="text-2xs text-neutral-400">名前を変えると、今日以降の枠・シフト（実績が確定済みのものを除く）と繰り返し登録の場所名も新しい名前になります</p>
         <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="saveSite" data-id="${Number(id)}">保存する</button></div>
       </div>`)
   }

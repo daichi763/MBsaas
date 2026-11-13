@@ -18,7 +18,7 @@
   const waitLabel = (c) => {
     if (c.status !== 'pending' || !c.created_at) return ''
     const days = Math.max(0, dayjs().diff(dayjs(c.created_at.replace(' ', 'T')), 'day'))
-    return `<span class="block text-[11px] ${days >= 2 ? 'text-red-600 font-bold' : 'text-gray-400'}">申請から${days ? days + '日' : '1日未満'}</span>`
+    return `<span class="block text-2xs ${days >= 2 ? 'text-danger-600 font-bold' : 'text-neutral-400'}">申請から${days ? days + '日' : '1日未満'}</span>`
   }
   const MANUAL_NOTE = '実績が手入力のシフトのため、実績・金額は手入力のままです（精算の「実績・金額」で「報告の時刻に戻す」と反映されます）'
 
@@ -43,15 +43,15 @@
     const max = Number(s.max_days) || DEADLINE_MAX
     const d = Number(s.deadline_days) > 0 ? Number(s.deadline_days) : null
     modal(`
-      <h3 class="font-bold text-lg mb-2"><i class="fas fa-calendar-xmark text-blue-600 mr-1"></i>申請の受付期限</h3>
-      <p class="text-xs text-gray-500 mb-3">スタッフがアプリから打刻修正（と交通費・延長）を申請できる期限です。期限を過ぎた申請は受け付けず、スタッフには「管理者に連絡してください」と出します。管理者による申請（「管理者として申請」）は期限に関係なく出せます。</p>
+      <h3 class="font-bold text-lg mb-2"><i class="fas fa-calendar-xmark text-primary-600 mr-1"></i>申請の受付期限</h3>
+      <p class="text-xs text-neutral-500 mb-3">スタッフがアプリから打刻修正（と交通費・延長）を申請できる期限です。期限を過ぎた申請は受け付けず、スタッフには「管理者に連絡してください」と出します。管理者による申請（「管理者として申請」）は期限に関係なく出せます。</p>
       <div class="space-y-2 text-sm">
         <label class="flex items-center gap-2"><input type="radio" name="cd-mode" value="none" ${d ? '' : 'checked'}>期限なし</label>
         <label class="flex items-center gap-2 flex-wrap"><input type="radio" name="cd-mode" value="days" ${d ? 'checked' : ''}>勤務日から
           <input id="cd-days" type="number" min="1" max="${max}" step="1" class="inp text-sm w-24" value="${d || 7}" ${s.can_edit === false ? 'disabled' : ''}>日後まで</label>
       </div>
-      <p class="text-[11px] text-gray-400 mt-2">例: 7日にすると、10/1 の勤務は 10/8 まで申請できます。精算が確定済みのシフトへの打刻修正は、期限内でも「支払額は自動では変わりません」と案内したうえで受け付けます（交通費・延長の申請は確定済み・締めた期間のシフトには出せません）。</p>
-      ${s.can_edit === false ? '<p class="text-xs text-amber-700 bg-amber-50 rounded-lg p-2 mt-4">勤怠の設定を変えられるのは会社管理者と現場管理者だけです</p>'
+      <p class="text-2xs text-neutral-400 mt-2">例: 7日にすると、10/1 の勤務は 10/8 まで申請できます。精算が確定済みのシフトへの打刻修正は、期限内でも「支払額は自動では変わりません」と案内したうえで受け付けます（交通費・延長の申請は確定済み・締めた期間のシフトには出せません）。</p>
+      ${s.can_edit === false ? '<p class="text-xs text-warning-700 bg-warning-50 rounded-lg p-2 mt-4">勤怠の設定を変えられるのは会社管理者と現場管理者だけです</p>'
         : `<div class="flex gap-2 mt-4">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="corrDeadlineSave" data-max="${max}">保存する</button></div>`}`)
     if (s.can_edit === false) document.querySelectorAll('input[name="cd-mode"]').forEach(r => { r.disabled = true })
     const days = document.getElementById('cd-days')
@@ -77,11 +77,11 @@
     if (!ME) { try { ME = (await axios.get('/api/auth/me')).data } catch { ME = {} } }
     const params = Object.fromEntries(Object.entries(S).filter(([, v]) => v !== '' && v != null))
     let data
-    try { data = (await axios.get('/api/admin/corrections', { params })).data } catch (e) { $app.innerHTML = `<p class="text-red-600">${esc(errMsg(e))}</p>`; return }
+    try { data = (await axios.get('/api/admin/corrections', { params })).data } catch (e) { $app.innerHTML = `<p class="text-danger-600">${esc(errMsg(e))}</p>`; return }
     const n = data.counts || {}
     // 件数は状態以外の絞り込みを反映した数（すべて = 各状態の合計）
     const total = Object.values(n).reduce((a, x) => a + Number(x || 0), 0)
-    const tab = (k, l) => { const cnt = k ? n[k] : total; return `<button class="px-3 py-1.5 rounded-lg text-sm whitespace-nowrap ${S.status === k ? 'bg-blue-600 text-white' : 'bg-white border border-gray-200 text-gray-600'}" onclick="corrSet('status', '${k}')">${l}${cnt ? ` <span class="text-xs opacity-80">${Number(cnt)}</span>` : ''}</button>` }
+    const tab = (k, l) => { const cnt = k ? n[k] : total; return `<button class="px-3 py-1.5 rounded-lg text-sm whitespace-nowrap ${S.status === k ? 'bg-primary-600 text-white' : 'bg-surface border border-neutral-200 text-neutral-600'}" onclick="corrSet('status', '${k}')">${l}${cnt ? ` <span class="text-xs opacity-80">${Number(cnt)}</span>` : ''}</button>` }
     const rows = data.corrections
     // 承認待ちのタブでは、行を選んでまとめて承認できる（#280。順序の矛盾などがある申請は選べない）
     const picking = S.status === 'pending' && rows.some(c => c.status === 'pending')
@@ -89,11 +89,11 @@
     const pickBox = (c) => c.status !== 'pending' ? '' : c.bulk_block
       ? `<input type="checkbox" class="w-4 h-4" disabled title="${esc(c.bulk_block)}（個別に開いて承認してください）" aria-label="まとめて承認できません: ${esc(c.bulk_block)}">`
       : `<input type="checkbox" class="w-4 h-4" data-action="corrPick" data-id="${Number(c.correction_id)}" aria-label="まとめて承認する申請に選ぶ">`
-    const clip = (c) => Number(c.attachment_count) ? ` <i class="fas fa-paperclip text-gray-400" title="添付 ${Number(c.attachment_count)}枚"></i>` : ''
+    const clip = (c) => Number(c.attachment_count) ? ` <i class="fas fa-paperclip text-neutral-400" title="添付 ${Number(c.attachment_count)}枚"></i>` : ''
     $app.innerHTML = `
       <div class="flex items-center justify-between flex-wrap gap-2 mb-4">
-        <div><h2 class="text-xl font-bold text-gray-800"><i class="fas fa-user-clock text-blue-600 mr-1"></i>打刻修正承認</h2>
-          <p class="text-xs text-gray-500 mt-1">スタッフ・管理者からの打刻の修正と打刻漏れの追加の申請です。承認すると勤怠の記録と実績に反映します</p></div>
+        <div><h2 class="text-xl font-bold text-neutral-800"><i class="fas fa-user-clock text-primary-600 mr-1"></i>打刻修正承認</h2>
+          <p class="text-xs text-neutral-500 mt-1">スタッフ・管理者からの打刻の修正と打刻漏れの追加の申請です。承認すると勤怠の記録と実績に反映します</p></div>
         <div class="flex gap-2 flex-wrap"><a href="/api/admin/corrections/export?${new URLSearchParams(params).toString()}" class="btn btn-outline text-sm"><i class="fas fa-file-csv"></i>CSV 出力</a>
           <a href="#corrections/punches" class="btn btn-outline text-sm"><i class="fas fa-table-list"></i>打刻一覧</a>
           <a href="#corrections/emails" class="btn btn-outline text-sm"><i class="fas fa-envelope"></i>メール送信状況</a>
@@ -101,9 +101,9 @@
           <button class="btn btn-primary text-sm" data-action="corrNew"><i class="fas fa-plus"></i>管理者として申請</button></div>
       </div>
       <div class="flex gap-2 overflow-x-auto pb-1 mb-3">${tab('pending', '承認待ち')}${tab('approved', '承認済み')}${tab('rejected', '却下')}${tab('cancelled', '取り消し済み')}${tab('', 'すべて')}</div>
-      ${data.truncated ? `<p class="text-xs text-amber-700 bg-amber-50 rounded-lg p-2 mb-3"><i class="fas fa-circle-info mr-1"></i>該当が多いため、先頭の${Number(data.limit)}件を表示しています（承認待ちは申請の古い順）。絞り込みで件数を減らしてください</p>` : ''}
+      ${data.truncated ? `<p class="text-xs text-warning-700 bg-warning-50 rounded-lg p-2 mb-3"><i class="fas fa-circle-info mr-1"></i>該当が多いため、先頭の${Number(data.limit)}件を表示しています（承認待ちは申請の古い順）。絞り込みで件数を減らしてください</p>` : ''}
       <details class="card p-3 mb-3" ${['project_id', 'staff_name', 'from', 'to', 'work_from', 'work_to', 'report_type', 'kind'].some(k => S[k]) ? 'open' : ''}>
-        <summary class="text-sm font-bold text-gray-700 cursor-pointer"><i class="fas fa-filter text-gray-400 mr-1"></i>絞り込み</summary>
+        <summary class="text-sm font-bold text-neutral-700 cursor-pointer"><i class="fas fa-filter text-neutral-400 mr-1"></i>絞り込み</summary>
         <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2 mt-3 text-xs">
           <label>案件<select class="inp text-sm" onchange="corrSet('project_id', this.value)"><option value="">すべて</option>${projects.map(p => `<option value="${p.project_id}" ${String(S.project_id) === String(p.project_id) ? 'selected' : ''}>${esc(p.project_name)}</option>`).join('')}</select></label>
           <label>スタッフ名<input class="inp text-sm" value="${esc(S.staff_name)}" placeholder="一部でも可" onchange="corrSet('staff_name', this.value.trim())"></label>
@@ -118,27 +118,27 @@
       </details>
       ${picking ? `<div class="card p-2.5 mb-3 flex items-center gap-3 flex-wrap text-sm">
           <label class="flex items-center gap-1.5"><input type="checkbox" class="w-4 h-4" data-action="corrPickAll">選べる申請をすべて選ぶ</label>
-          <label class="flex items-center gap-1.5 text-xs text-gray-600">並び順<select class="inp text-xs py-1 w-auto" id="corr-sort"><option value="">申請の古い順</option><option value="work_date" ${S.sort === 'work_date' ? 'selected' : ''}>勤務日の古い順</option></select></label>
+          <label class="flex items-center gap-1.5 text-xs text-neutral-600">並び順<select class="inp text-xs py-1 w-auto" id="corr-sort"><option value="">申請の古い順</option><option value="work_date" ${S.sort === 'work_date' ? 'selected' : ''}>勤務日の古い順</option></select></label>
           <button class="btn btn-primary text-sm ml-auto" id="corr-bulk-btn" data-action="corrBulkApprove" disabled><i class="fas fa-check-double"></i>選んだ申請を承認<span id="corr-bulk-count"></span></button>
-          <p class="w-full text-[11px] text-gray-500">順序の矛盾がある申請、確定済み・実績が手入力のシフトの申請、写真が必須の案件で写真の添付がない入店・退店の追加は選べません。1件ずつ開いて確かめてから承認してください</p>
+          <p class="w-full text-2xs text-neutral-500">順序の矛盾がある申請、確定済み・実績が手入力のシフトの申請、写真が必須の案件で写真の添付がない入店・退店の追加は選べません。1件ずつ開いて確かめてから承認してください</p>
         </div>` : ''}
       <div class="hidden md:block card overflow-x-auto">
         <table class="tbl"><thead><tr>${picking ? '<th></th>' : ''}<th>状態</th><th>勤務日</th><th>案件</th><th>スタッフ</th><th>報告</th><th>種類</th><th>変更前 → 変更後</th><th>申請者・申請日時</th><th></th></tr></thead>
           <tbody>${rows.map(c => `<tr class="cursor-pointer" data-action="corrOpen" data-id="${Number(c.correction_id)}">
             ${picking ? `<td>${pickBox(c)}</td>` : ''}
-            <td>${statusBadge(c.status)}${c.order_warnings.length ? ' <i class="fas fa-triangle-exclamation text-amber-500" title="順序の矛盾あり"></i>' : ''}${clip(c)}${waitLabel(c)}</td>
+            <td>${statusBadge(c.status)}${c.order_warnings.length ? ' <i class="fas fa-triangle-exclamation text-warning-500" title="順序の矛盾あり"></i>' : ''}${clip(c)}${waitLabel(c)}</td>
             <td class="whitespace-nowrap">${esc(c.work_date ? dayjs(c.work_date).format('M/D') : '')}</td>
-            <td class="text-xs">${esc(c.project_name || '')}${c.project_status && c.project_status !== 'active' ? ' <span class="badge badge-gray text-[10px]">終了</span>' : ''}</td>
+            <td class="text-xs">${esc(c.project_name || '')}${c.project_status && c.project_status !== 'active' ? ' <span class="badge badge-gray text-3xs">終了</span>' : ''}</td>
             <td class="whitespace-nowrap">${esc(c.staff_name || '')}</td><td class="whitespace-nowrap">${LABEL[c.report_type] || ''}</td><td class="text-xs whitespace-nowrap">${KIND[c.kind]}</td>
             <td class="text-xs whitespace-nowrap">${c.before_at ? esc(showAt(c.before_at, c.work_date)) : '－'} → <b>${esc(showAt(c.requested_at, c.work_date))}</b></td>
-            <td class="text-xs whitespace-nowrap">${esc(c.requested_by_name || '')}<br><span class="text-gray-400">${esc(fmtAt(c.created_at))}</span></td>
-            <td><i class="fas fa-chevron-right text-gray-300"></i></td></tr>`).join('') || '<tr><td colspan="10" class="text-center text-gray-400 py-6">申請はありません</td></tr>'}</tbody></table>
+            <td class="text-xs whitespace-nowrap">${esc(c.requested_by_name || '')}<br><span class="text-neutral-400">${esc(fmtAt(c.created_at))}</span></td>
+            <td><i class="fas fa-chevron-right text-neutral-300"></i></td></tr>`).join('') || '<tr><td colspan="10" class="text-center text-neutral-400 py-6">申請はありません</td></tr>'}</tbody></table>
       </div>
       <div class="md:hidden space-y-2">${rows.map(c => `${picking ? `<div class="flex items-start gap-2"><div class="pt-3 pl-1">${pickBox(c)}</div>` : ''}<a href="#corrections/${Number(c.correction_id)}" class="card p-3 block ${picking ? 'flex-1 min-w-0' : ''}" data-action="corrOpen" data-id="${Number(c.correction_id)}">
-          <div class="flex items-center justify-between gap-2"><span>${statusBadge(c.status)}${waitLabel(c)}</span><span class="text-[11px] text-gray-400">${esc(fmtAt(c.created_at))}</span></div>
-          <p class="font-bold text-gray-800 mt-1">${esc(c.staff_name || '')} ・${LABEL[c.report_type] || ''}</p>
-          <p class="text-xs text-gray-500">${esc(c.work_date ? dayjs(c.work_date).format('M/D') : '')} ${esc(c.project_name || '')} ・${KIND[c.kind]}</p>
-          <p class="text-sm mt-1">${c.before_at ? esc(showAt(c.before_at, c.work_date)) + ' → ' : ''}<b>${esc(showAt(c.requested_at, c.work_date))}</b>${c.order_warnings.length ? ' <span class="badge badge-yellow text-[10px]">順序の矛盾</span>' : ''}${clip(c)}</p></a>${picking ? '</div>' : ''}`).join('') || '<p class="text-center text-gray-400 py-6">申請はありません</p>'}</div>`
+          <div class="flex items-center justify-between gap-2"><span>${statusBadge(c.status)}${waitLabel(c)}</span><span class="text-2xs text-neutral-400">${esc(fmtAt(c.created_at))}</span></div>
+          <p class="font-bold text-neutral-800 mt-1">${esc(c.staff_name || '')} ・${LABEL[c.report_type] || ''}</p>
+          <p class="text-xs text-neutral-500">${esc(c.work_date ? dayjs(c.work_date).format('M/D') : '')} ${esc(c.project_name || '')} ・${KIND[c.kind]}</p>
+          <p class="text-sm mt-1">${c.before_at ? esc(showAt(c.before_at, c.work_date)) + ' → ' : ''}<b>${esc(showAt(c.requested_at, c.work_date))}</b>${c.order_warnings.length ? ' <span class="badge badge-yellow text-3xs">順序の矛盾</span>' : ''}${clip(c)}</p></a>${picking ? '</div>' : ''}`).join('') || '<p class="text-center text-neutral-400 py-6">申請はありません</p>'}</div>`
     const sortSel = document.getElementById('corr-sort')
     if (sortSel) sortSel.onchange = () => corrSet('sort', sortSel.value)
     window.refreshCorrectionsBadge()
@@ -189,18 +189,18 @@
     }
     if (window.refreshNotifBadge) refreshNotifBadge()
     await renderCorrections()
-    const list = (xs, reason = true) => `<ul class="text-xs space-y-1 mt-1">${xs.map(x => `<li><a class="text-blue-600 underline" href="#corrections/${Number(x.correction_id)}" onclick="closeModal()">#${Number(x.correction_id)}</a>${reason && x.reason ? ' ' + esc(x.reason) : ''}</li>`).join('')}</ul>`
+    const list = (xs, reason = true) => `<ul class="text-xs space-y-1 mt-1">${xs.map(x => `<li><a class="text-primary-600 underline" href="#corrections/${Number(x.correction_id)}" onclick="closeModal()">#${Number(x.correction_id)}</a>${reason && x.reason ? ' ' + esc(x.reason) : ''}</li>`).join('')}</ul>`
     const ng = res.skipped.length + res.failed.length + res.lost.length
     const alreadyNote = res.already.length ? `（${res.already.length}件はすでに承認済みでした）` : ''
     if (!ng) { toast(`${res.approved.length}件を承認しました${alreadyNote}`); return }
     const box = (cls, title, xs, reason) => xs.length ? `<div class="mt-3 p-2.5 rounded-lg ${cls}"><p class="text-xs font-bold">${title}（${xs.length}件）</p>${list(xs, reason)}</div>` : ''
-    modal(`<h3 class="font-bold text-gray-800 mb-2">まとめて承認の結果</h3>
-      <p class="text-sm"><b>${res.approved.length}件</b>を承認しました。<b class="text-red-700">${ng}件</b>は承認できませんでした（理由は下のとおりです）。${esc(alreadyNote)}</p>
-      ${box('bg-amber-50 text-amber-800', '個別の確認が必要なため承認しなかった申請', res.skipped, true)}
-      ${box('bg-red-50 text-red-800', '承認できなかった申請', res.failed, true)}
-      ${res.lost.length ? `<div class="mt-3 p-2.5 rounded-lg bg-red-50 text-red-800"><p class="text-xs font-bold">通信が途切れたため、結果を確かめられなかった申請（${res.lost.length}件）</p>
+    modal(`<h3 class="font-bold text-neutral-800 mb-2">まとめて承認の結果</h3>
+      <p class="text-sm"><b>${res.approved.length}件</b>を承認しました。<b class="text-danger-700">${ng}件</b>は承認できませんでした（理由は下のとおりです）。${esc(alreadyNote)}</p>
+      ${box('bg-warning-50 text-warning-800', '個別の確認が必要なため承認しなかった申請', res.skipped, true)}
+      ${box('bg-danger-50 text-danger-800', '承認できなかった申請', res.failed, true)}
+      ${res.lost.length ? `<div class="mt-3 p-2.5 rounded-lg bg-danger-50 text-danger-800"><p class="text-xs font-bold">通信が途切れたため、結果を確かめられなかった申請（${res.lost.length}件）</p>
         <p class="text-xs mt-1">一覧で状態を確かめてください。もう一度選んで承認すると、承認済みの申請は二重に処理せず、残りだけを承認します。</p>${list(res.lost, true)}</div>` : ''}
-      ${box('bg-gray-50 text-gray-700', 'すでに承認済みだった申請（二重には承認していません）', res.already, false)}
+      ${box('bg-neutral-50 text-neutral-700', 'すでに承認済みだった申請（二重には承認していません）', res.already, false)}
       <button class="btn btn-outline w-full mt-4" onclick="closeModal()">閉じる</button>`)
   }))
 
@@ -215,26 +215,26 @@
   const judgeBadges = (r) => {
     if (!r) return ''
     const out = []
-    if (r.status === 'late') out.push(`<span class="badge badge-red text-[10px]">遅刻${r.late_minutes != null ? ' ' + Number(r.late_minutes) + '分' : ''}</span>`)
-    if (r.status === 'no_location') out.push('<span class="badge badge-yellow text-[10px]">位置なし</span>')
-    if (Number(r.early_leave_minutes) > 0) out.push(`<span class="badge badge-yellow text-[10px]">早退 ${Number(r.early_leave_minutes)}分</span>`)
+    if (r.status === 'late') out.push(`<span class="badge badge-red text-3xs">遅刻${r.late_minutes != null ? ' ' + Number(r.late_minutes) + '分' : ''}</span>`)
+    if (r.status === 'no_location') out.push('<span class="badge badge-yellow text-3xs">位置なし</span>')
+    if (Number(r.early_leave_minutes) > 0) out.push(`<span class="badge badge-yellow text-3xs">早退 ${Number(r.early_leave_minutes)}分</span>`)
     // 押した時刻と受け付けた時刻が違う打刻（#9939）。device は押した時刻、resent は受け付けた時刻で記録した
     if (!r.corrected_by_correction_id && (r.time_source === 'device' || r.time_source === 'resent')) {
-      out.push(`<span class="badge badge-gray text-[10px]" title="${r.time_source === 'device' ? '押した時刻で記録' : '受け付けた時刻で記録（端末の時計のずれ・送信の遅れ）'}。押した ${esc(fmtAt(r.pressed_at))}・受付 ${esc(fmtAt(r.received_at))}">再送</span>`)
+      out.push(`<span class="badge badge-gray text-3xs" title="${r.time_source === 'device' ? '押した時刻で記録' : '受け付けた時刻で記録（端末の時計のずれ・送信の遅れ）'}。押した ${esc(fmtAt(r.pressed_at))}・受付 ${esc(fmtAt(r.received_at))}">再送</span>`)
     }
-    if (r.corrected_by_correction_id) out.push(`<span class="badge badge-gray text-[10px]" title="打刻修正で変わった記録です">修正済み${r.original_reported_at ? '（元 ' + esc(fmtAt(r.original_reported_at)) + '）' : ''}</span>`)
+    if (r.corrected_by_correction_id) out.push(`<span class="badge badge-gray text-3xs" title="打刻修正で変わった記録です">修正済み${r.original_reported_at ? '（元 ' + esc(fmtAt(r.original_reported_at)) + '）' : ''}</span>`)
     return out.join(' ')
   }
   const mapLink = (r) => (r.latitude != null && r.longitude != null
-    ? `<a class="text-blue-600 underline" target="_blank" rel="noopener" href="https://www.google.com/maps?q=${encodeURIComponent(Number(r.latitude) + ',' + Number(r.longitude))}"><i class="fas fa-location-dot mr-0.5"></i>地図</a>` : '')
-  const photoLink = (r) => (r.has_photo ? `<a class="text-blue-600 underline" target="_blank" rel="noopener" href="/api/admin/attendance-photo/${Number(r.attendance_id)}"><i class="fas fa-camera mr-0.5"></i>写真</a>` : '')
+    ? `<a class="text-primary-600 underline" target="_blank" rel="noopener" href="https://www.google.com/maps?q=${encodeURIComponent(Number(r.latitude) + ',' + Number(r.longitude))}"><i class="fas fa-location-dot mr-0.5"></i>地図</a>` : '')
+  const photoLink = (r) => (r.has_photo ? `<a class="text-primary-600 underline" target="_blank" rel="noopener" href="/api/admin/attendance-photo/${Number(r.attendance_id)}"><i class="fas fa-camera mr-0.5"></i>写真</a>` : '')
   // 修正の対象になっている元の打刻（根拠。#443）
   function evidenceHtml(r, c) {
-    if (!r) return `<p class="text-xs text-gray-500">${c.kind === 'add' ? 'この報告はまだ記録されていません（打刻漏れの追加）' : '対象の記録が見つかりません'}</p>`
+    if (!r) return `<p class="text-xs text-neutral-500">${c.kind === 'add' ? 'この報告はまだ記録されていません（打刻漏れの追加）' : '対象の記録が見つかりません'}</p>`
     return `<div class="text-xs space-y-1">
         <p><b>${esc(showAt(r.reported_at, c.work_date))}</b> ・${methodLabel(r)} ${judgeBadges(r)}</p>
-        <p class="text-gray-600">${r.address ? esc(r.address) + ' ' : r.latitude != null ? '' : '<span class="text-gray-400">位置の記録なし</span> '}${mapLink(r)}</p>
-        ${r.has_photo ? `<a href="/api/admin/attendance-photo/${Number(r.attendance_id)}" target="_blank" rel="noopener" class="inline-block border rounded-lg overflow-hidden hover:ring-2 ring-blue-300"><img src="/api/admin/attendance-photo/${Number(r.attendance_id)}" alt="${esc(LABEL[r.report_type] || '')}の写真" loading="lazy" class="w-32 h-24 object-cover bg-gray-100"></a>` : ''}
+        <p class="text-neutral-600">${r.address ? esc(r.address) + ' ' : r.latitude != null ? '' : '<span class="text-neutral-400">位置の記録なし</span> '}${mapLink(r)}</p>
+        ${r.has_photo ? `<a href="/api/admin/attendance-photo/${Number(r.attendance_id)}" target="_blank" rel="noopener" class="inline-block border rounded-lg overflow-hidden hover:ring-2 ring-primary-300"><img src="/api/admin/attendance-photo/${Number(r.attendance_id)}" alt="${esc(LABEL[r.report_type] || '')}の写真" loading="lazy" class="w-32 h-24 object-cover bg-neutral-100"></a>` : ''}
       </div>`
   }
   // 申請に添付した写真・画像（#485）。写真が必須の案件の入店・退店の追加で添付がなければ、承認の前に確かめるよう知らせる
@@ -242,37 +242,37 @@
     const list = d.attachments || []
     if (!list.length) {
       return d.photo_required && c.kind === 'add' && c.status === 'pending'
-        ? '<div class="mt-3 p-2.5 rounded-lg bg-amber-50 text-xs text-amber-800"><i class="fas fa-camera mr-1"></i>写真が必須の案件ですが、この申請には写真の添付がありません。店舗の入退館記録などで確かめてから承認してください（承認しても、この報告は写真なしで記録されます）</div>'
+        ? '<div class="mt-3 p-2.5 rounded-lg bg-warning-50 text-xs text-warning-800"><i class="fas fa-camera mr-1"></i>写真が必須の案件ですが、この申請には写真の添付がありません。店舗の入退館記録などで確かめてから承認してください（承認しても、この報告は写真なしで記録されます）</div>'
         : ''
     }
-    return `<div class="mt-3"><p class="text-xs font-bold text-gray-500 mb-1"><i class="fas fa-paperclip mr-1"></i>添付（${list.length}枚）</p>
-      <div class="flex flex-wrap gap-2">${list.map(a => `<a href="/api/admin/corrections/attachments/${Number(a.attachment_id)}" target="_blank" rel="noopener" class="block border rounded-lg overflow-hidden hover:ring-2 ring-blue-300">
-        <img src="/api/admin/corrections/attachments/${Number(a.attachment_id)}" alt="添付の画像" loading="lazy" class="w-32 h-24 object-cover bg-gray-100">
-        <span class="block text-[10px] text-gray-500 px-1">${a.photo_taken_at ? '撮影 ' + esc(fmtAt(a.photo_taken_at)) : '送信 ' + esc(fmtAt(a.created_at))}${a.correction_id !== c.correction_id ? ` ・#${Number(a.correction_id)}に添付` : ''}</span></a>`).join('')}</div>
-      ${PHOTO_TYPES.includes(c.report_type) && c.status === 'pending' && list.some(a => a.correction_id === c.correction_id) ? '<p class="text-[11px] text-gray-500 mt-1">承認すると、この報告に写真がなければ、この申請の1枚目の添付を報告の写真として記録します</p>' : ''}</div>`
+    return `<div class="mt-3"><p class="text-xs font-bold text-neutral-500 mb-1"><i class="fas fa-paperclip mr-1"></i>添付（${list.length}枚）</p>
+      <div class="flex flex-wrap gap-2">${list.map(a => `<a href="/api/admin/corrections/attachments/${Number(a.attachment_id)}" target="_blank" rel="noopener" class="block border rounded-lg overflow-hidden hover:ring-2 ring-primary-300">
+        <img src="/api/admin/corrections/attachments/${Number(a.attachment_id)}" alt="添付の画像" loading="lazy" class="w-32 h-24 object-cover bg-neutral-100">
+        <span class="block text-3xs text-neutral-500 px-1">${a.photo_taken_at ? '撮影 ' + esc(fmtAt(a.photo_taken_at)) : '送信 ' + esc(fmtAt(a.created_at))}${a.correction_id !== c.correction_id ? ` ・#${Number(a.correction_id)}に添付` : ''}</span></a>`).join('')}</div>
+      ${PHOTO_TYPES.includes(c.report_type) && c.status === 'pending' && list.some(a => a.correction_id === c.correction_id) ? '<p class="text-2xs text-neutral-500 mt-1">承認すると、この報告に写真がなければ、この申請の1枚目の添付を報告の写真として記録します</p>' : ''}</div>`
   }
   // 承認した場合の遅刻の判定と実績・金額（変更前 → 変更後。#69 #443）
   function previewHtml(p, c) {
     if (!p) return ''
-    const lt = (x) => !x ? '<span class="text-gray-400">記録なし</span>'
-      : x.status === 'late' ? `<span class="text-red-600 font-bold">遅刻 ${Number(x.late_minutes || 0)}分</span>`
-      : Number(x.early_leave_minutes) > 0 ? `<span class="text-amber-700">早退 ${Number(x.early_leave_minutes)}分</span>`
+    const lt = (x) => !x ? '<span class="text-neutral-400">記録なし</span>'
+      : x.status === 'late' ? `<span class="text-danger-600 font-bold">遅刻 ${Number(x.late_minutes || 0)}分</span>`
+      : Number(x.early_leave_minutes) > 0 ? `<span class="text-warning-700">早退 ${Number(x.early_leave_minutes)}分</span>`
       : x.status === 'no_location' ? '位置なし（遅刻なし）' : (LATE_TYPES.includes(c.report_type) ? '遅刻なし' : '早退なし')
     const act = (x) => x.actual_start && x.actual_end
       ? `${esc(x.actual_start)}〜${esc(x.actual_end)}${x.actual_break_minutes != null ? `（休憩${Number(x.actual_break_minutes)}分）` : ''} ${Number(x.hours)}h`
       : `予定どおり ${Number(x.hours)}h`
     const a = p.actual, changed = (k) => a.before[k] !== a.after[k]
-    const arrow = (b, af, k) => changed(k) ? `${b} → <b>${af}</b>` : `${af}<span class="text-gray-400">（変わりません）</span>`
+    const arrow = (b, af, k) => changed(k) ? `${b} → <b>${af}</b>` : `${af}<span class="text-neutral-400">（変わりません）</span>`
     const rows = []
     if (LATE_TYPES.includes(c.report_type) || EARLY_TYPES.includes(c.report_type)) rows.push(['遅刻・早退', `${lt(p.lateness.before)} → <b>${lt(p.lateness.after)}</b>`])
-    if (a.fixed) rows.push(['実績・金額', `<span class="text-amber-700">${a.fixed === 'settled' ? '確定済みのため、実績・金額は変わりません' : MANUAL_NOTE}</span>`])
+    if (a.fixed) rows.push(['実績・金額', `<span class="text-warning-700">${a.fixed === 'settled' ? '確定済みのため、実績・金額は変わりません' : MANUAL_NOTE}</span>`])
     else {
-      rows.push(['実働', changed('actual_start') || changed('actual_end') || changed('actual_break_minutes') || changed('hours') ? `${act(a.before)} → <b>${act(a.after)}</b>` : `${act(a.after)}<span class="text-gray-400">（変わりません）</span>`])
+      rows.push(['実働', changed('actual_start') || changed('actual_end') || changed('actual_break_minutes') || changed('hours') ? `${act(a.before)} → <b>${act(a.after)}</b>` : `${act(a.after)}<span class="text-neutral-400">（変わりません）</span>`])
       rows.push(['請求', arrow(yenOrDash(a.before.bill_total), yenOrDash(a.after.bill_total), 'bill_total')])
       rows.push(['支払', arrow(yenOrDash(a.before.pay_total), yenOrDash(a.after.pay_total), 'pay_total')])
     }
-    return `<p class="text-xs font-bold text-gray-500 mb-1">承認した場合（${esc(fmtAt(p.requested_at))}で反映）</p>
-      <dl class="text-xs">${rows.map(([k, v]) => `<div class="flex gap-2 py-0.5"><dt class="w-20 shrink-0 text-gray-500">${k}</dt><dd class="flex-1 min-w-0">${v}</dd></div>`).join('')}</dl>`
+    return `<p class="text-xs font-bold text-neutral-500 mb-1">承認した場合（${esc(fmtAt(p.requested_at))}で反映）</p>
+      <dl class="text-xs">${rows.map(([k, v]) => `<div class="flex gap-2 py-0.5"><dt class="w-20 shrink-0 text-neutral-500">${k}</dt><dd class="flex-1 min-w-0">${v}</dd></div>`).join('')}</dl>`
   }
 
   async function openDetail(id) {
@@ -288,44 +288,44 @@
     const target = d.reports.find(x => x.report_type === c.report_type)
     // 申請の後に打刻が変わった（時刻修正の変更前と今の記録が違う）
     const changedNow = c.status === 'pending' && c.kind === 'modify' && target && target.reported_at !== c.before_at
-    const dl = (k, v) => `<div class="flex gap-2 py-1 border-b border-gray-50"><dt class="w-28 shrink-0 text-gray-500">${k}</dt><dd class="flex-1 min-w-0 break-words">${v}</dd></div>`
-    modal(`<div class="flex items-start justify-between gap-2 mb-2"><h3 class="font-bold text-gray-800">${LABEL[c.report_type]}（${KIND[c.kind]}） #${Number(c.correction_id)}</h3>${statusBadge(c.status)}</div>
+    const dl = (k, v) => `<div class="flex gap-2 py-1 border-b border-neutral-50"><dt class="w-28 shrink-0 text-neutral-500">${k}</dt><dd class="flex-1 min-w-0 break-words">${v}</dd></div>`
+    modal(`<div class="flex items-start justify-between gap-2 mb-2"><h3 class="font-bold text-neutral-800">${LABEL[c.report_type]}（${KIND[c.kind]}） #${Number(c.correction_id)}</h3>${statusBadge(c.status)}</div>
       <dl class="text-sm">
-        ${dl('案件', esc(c.project_name || '') + (c.project_status && c.project_status !== 'active' ? ' <span class="badge badge-gray text-[10px]">終了</span>' : ''))}
+        ${dl('案件', esc(c.project_name || '') + (c.project_status && c.project_status !== 'active' ? ' <span class="badge badge-gray text-3xs">終了</span>' : ''))}
         ${dl('スタッフ', esc(c.staff_name || ''))}
-        ${dl('勤務', `${esc(c.work_date ? dayjs(c.work_date).format('YYYY/M/D') : '')} ${esc(c.start_time || '')}〜${esc(c.end_time || '')}${c.settle_status === 'confirmed' ? ' <span class="badge badge-blue text-[10px]">確定済み</span>' : ''}`)}
+        ${dl('勤務', `${esc(c.work_date ? dayjs(c.work_date).format('YYYY/M/D') : '')} ${esc(c.start_time || '')}〜${esc(c.end_time || '')}${c.settle_status === 'confirmed' ? ' <span class="badge badge-blue text-3xs">確定済み</span>' : ''}`)}
         ${dl('変更前', esc(fmtAt(c.before_at)))}
-        ${dl(c.status === 'approved' ? '変更後（承認）' : '変更後', `<b>${esc(fmtAt(c.requested_at))}</b>${approvedEv && approvedEv.detail.adjusted ? ` <span class="badge badge-yellow text-[10px]">修正して承認</span><span class="block text-xs text-gray-500">申請の日時: ${esc(fmtAt(approvedEv.detail.requested_at_original))}</span>` : ''}${approvedEv && approvedEv.detail.rebased ? `<span class="block text-xs text-gray-500">申請の後に変わった記録（申請時の変更前: ${esc(fmtAt(approvedEv.detail.before_at_original))}）をもとに承認</span>` : ''}`)}
+        ${dl(c.status === 'approved' ? '変更後（承認）' : '変更後', `<b>${esc(fmtAt(c.requested_at))}</b>${approvedEv && approvedEv.detail.adjusted ? ` <span class="badge badge-yellow text-3xs">修正して承認</span><span class="block text-xs text-neutral-500">申請の日時: ${esc(fmtAt(approvedEv.detail.requested_at_original))}</span>` : ''}${approvedEv && approvedEv.detail.rebased ? `<span class="block text-xs text-neutral-500">申請の後に変わった記録（申請時の変更前: ${esc(fmtAt(approvedEv.detail.before_at_original))}）をもとに承認</span>` : ''}`)}
         ${dl('修正理由', `<span class="whitespace-pre-wrap">${esc(c.reason)}</span>`)}
         ${dl('申請者', `${esc(c.requested_by_name || '')}（${ROLE[c.requested_by_role] || esc(c.requested_by_role || '')}） ${esc(fmtAt(c.created_at))}`)}
-        ${c.resubmitted_from ? dl('再申請', `元の申請 <a class="text-blue-600 underline" href="#corrections/${Number(c.resubmitted_from)}">#${Number(c.resubmitted_from)}</a>`) : ''}
-        ${c.decided_at && c.status !== 'cancelled' ? dl(c.status === 'rejected' ? '却下' : '承認', `${esc(c.decided_by_name || '')} ${esc(fmtAt(c.decided_at))}${c.is_exception ? ' <span class="badge badge-yellow text-[10px]">例外承認</span>' : ''}`) : ''}
+        ${c.resubmitted_from ? dl('再申請', `元の申請 <a class="text-primary-600 underline" href="#corrections/${Number(c.resubmitted_from)}">#${Number(c.resubmitted_from)}</a>`) : ''}
+        ${c.decided_at && c.status !== 'cancelled' ? dl(c.status === 'rejected' ? '却下' : '承認', `${esc(c.decided_by_name || '')} ${esc(fmtAt(c.decided_at))}${c.is_exception ? ' <span class="badge badge-yellow text-3xs">例外承認</span>' : ''}`) : ''}
         ${c.decision_comment ? dl('承認者コメント', `<span class="whitespace-pre-wrap">${esc(c.decision_comment)}</span>`) : ''}
         ${c.reject_reason ? dl('却下理由', `<span class="whitespace-pre-wrap">${esc(c.reject_reason)}</span>`) : ''}
         ${c.cancelled_at ? dl('取り消し', esc(fmtAt(c.cancelled_at))) : ''}
-        ${c.applied_while_settled ? dl('反映', '<span class="text-amber-700">確定済みのシフトのため、実績・金額は確定時のままです（精算で確定を取り消すと、報告の時刻が実績・金額に反映されます）</span>') : ''}
-        ${appliedWhileManual ? dl('反映', `<span class="text-amber-700">${MANUAL_NOTE}</span>`) : ''}
+        ${c.applied_while_settled ? dl('反映', '<span class="text-warning-700">確定済みのシフトのため、実績・金額は確定時のままです（精算で確定を取り消すと、報告の時刻が実績・金額に反映されます）</span>') : ''}
+        ${appliedWhileManual ? dl('反映', `<span class="text-warning-700">${MANUAL_NOTE}</span>`) : ''}
       </dl>
-      ${c.status === 'pending' && manualNow ? `<div class="mt-3 p-2.5 rounded-lg bg-amber-50 text-xs text-amber-800"><i class="fas fa-pen-to-square mr-1"></i>このシフトは実績が手入力です。承認しても勤怠の記録だけが変わり、実績・金額は変わりません（精算の「実績・金額」で「報告の時刻に戻す」と反映されます）</div>` : ''}
-      ${changedNow ? `<div class="mt-3 p-2.5 rounded-lg bg-amber-50 text-xs text-amber-800"><i class="fas fa-clock-rotate-left mr-1"></i>申請の後に打刻が変わりました（申請時の変更前: ${esc(fmtAt(c.before_at))} → 今の記録: ${esc(fmtAt(target.reported_at))}）。「日時を修正して承認」で今の記録をもとに承認するか、却下してください</div>` : ''}
-      ${warns && warns.length ? `<div class="mt-3 p-2.5 rounded-lg bg-amber-50 text-xs text-amber-800"><p class="font-bold mb-1"><i class="fas fa-triangle-exclamation mr-1"></i>報告の順序の矛盾</p><ul class="list-disc pl-4">${warns.map(w => `<li>${esc(w)}</li>`).join('')}</ul></div>` : ''}
+      ${c.status === 'pending' && manualNow ? `<div class="mt-3 p-2.5 rounded-lg bg-warning-50 text-xs text-warning-800"><i class="fas fa-pen-to-square mr-1"></i>このシフトは実績が手入力です。承認しても勤怠の記録だけが変わり、実績・金額は変わりません（精算の「実績・金額」で「報告の時刻に戻す」と反映されます）</div>` : ''}
+      ${changedNow ? `<div class="mt-3 p-2.5 rounded-lg bg-warning-50 text-xs text-warning-800"><i class="fas fa-clock-rotate-left mr-1"></i>申請の後に打刻が変わりました（申請時の変更前: ${esc(fmtAt(c.before_at))} → 今の記録: ${esc(fmtAt(target.reported_at))}）。「日時を修正して承認」で今の記録をもとに承認するか、却下してください</div>` : ''}
+      ${warns && warns.length ? `<div class="mt-3 p-2.5 rounded-lg bg-warning-50 text-xs text-warning-800"><p class="font-bold mb-1"><i class="fas fa-triangle-exclamation mr-1"></i>報告の順序の矛盾</p><ul class="list-disc pl-4">${warns.map(w => `<li>${esc(w)}</li>`).join('')}</ul></div>` : ''}
       ${attachmentsHtml(d, c)}
-      ${c.status === 'pending' ? `<div class="mt-3 p-2.5 rounded-lg bg-gray-50"><p class="text-xs font-bold text-gray-500 mb-1">今の${LABEL[c.report_type]}の記録（根拠）</p>${evidenceHtml(target, c)}</div>
-        <div id="corr-preview" class="mt-3 p-2.5 rounded-lg bg-blue-50">${previewHtml(d.preview, c) || '<p class="text-xs text-gray-400">承認した場合の実績・金額を計算できませんでした</p>'}</div>` : ''}
-      <div class="mt-3"><p class="text-xs font-bold text-gray-500 mb-1">このシフトの今の記録</p>
-        ${d.reports.length ? `<ul class="text-xs divide-y divide-gray-50">${TYPES.map(t => { const r = d.reports.find(x => x.report_type === t); return r ? `<li class="py-1 flex flex-wrap items-center gap-1 ${t === c.report_type ? 'font-bold' : ''}">
-          <span class="w-16 shrink-0">${LABEL[t]}</span><span>${esc(showAt(r.reported_at, c.work_date))}</span><span class="text-gray-500">・${methodLabel(r)}</span>${judgeBadges(r)} ${mapLink(r)} ${photoLink(r)}</li>` : '' }).join('')}</ul>` : '<span class="text-xs text-gray-400">記録はありません</span>'}</div>
-      <details class="mt-3"><summary class="text-xs font-bold text-gray-500 cursor-pointer">操作の履歴・同じ報告の申請（${d.history.length}件）</summary>
-        <ol class="mt-2 space-y-1 text-xs">${d.events.map(e => `<li><span class="text-gray-400">${esc(fmtAt(e.created_at))}</span> ${EVENT[e.event] || esc(e.event)} ・${esc(e.actor_name || '')}${e.detail && e.detail.adjusted ? ` ・申請 ${esc(fmtAt(e.detail.requested_at_original))} を ${esc(fmtAt(e.detail.requested_at))} に修正して承認` : ''}${e.detail && e.detail.with_request ? ' ・申請と同時に承認' : ''}${e.detail && e.detail.report_status === 'late' ? ` ・遅刻${e.detail.late_minutes != null ? ' ' + Number(e.detail.late_minutes) + '分' : ''}` : e.detail && e.detail.before_status === 'late' && e.detail.report_status ? ' ・遅刻を解消' : ''}${e.detail && e.detail.comment ? ' ・' + esc(e.detail.comment) : ''}${e.detail && e.detail.reason && e.event === 'rejected' ? ' ・' + esc(e.detail.reason) : ''}</li>`).join('')}</ol>
-        <ul class="mt-2 space-y-1 text-xs">${d.history.map(h => `<li class="${h.correction_id === c.correction_id ? 'font-bold' : ''}"><a class="text-blue-600" href="#corrections/${Number(h.correction_id)}">#${Number(h.correction_id)}</a> ${(STATUS[h.status] || [h.status])[0]} ・${KIND[h.kind]} ・${esc(showAt(h.requested_at, c.work_date))} ・${esc(h.requested_by_name || '')}${h.reject_reason ? ' ・却下の理由: ' + esc(h.reject_reason) : ''}</li>`).join('')}</ul></details>
+      ${c.status === 'pending' ? `<div class="mt-3 p-2.5 rounded-lg bg-neutral-50"><p class="text-xs font-bold text-neutral-500 mb-1">今の${LABEL[c.report_type]}の記録（根拠）</p>${evidenceHtml(target, c)}</div>
+        <div id="corr-preview" class="mt-3 p-2.5 rounded-lg bg-primary-50">${previewHtml(d.preview, c) || '<p class="text-xs text-neutral-400">承認した場合の実績・金額を計算できませんでした</p>'}</div>` : ''}
+      <div class="mt-3"><p class="text-xs font-bold text-neutral-500 mb-1">このシフトの今の記録</p>
+        ${d.reports.length ? `<ul class="text-xs divide-y divide-neutral-50">${TYPES.map(t => { const r = d.reports.find(x => x.report_type === t); return r ? `<li class="py-1 flex flex-wrap items-center gap-1 ${t === c.report_type ? 'font-bold' : ''}">
+          <span class="w-16 shrink-0">${LABEL[t]}</span><span>${esc(showAt(r.reported_at, c.work_date))}</span><span class="text-neutral-500">・${methodLabel(r)}</span>${judgeBadges(r)} ${mapLink(r)} ${photoLink(r)}</li>` : '' }).join('')}</ul>` : '<span class="text-xs text-neutral-400">記録はありません</span>'}</div>
+      <details class="mt-3"><summary class="text-xs font-bold text-neutral-500 cursor-pointer">操作の履歴・同じ報告の申請（${d.history.length}件）</summary>
+        <ol class="mt-2 space-y-1 text-xs">${d.events.map(e => `<li><span class="text-neutral-400">${esc(fmtAt(e.created_at))}</span> ${EVENT[e.event] || esc(e.event)} ・${esc(e.actor_name || '')}${e.detail && e.detail.adjusted ? ` ・申請 ${esc(fmtAt(e.detail.requested_at_original))} を ${esc(fmtAt(e.detail.requested_at))} に修正して承認` : ''}${e.detail && e.detail.with_request ? ' ・申請と同時に承認' : ''}${e.detail && e.detail.report_status === 'late' ? ` ・遅刻${e.detail.late_minutes != null ? ' ' + Number(e.detail.late_minutes) + '分' : ''}` : e.detail && e.detail.before_status === 'late' && e.detail.report_status ? ' ・遅刻を解消' : ''}${e.detail && e.detail.comment ? ' ・' + esc(e.detail.comment) : ''}${e.detail && e.detail.reason && e.event === 'rejected' ? ' ・' + esc(e.detail.reason) : ''}</li>`).join('')}</ol>
+        <ul class="mt-2 space-y-1 text-xs">${d.history.map(h => `<li class="${h.correction_id === c.correction_id ? 'font-bold' : ''}"><a class="text-primary-600" href="#corrections/${Number(h.correction_id)}">#${Number(h.correction_id)}</a> ${(STATUS[h.status] || [h.status])[0]} ・${KIND[h.kind]} ・${esc(showAt(h.requested_at, c.work_date))} ・${esc(h.requested_by_name || '')}${h.reject_reason ? ' ・却下の理由: ' + esc(h.reject_reason) : ''}</li>`).join('')}</ul></details>
       <div id="corr-actions" class="mt-4 space-y-2">
         ${c.status === 'pending' ? `
           <textarea id="corr-comment" rows="2" maxlength="500" class="inp text-sm" placeholder="承認者コメント（任意。日時を修正して承認するときは修正の理由として必須）・却下理由（却下するときは必須）"></textarea>
-          ${c.kind === 'add' && warns && warns.length ? '<label class="flex items-start gap-2 text-xs text-amber-800"><input type="checkbox" id="corr-exception" class="mt-0.5 w-4 h-4">順序の矛盾を確認しました。例外として承認します</label>' : ''}
-          <div id="corr-adjust" class="hidden p-2.5 rounded-lg border border-blue-200 space-y-2">
+          ${c.kind === 'add' && warns && warns.length ? '<label class="flex items-start gap-2 text-xs text-warning-800"><input type="checkbox" id="corr-exception" class="mt-0.5 w-4 h-4">順序の矛盾を確認しました。例外として承認します</label>' : ''}
+          <div id="corr-adjust" class="hidden p-2.5 rounded-lg border border-primary-200 space-y-2">
             <label class="block text-sm">承認する日時<input type="datetime-local" id="corr-adjust-at" class="inp"></label>
-            <p id="corr-adjust-base" class="text-xs text-gray-500"></p>
-            <p class="text-xs text-gray-500">申請の日時は操作の履歴に残り、申請者には修正した日時で知らせます。修正の理由を上のコメントに入力してください</p>
+            <p id="corr-adjust-base" class="text-xs text-neutral-500"></p>
+            <p class="text-xs text-neutral-500">申請の日時は操作の履歴に残り、申請者には修正した日時で知らせます。修正の理由を上のコメントに入力してください</p>
             <button type="button" class="btn btn-primary w-full" data-action="corrApproveAdjusted"><i class="fas fa-check"></i>この日時で承認</button>
           </div>
           <div class="flex gap-2"><button class="btn btn-danger flex-1" onclick="corrReject(this)"><i class="fas fa-xmark"></i>却下</button>
@@ -335,7 +335,7 @@
         ${c.status === 'rejected' && mine && !d.history.some(h => h.resubmitted_from === c.correction_id) ? '<button class="btn btn-outline w-full text-sm" onclick="corrResubmitForm()">修正して再申請</button>' : ''}
         <button class="btn btn-outline w-full text-sm" onclick="closeModal()">閉じる</button>
       </div>
-      <p id="corr-msg" class="text-xs text-red-600 mt-2"></p>`, {
+      <p id="corr-msg" class="text-xs text-danger-600 mt-2"></p>`, {
       // 背景をタップして閉じたときも URL を一覧に戻し、同じ申請を開き直せるようにする（#266）
       onClose: () => { if (location.hash === '#corrections/' + c.correction_id) history.replaceState(null, '', '#corrections') },
     })
@@ -363,7 +363,7 @@
       // 直した日時で順序の矛盾が出た打刻漏れの追加: 例外として承認する確認欄を出す（申請の時点では矛盾がなく、欄がない場合）
       if (d && d.need_exception && !document.getElementById('corr-exception')) {
         const box = document.getElementById('corr-adjust')
-        if (box) box.insertAdjacentHTML('beforebegin', '<label class="flex items-start gap-2 text-xs text-amber-800"><input type="checkbox" id="corr-exception" class="mt-0.5 w-4 h-4">順序の矛盾を確認しました。例外として承認します</label>')
+        if (box) box.insertAdjacentHTML('beforebegin', '<label class="flex items-start gap-2 text-xs text-warning-800"><input type="checkbox" id="corr-exception" class="mt-0.5 w-4 h-4">順序の矛盾を確認しました。例外として承認します</label>')
       }
     } finally { busy = false }
   }
@@ -391,7 +391,7 @@
     try {
       const { data } = await axios.post(`/api/admin/corrections/${c.correction_id}/approve`, { requested_at: at, base_at: box.dataset.baseAt || undefined, dry_run: true })
       if (seq !== previewSeq) return
-      host.innerHTML = previewHtml(data.preview, c) + (data.conflicts && data.conflicts.length ? `<p class="text-xs text-amber-800 mt-1"><i class="fas fa-triangle-exclamation mr-1"></i>${data.conflicts.map(esc).join(' / ')}</p>` : '')
+      host.innerHTML = previewHtml(data.preview, c) + (data.conflicts && data.conflicts.length ? `<p class="text-xs text-warning-800 mt-1"><i class="fas fa-triangle-exclamation mr-1"></i>${data.conflicts.map(esc).join(' / ')}</p>` : '')
       document.getElementById('corr-msg').textContent = ''
     } catch (e) { if (seq === previewSeq) document.getElementById('corr-msg').textContent = errMsg(e) }
   }
@@ -431,15 +431,15 @@
     const today = dayjs().format('YYYY-MM-DD')
     const date = /^\d{4}-\d{2}-\d{2}$/.test(opts.date || '') ? opts.date : today
     Object.assign(NQ, { from: date, to: date, q: '', staff_id: /^\d+$/.test(String(opts.staff_id || '')) ? String(opts.staff_id) : '', staff_name: opts.staff_name || '' })
-    modal(`<h3 class="font-bold text-gray-800 mb-1">管理者として申請</h3>
-      <p class="text-xs text-gray-500 mb-2">打刻の修正・打刻漏れの追加を、スタッフに代わって申請します。欠勤・希望（仮）のシフトには申請できません</p>
+    modal(`<h3 class="font-bold text-neutral-800 mb-1">管理者として申請</h3>
+      <p class="text-xs text-neutral-500 mb-2">打刻の修正・打刻漏れの追加を、スタッフに代わって申請します。欠勤・希望（仮）のシフトには申請できません</p>
       <div id="cn-search">
         <div class="grid grid-cols-2 gap-2">
           <label class="block text-xs">勤務日（から）<input type="date" id="cn-from" class="inp text-sm" value="${esc(NQ.from)}"></label>
           <label class="block text-xs">勤務日（まで）<input type="date" id="cn-to" class="inp text-sm" value="${esc(NQ.to)}"></label>
         </div>
         <label class="block text-xs mt-2">スタッフ名・案件名・社員番号<input id="cn-q" class="inp text-sm" placeholder="一部でも可" autocomplete="off"></label>
-        <p id="cn-staff" class="text-xs mt-1 ${NQ.staff_id ? '' : 'hidden'}">スタッフ: <b>${esc(NQ.staff_name || '#' + NQ.staff_id)}</b> <button type="button" class="text-blue-600 underline ml-1" data-action="corrClearStaff">すべてのスタッフ</button></p>
+        <p id="cn-staff" class="text-xs mt-1 ${NQ.staff_id ? '' : 'hidden'}">スタッフ: <b>${esc(NQ.staff_name || '#' + NQ.staff_id)}</b> <button type="button" class="text-primary-600 underline ml-1" data-action="corrClearStaff">すべてのスタッフ</button></p>
         <div id="cn-shifts" class="mt-2"></div>
       </div>
       <div id="cn-form" class="mt-2"></div>`, {
@@ -461,45 +461,45 @@
     document.getElementById('cn-search').classList.remove('hidden')
     document.getElementById('cn-form').innerHTML = ''
     const seq = ++shiftSeq
-    host.innerHTML = '<p class="text-xs text-gray-400">読み込み中…</p>'
+    host.innerHTML = '<p class="text-xs text-neutral-400">読み込み中…</p>'
     const params = { from: NQ.from, to: NQ.to }
     if (NQ.q) params.q = NQ.q
     if (NQ.staff_id) params.staff_id = NQ.staff_id
     let data
-    try { data = (await axios.get('/api/admin/corrections/shift-candidates', { params })).data } catch (e) { if (seq === shiftSeq) host.innerHTML = `<p class="text-xs text-red-600">${esc(errMsg(e))}</p>`; return }
+    try { data = (await axios.get('/api/admin/corrections/shift-candidates', { params })).data } catch (e) { if (seq === shiftSeq) host.innerHTML = `<p class="text-xs text-danger-600">${esc(errMsg(e))}</p>`; return }
     if (seq !== shiftSeq) return
     const list = data.shifts || []
     const multiDay = NQ.from !== NQ.to
     host.innerHTML = list.length ? `<div class="max-h-72 overflow-y-auto space-y-1">${list.map(s => `
-        <button type="button" class="w-full text-left px-2 py-1.5 rounded-lg border border-gray-200 hover:bg-blue-50 text-xs" data-action="corrPickShift" data-id="${Number(s.shift_id)}">
-          <span class="font-bold text-gray-800">${esc(s.staff_name)}</span>${s.employee_number ? ` <span class="text-gray-400">${esc(s.employee_number)}</span>` : ''}
-          <span class="block text-gray-500">${multiDay ? esc(dayjs(s.work_date).format('M/D')) + ' ' : ''}${esc(s.start_time)}〜${esc(s.end_time)} ・${esc(s.project_name)}
-            ${Number(s.report_count) ? ` ・報告${Number(s.report_count)}件` : ' ・報告なし'}${Number(s.pending_count) ? ` <span class="badge badge-yellow text-[10px]">承認待ち${Number(s.pending_count)}</span>` : ''}${s.settle_status === 'confirmed' ? ' <span class="badge badge-blue text-[10px]">確定済み</span>' : ''}</span>
-        </button>`).join('')}</div>${data.truncated ? `<p class="text-xs text-amber-700 mt-1">該当が多いため、先頭の${Number(data.limit)}件を表示しています。名前や期間で絞り込んでください</p>` : ''}`
-      : '<p class="text-xs text-gray-400">条件に合うシフトはありません（欠勤・希望（仮）のシフトは出ません）</p>'
+        <button type="button" class="w-full text-left px-2 py-1.5 rounded-lg border border-neutral-200 hover:bg-primary-50 text-xs" data-action="corrPickShift" data-id="${Number(s.shift_id)}">
+          <span class="font-bold text-neutral-800">${esc(s.staff_name)}</span>${s.employee_number ? ` <span class="text-neutral-400">${esc(s.employee_number)}</span>` : ''}
+          <span class="block text-neutral-500">${multiDay ? esc(dayjs(s.work_date).format('M/D')) + ' ' : ''}${esc(s.start_time)}〜${esc(s.end_time)} ・${esc(s.project_name)}
+            ${Number(s.report_count) ? ` ・報告${Number(s.report_count)}件` : ' ・報告なし'}${Number(s.pending_count) ? ` <span class="badge badge-yellow text-3xs">承認待ち${Number(s.pending_count)}</span>` : ''}${s.settle_status === 'confirmed' ? ' <span class="badge badge-blue text-3xs">確定済み</span>' : ''}</span>
+        </button>`).join('')}</div>${data.truncated ? `<p class="text-xs text-warning-700 mt-1">該当が多いため、先頭の${Number(data.limit)}件を表示しています。名前や期間で絞り込んでください</p>` : ''}`
+      : '<p class="text-xs text-neutral-400">条件に合うシフトはありません（欠勤・希望（仮）のシフトは出ません）</p>'
   }
   delegate('corrPickShift', (el) => corrLoadShift(Number(el.dataset.id)))
   delegate('corrBackToShifts', () => corrLoadShifts())
   let NEWCTX = null
   window.corrLoadShift = async function (id) {
     const host = document.getElementById('cn-form'); if (!id) { host.innerHTML = ''; return }
-    try { NEWCTX = (await axios.get(`/api/admin/corrections/shift/${Number(id)}`)).data } catch (e) { host.innerHTML = `<p class="text-xs text-red-600">${esc(errMsg(e))}</p>`; return }
+    try { NEWCTX = (await axios.get(`/api/admin/corrections/shift/${Number(id)}`)).data } catch (e) { host.innerHTML = `<p class="text-xs text-danger-600">${esc(errMsg(e))}</p>`; return }
     const s = NEWCTX.shift
     // 選んだシフトを示し、候補の一覧は畳む（別のシフトを選び直せる）
     document.getElementById('cn-search').classList.add('hidden')
-    host.innerHTML = `<div class="p-2 rounded-lg bg-gray-50 text-sm flex items-start justify-between gap-2">
-        <div><b>${esc(s.staff_name)}</b><span class="block text-xs text-gray-500">${esc(dayjs(s.work_date).format('YYYY/M/D'))} ${esc(s.start_time)}〜${esc(s.end_time)} ・${esc(s.project_name)}${s.settled ? ' <span class="badge badge-blue text-[10px]">確定済み</span>' : ''}</span></div>
-        <button type="button" class="text-xs text-blue-600 underline whitespace-nowrap" data-action="corrBackToShifts">別のシフトを選ぶ</button></div>
-      ${!['confirmed', 'substitute'].includes(s.status) ? `<p class="text-xs text-red-600 mt-2">${s.status === 'absent' ? '欠勤' : '未確定（希望（仮））'}のシフトには申請できません</p>` : `
+    host.innerHTML = `<div class="p-2 rounded-lg bg-neutral-50 text-sm flex items-start justify-between gap-2">
+        <div><b>${esc(s.staff_name)}</b><span class="block text-xs text-neutral-500">${esc(dayjs(s.work_date).format('YYYY/M/D'))} ${esc(s.start_time)}〜${esc(s.end_time)} ・${esc(s.project_name)}${s.settled ? ' <span class="badge badge-blue text-3xs">確定済み</span>' : ''}</span></div>
+        <button type="button" class="text-xs text-primary-600 underline whitespace-nowrap" data-action="corrBackToShifts">別のシフトを選ぶ</button></div>
+      ${!['confirmed', 'substitute'].includes(s.status) ? `<p class="text-xs text-danger-600 mt-2">${s.status === 'absent' ? '欠勤' : '未確定（希望（仮））'}のシフトには申請できません</p>` : `
       <label class="block text-sm mt-2">報告<select id="cn-type" class="inp" onchange="corrTypeChanged()">${TYPES.map(t => { const r = NEWCTX.reports.find(x => x.report_type === t); const p = NEWCTX.pending.find(x => x.report_type === t); return `<option value="${t}" ${p ? 'disabled' : ''}>${LABEL[t]}（${p ? '承認待ちあり' : r ? '記録 ' + esc(showAt(r.reported_at, s.work_date)) : '未報告'}${NEWCTX.enabled.includes(t) ? '' : '・設定OFF'}）</option>` }).join('')}</select></label>
-      <p id="cn-kind" class="text-xs text-gray-500 mt-1"></p>
+      <p id="cn-kind" class="text-xs text-neutral-500 mt-1"></p>
       <label class="block text-sm mt-2">日時<input type="datetime-local" id="corr-at" class="inp"></label>
       <label class="block text-sm mt-2">修正理由（必須）<textarea id="corr-reason" rows="3" maxlength="500" class="inp"></textarea></label>
       <label class="flex items-start gap-2 text-sm mt-2"><input type="checkbox" id="cn-approve-now" class="mt-0.5 w-4 h-4" checked>
-        <span>申請と同時に承認する<span class="block text-[11px] text-gray-500">電話で受けた修正などを、その場で記録に反映します。ほかの管理者への承認依頼は送りません。外すと承認待ちの申請になります</span></span></label>
+        <span>申請と同時に承認する<span class="block text-2xs text-neutral-500">電話で受けた修正などを、その場で記録に反映します。ほかの管理者への承認依頼は送りません。外すと承認待ちの申請になります</span></span></label>
       <div id="cn-warn" class="mt-2"></div>
       <div class="flex gap-2 mt-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" id="cn-submit" onclick="corrSubmitNew(this)">申請する</button></div>
-      <p id="corr-msg" class="text-xs text-red-600 mt-2"></p>`}`
+      <p id="corr-msg" class="text-xs text-danger-600 mt-2"></p>`}`
     if (document.getElementById('cn-type')) corrTypeChanged()
   }
   window.corrTypeChanged = function () {
@@ -528,7 +528,7 @@
         const { data } = await axios.post(url, { ...base, requested_at: at, reason, dry_run: true })
         if (data.warnings && data.warnings.length) {
           const w = document.getElementById('cn-warn') || msg
-          w.innerHTML = `<div class="p-2 rounded bg-amber-50 text-xs text-amber-800"><b>報告の順序に矛盾があります</b><ul class="list-disc pl-4">${data.warnings.map(x => `<li>${esc(x)}</li>`).join('')}</ul>${base.approve_now ? 'もう一度押すと、順序の矛盾を確認したうえで例外として承認します' : 'このまま申請できます（承認時に例外として扱います）'}</div>`
+          w.innerHTML = `<div class="p-2 rounded bg-warning-50 text-xs text-warning-800"><b>報告の順序に矛盾があります</b><ul class="list-disc pl-4">${data.warnings.map(x => `<li>${esc(x)}</li>`).join('')}</ul>${base.approve_now ? 'もう一度押すと、順序の矛盾を確認したうえで例外として承認します' : 'このまま申請できます（承認時に例外として扱います）'}</div>`
           btn.dataset.confirmed = '1'; btn.textContent = base.approve_now ? '矛盾を確認して申請・承認する' : '警告を確認して申請する'; btn.disabled = false; busy = false; return
         }
       }
@@ -549,13 +549,13 @@
   // 報告ごとの印（サーバーの f: 1 = 打刻修正、2 = 写真、4 = 位置、8 = 写真なしの理由、16 = 再送）
   const MARK = (r, t) => {
     const m = r[t + '_m'], f = Number(r[t + '_f'] || 0), out = []
-    if (m === 'proxy') out.push('<span class="badge badge-purple text-[10px]" title="管理者の代理入力">代理</span>')
-    if (m === 'link') out.push('<span class="badge badge-blue text-[10px]" title="報告用URLから報告">URL</span>')
-    if (f & 1) out.push(`<span class="badge badge-yellow text-[10px]" title="${m === 'correction' ? '打刻修正で追加' : '打刻修正で変更'}">修正</span>`)
-    if (f & 2) out.push('<i class="fas fa-camera text-gray-400 text-[10px]" title="写真あり"></i>')
-    else if (f & 8) out.push('<i class="fas fa-ban text-amber-500 text-[10px]" title="写真なし（理由あり）"></i>')
-    if (f & 4) out.push('<i class="fas fa-location-dot text-gray-400 text-[10px]" title="位置あり"></i>')
-    if (f & 16) out.push('<span class="badge badge-gray text-[10px]" title="押した時刻と受け付けた時刻が違う打刻（電波・混雑で送り直した、端末の時計のずれなど）">再送</span>')
+    if (m === 'proxy') out.push('<span class="badge badge-purple text-3xs" title="管理者の代理入力">代理</span>')
+    if (m === 'link') out.push('<span class="badge badge-blue text-3xs" title="報告用URLから報告">URL</span>')
+    if (f & 1) out.push(`<span class="badge badge-yellow text-3xs" title="${m === 'correction' ? '打刻修正で追加' : '打刻修正で変更'}">修正</span>`)
+    if (f & 2) out.push('<i class="fas fa-camera text-neutral-400 text-3xs" title="写真あり"></i>')
+    else if (f & 8) out.push('<i class="fas fa-ban text-warning-500 text-3xs" title="写真なし（理由あり）"></i>')
+    if (f & 4) out.push('<i class="fas fa-location-dot text-neutral-400 text-3xs" title="位置あり"></i>')
+    if (f & 16) out.push('<span class="badge badge-gray text-3xs" title="押した時刻と受け付けた時刻が違う打刻（電波・混雑で送り直した、端末の時計のずれなど）">再送</span>')
     return out.join(' ')
   }
   async function renderPunches() {
@@ -567,16 +567,16 @@
     try { data = (await axios.get('/api/admin/attendance-punches', { params })).data } catch (e) {
       // 期間の指定が正しくない（31日を超えるなど）ときは、知らせて既定の期間（直近7日）で開き直す
       if (e.response && e.response.status === 400 && (P.from || P.to)) { toast(errMsg(e)); P.from = ''; P.to = ''; return renderPunches() }
-      $app.innerHTML = `<a href="#corrections" class="text-sm text-blue-600"><i class="fas fa-chevron-left mr-1"></i>打刻修正承認へ戻る</a><p class="text-red-600 mt-3">${esc(errMsg(e))}</p>`; return }
+      $app.innerHTML = `<a href="#corrections" class="text-sm text-primary-600"><i class="fas fa-chevron-left mr-1"></i>打刻修正承認へ戻る</a><p class="text-danger-600 mt-3">${esc(errMsg(e))}</p>`; return }
     P.from = data.from; P.to = data.to
     const types = data.report_types, n = data.counts
     const q = new URLSearchParams(Object.fromEntries(Object.entries(P).filter(([, v]) => v !== '' && v != null))).toString()
-    const late = (r) => [r.late_minutes ? `<span class="text-red-600">遅刻${Number(r.late_minutes)}分</span>` : '', r.early_leave_minutes ? `<span class="text-amber-700">早退${Number(r.early_leave_minutes)}分</span>` : ''].filter(Boolean).join('<br>')
+    const late = (r) => [r.late_minutes ? `<span class="text-danger-600">遅刻${Number(r.late_minutes)}分</span>` : '', r.early_leave_minutes ? `<span class="text-warning-700">早退${Number(r.early_leave_minutes)}分</span>` : ''].filter(Boolean).join('<br>')
     $app.innerHTML = `
-      <a href="#corrections" class="text-sm text-blue-600 mb-2 inline-block"><i class="fas fa-chevron-left mr-1"></i>打刻修正承認へ戻る</a>
+      <a href="#corrections" class="text-sm text-primary-600 mb-2 inline-block"><i class="fas fa-chevron-left mr-1"></i>打刻修正承認へ戻る</a>
       <div class="flex items-center justify-between flex-wrap gap-2 mb-4">
-        <div><h2 class="text-xl font-bold text-gray-800"><i class="fas fa-table-list text-blue-600 mr-1"></i>打刻一覧</h2>
-          <p class="text-xs text-gray-500 mt-1">シフトごとに8種類の報告の時刻と、記録の方法（アプリ・報告用URL・代理入力・打刻修正）を一覧します。期間は31日まで</p></div>
+        <div><h2 class="text-xl font-bold text-neutral-800"><i class="fas fa-table-list text-primary-600 mr-1"></i>打刻一覧</h2>
+          <p class="text-xs text-neutral-500 mt-1">シフトごとに8種類の報告の時刻と、記録の方法（アプリ・報告用URL・代理入力・打刻修正）を一覧します。期間は31日まで</p></div>
         <a href="/api/admin/attendance-punches/export?${esc(q)}" class="btn btn-outline text-sm"><i class="fas fa-file-csv"></i>CSV 出力</a>
       </div>
       <div class="card p-3 mb-3 grid grid-cols-2 lg:grid-cols-6 gap-2 text-xs">
@@ -587,19 +587,19 @@
         <label>スタッフ名・社員番号<input class="inp text-sm" id="pn-staff" value="${esc(P.staff_name)}" placeholder="一部でも可"></label>
         <label>記録の方法<select class="inp text-sm" id="pn-method"><option value="">すべて</option>${[['proxy', '代理入力を含む'], ['link', '報告用URLを含む'], ['corrected', '打刻修正を含む']].map(([k, l]) => `<option value="${k}" ${P.method === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
       </div>
-      <p class="text-xs text-gray-600 mb-2">シフト ${Number(n.shifts)}件 ・代理入力 ${Number(n.proxy)}件 ・報告用URL ${Number(n.link)}件 ・打刻修正 ${Number(n.corrected)}件${n.no_photo ? ` ・写真なし ${Number(n.no_photo)}件` : ''}</p>
-      ${data.truncated ? `<p class="text-xs text-amber-700 bg-amber-50 rounded-lg p-2 mb-3"><i class="fas fa-circle-info mr-1"></i>該当が多いため、先頭の${Number(data.limit)}件を表示しています。すべては CSV で出力するか、期間・案件で絞り込んでください</p>` : ''}
+      <p class="text-xs text-neutral-600 mb-2">シフト ${Number(n.shifts)}件 ・代理入力 ${Number(n.proxy)}件 ・報告用URL ${Number(n.link)}件 ・打刻修正 ${Number(n.corrected)}件${n.no_photo ? ` ・写真なし ${Number(n.no_photo)}件` : ''}</p>
+      ${data.truncated ? `<p class="text-xs text-warning-700 bg-warning-50 rounded-lg p-2 mb-3"><i class="fas fa-circle-info mr-1"></i>該当が多いため、先頭の${Number(data.limit)}件を表示しています。すべては CSV で出力するか、期間・案件で絞り込んでください</p>` : ''}
       <div class="card overflow-x-auto">
         <table class="tbl text-xs"><thead><tr><th>勤務日</th><th>スタッフ</th><th>案件</th><th>予定</th>${types.map(t => `<th class="whitespace-nowrap">${esc(data.labels[t] || t)}</th>`).join('')}<th>遅刻・早退</th></tr></thead>
           <tbody>${data.rows.map(r => `<tr>
-            <td class="whitespace-nowrap">${esc(dayjs(r.work_date).format('M/D'))}${r.status === 'absent' ? ' <span class="badge badge-gray text-[10px]">欠勤</span>' : ''}</td>
-            <td class="whitespace-nowrap">${esc(r.staff_name || '')}${r.employee_number ? `<span class="block text-[10px] text-gray-400">${esc(r.employee_number)}</span>` : ''}</td>
-            <td>${esc(r.project_name || '')}${r.client_name ? `<span class="block text-[10px] text-gray-400">${esc(r.client_name)}</span>` : ''}</td>
-            <td class="whitespace-nowrap">${esc(formatShiftTime(r.start_time, r.end_time))}${Number(r.pending_corrections) ? `<span class="block"><span class="badge badge-yellow text-[10px]">修正申請中${Number(r.pending_corrections)}</span></span>` : ''}</td>
-            ${types.map(t => `<td class="whitespace-nowrap">${r[t + '_at'] ? `<b>${esc(formatReportedTime(r[t + '_at'], r.work_date))}</b><span class="block">${MARK(r, t)}</span>` : '<span class="text-gray-300">－</span>'}</td>`).join('')}
-            <td class="whitespace-nowrap">${late(r)}</td></tr>`).join('') || `<tr><td colspan="${types.length + 5}" class="text-center text-gray-400 py-6">この条件のシフトはありません</td></tr>`}</tbody></table>
+            <td class="whitespace-nowrap">${esc(dayjs(r.work_date).format('M/D'))}${r.status === 'absent' ? ' <span class="badge badge-gray text-3xs">欠勤</span>' : ''}</td>
+            <td class="whitespace-nowrap">${esc(r.staff_name || '')}${r.employee_number ? `<span class="block text-3xs text-neutral-400">${esc(r.employee_number)}</span>` : ''}</td>
+            <td>${esc(r.project_name || '')}${r.client_name ? `<span class="block text-3xs text-neutral-400">${esc(r.client_name)}</span>` : ''}</td>
+            <td class="whitespace-nowrap">${esc(formatShiftTime(r.start_time, r.end_time))}${Number(r.pending_corrections) ? `<span class="block"><span class="badge badge-yellow text-3xs">修正申請中${Number(r.pending_corrections)}</span></span>` : ''}</td>
+            ${types.map(t => `<td class="whitespace-nowrap">${r[t + '_at'] ? `<b>${esc(formatReportedTime(r[t + '_at'], r.work_date))}</b><span class="block">${MARK(r, t)}</span>` : '<span class="text-neutral-300">－</span>'}</td>`).join('')}
+            <td class="whitespace-nowrap">${late(r)}</td></tr>`).join('') || `<tr><td colspan="${types.length + 5}" class="text-center text-neutral-400 py-6">この条件のシフトはありません</td></tr>`}</tbody></table>
       </div>
-      <p class="text-[11px] text-gray-500 mt-2"><span class="badge badge-purple text-[10px]">代理</span> 管理者の代理入力 ・<span class="badge badge-blue text-[10px]">URL</span> 報告用URL ・<span class="badge badge-yellow text-[10px]">修正</span> 打刻修正で変更・追加 ・<i class="fas fa-camera"></i> 写真あり ・<i class="fas fa-ban"></i> 写真なし（理由あり） ・<i class="fas fa-location-dot"></i> 位置あり</p>`
+      <p class="text-2xs text-neutral-500 mt-2"><span class="badge badge-purple text-3xs">代理</span> 管理者の代理入力 ・<span class="badge badge-blue text-3xs">URL</span> 報告用URL ・<span class="badge badge-yellow text-3xs">修正</span> 打刻修正で変更・追加 ・<i class="fas fa-camera"></i> 写真あり ・<i class="fas fa-ban"></i> 写真なし（理由あり） ・<i class="fas fa-location-dot"></i> 位置あり</p>`
     const reload = () => {
       Object.assign(P, { from: document.getElementById('pn-from').value, to: document.getElementById('pn-to').value, project_id: document.getElementById('pn-project').value, client_id: document.getElementById('pn-client').value,
         staff_name: document.getElementById('pn-staff').value.trim(), method: document.getElementById('pn-method').value })

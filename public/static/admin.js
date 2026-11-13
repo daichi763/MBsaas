@@ -82,16 +82,16 @@ function showSessionExpired() {
   hideSessionWarning()
   // 入力中のモーダル（#modal-root）は消さずに、その上に重ねて出す
   sessionRoot().innerHTML = `<div class="modal-bg" style="z-index:70"><div class="modal-box p-5" role="dialog" aria-modal="true">
-    <h3 class="font-bold text-gray-800 mb-2"><i class="fas fa-lock text-amber-500 mr-1"></i>ログインの期限が切れました</h3>
-    <p class="text-sm text-gray-600 mb-3">入力中の内容は残っています。パスワードを入力して再ログインすると、そのまま続けられます。保存などの操作は、再ログインした後にもう一度送ります。</p>
+    <h3 class="font-bold text-neutral-800 mb-2"><i class="fas fa-lock text-warning-500 mr-1"></i>ログインの期限が切れました</h3>
+    <p class="text-sm text-neutral-600 mb-3">入力中の内容は残っています。パスワードを入力して再ログインすると、そのまま続けられます。保存などの操作は、再ログインした後にもう一度送ります。</p>
     <form id="relogin-form">
-      <p class="text-xs text-gray-500 mb-1">${ME.company_code ? '会社コード ' + esc(ME.company_code) + ' / ' : ''}ID ${esc(ME.user_code)}（${esc(ME.name)}）</p>
+      <p class="text-xs text-neutral-500 mb-1">${ME.company_code ? '会社コード ' + esc(ME.company_code) + ' / ' : ''}ID ${esc(ME.user_code)}（${esc(ME.name)}）</p>
       <input type="password" id="relogin-pw" class="inp" autocomplete="current-password" placeholder="パスワード" required>
       <div id="relogin-mfa" class="hidden mt-2">
-        <p class="text-xs text-gray-500 mb-1">認証アプリに表示されている6桁を入力してください（使えないときは予備コード）。</p>
+        <p class="text-xs text-neutral-500 mb-1">認証アプリに表示されている6桁を入力してください（使えないときは予備コード）。</p>
         <input id="relogin-code" class="inp" inputmode="numeric" autocomplete="one-time-code" maxlength="20" placeholder="確認コード">
       </div>
-      <p id="relogin-error" class="hidden text-sm text-red-600 mt-2"></p>
+      <p id="relogin-error" class="hidden text-sm text-danger-600 mt-2"></p>
       <div class="flex flex-wrap gap-2 justify-end mt-4">
         <button type="button" class="btn btn-outline" data-action="sessionGoLogin">ログイン画面へ（入力中の内容は消えます）</button>
         <button type="submit" class="btn btn-primary" id="relogin-btn">再ログイン</button>
@@ -147,8 +147,8 @@ function showAccountSwitched() {
   const waiters = RELOGIN_WAITERS; RELOGIN_WAITERS = []
   waiters.forEach(w => w.reject(new Error('account_switched')))
   sessionRoot().innerHTML = `<div class="modal-bg" style="z-index:70"><div class="modal-box p-5" role="dialog" aria-modal="true">
-    <h3 class="font-bold text-gray-800 mb-2"><i class="fas fa-user-group text-amber-500 mr-1"></i>別のアカウントでログインされました</h3>
-    <p class="text-sm text-gray-600 mb-4">このブラウザで別のアカウントにログインされたため、この画面（${esc(ME ? ME.name : '')}）からの操作を止めました。操作した人と違う名前で記録されるのを防ぐためです。画面を読み直すと、今ログインしているアカウントで開き直します。</p>
+    <h3 class="font-bold text-neutral-800 mb-2"><i class="fas fa-user-group text-warning-500 mr-1"></i>別のアカウントでログインされました</h3>
+    <p class="text-sm text-neutral-600 mb-4">このブラウザで別のアカウントにログインされたため、この画面（${esc(ME ? ME.name : '')}）からの操作を止めました。操作した人と違う名前で記録されるのを防ぐためです。画面を読み直すと、今ログインしているアカウントで開き直します。</p>
     <div class="flex justify-end"><button type="button" class="btn btn-primary" data-action="sessionReload">画面を読み直す</button></div>
   </div></div>`
 }
@@ -159,7 +159,7 @@ function showSessionWarning(left) {
   let el = document.getElementById('session-warning')
   if (!el) {
     el = document.createElement('div'); el.id = 'session-warning'
-    el.className = 'fixed bottom-4 left-1/2 -translate-x-1/2 z-50 bg-amber-50 border border-amber-300 text-amber-900 rounded-xl px-4 py-2 text-sm shadow flex flex-wrap items-center gap-3 max-w-[95vw]'
+    el.className = 'fixed bottom-4 left-1/2 -translate-x-1/2 z-50 bg-warning-50 border border-warning-300 text-warning-900 rounded-xl px-4 py-2 text-sm shadow flex flex-wrap items-center gap-3 max-w-[95vw]'
     document.body.appendChild(el)
   }
   const at = dayjs(SESSION_EXPIRES).format('HH:mm')
@@ -333,14 +333,14 @@ delegate('photoRequiredSetting', async () => {
   const next = !d.enabled
   modal(`<h3 class="font-bold text-lg mb-2">入店/退店報告の写真添付（会社全体）</h3>
     <p class="text-sm mb-2">現在: <span class="badge ${d.enabled ? 'badge-green' : 'badge-gray'}">${d.enabled ? '必須' : '無効'}</span></p>
-    <p class="text-xs text-gray-600 mb-3">変更すると、写真の設定を案件ごとに決めていない進行中の案件 <b>${Number(p.follow) || 0}件</b> のすべてのスタッフに、次の報告から反映されます。
+    <p class="text-xs text-neutral-600 mb-3">変更すると、写真の設定を案件ごとに決めていない進行中の案件 <b>${Number(p.follow) || 0}件</b> のすべてのスタッフに、次の報告から反映されます。
       案件ごとに「必須」（${Number(p.required) || 0}件）・「不要」（${Number(p.not_required) || 0}件）にしている案件は変わりません。無効にすると、写真での入店確認ができなくなります。</p>
     <div class="mb-4">
-      <p class="text-xs font-bold text-gray-600 mb-1">変更の記録</p>
-      ${(d.history || []).length ? `<ul class="text-xs text-gray-500 space-y-0.5">${d.history.map(h => `<li>${esc(dashDateTime(h.at))} ${esc(h.name || '-')}: ${h.enabled ? '必須に変更' : '無効に変更'}</li>`).join('')}</ul>`
-        : '<p class="text-xs text-gray-400">記録はありません</p>'}
+      <p class="text-xs font-bold text-neutral-600 mb-1">変更の記録</p>
+      ${(d.history || []).length ? `<ul class="text-xs text-neutral-500 space-y-0.5">${d.history.map(h => `<li>${esc(dashDateTime(h.at))} ${esc(h.name || '-')}: ${h.enabled ? '必須に変更' : '無効に変更'}</li>`).join('')}</ul>`
+        : '<p class="text-xs text-neutral-400">記録はありません</p>'}
     </div>
-    ${d.can_edit === false ? `<p class="text-xs text-amber-700 bg-amber-50 rounded-lg p-2 mb-3">${esc(ATTENDANCE_SETTING_DENIED_TEXT)}</p>` : ''}
+    ${d.can_edit === false ? `<p class="text-xs text-warning-700 bg-warning-50 rounded-lg p-2 mb-3">${esc(ATTENDANCE_SETTING_DENIED_TEXT)}</p>` : ''}
     <div class="flex gap-2"><button type="button" class="btn btn-outline flex-1" onclick="closeModal()">閉じる</button>
       ${d.can_edit === false ? '' : `<button type="button" class="btn ${next ? 'btn-primary' : 'btn-danger'} flex-1" data-action="savePhotoRequired" data-enabled="${next ? '1' : '0'}" data-follow="${Number(p.follow) || 0}">${next ? '必須にする' : '無効にする'}</button>`}</div>`)
 })
@@ -375,22 +375,22 @@ let DASH_DATA = null
 function dashElapsed(min) { min = Math.max(0, Number(min) || 0); return min < 60 ? `${min}分` : `${Math.floor(min / 60)}時間${min % 60 ? (min % 60) + '分' : ''}` }
 // 届いている遅刻・欠勤・体調不良の相談（種類・時刻・本文の先頭）と、相談対応で開くリンク（#498）
 function dashContactLine(co) {
-  return `<a href="#consult/${Number(co.consultation_id)}" class="block px-2 pb-1 text-[11px] text-blue-800 hover:underline">
+  return `<a href="#consult/${Number(co.consultation_id)}" class="block px-2 pb-1 text-2xs text-primary-800 hover:underline">
     <i class="fas fa-comment-dots mr-1"></i>${esc(co.category_label || '')} ${esc(String(co.created_at || '').slice(11, 16))}${co.urgency === 'high' ? '・緊急' : ''}: ${esc(co.excerpt || '')}</a>`
 }
 // 電話の発信リンク（スマホではそのまま発信できる）と、電話したことをフォロー履歴に残すボタン（#343）
 function dashPhoneLine(shiftId, phone, kind) {
   const tel = String(phone || '').replace(/[^0-9+]/g, '')
-  return `<div class="flex items-center gap-3 px-2 pb-1 text-[11px]">
-    ${tel ? `<a href="tel:${esc(tel)}" class="text-blue-700 hover:underline whitespace-nowrap"><i class="fas fa-phone mr-0.5"></i>${esc(phone)}</a>` : '<span class="text-gray-400">電話番号なし</span>'}
-    <button type="button" class="text-gray-600 hover:underline whitespace-nowrap" data-action="dashCallLog" data-id="${Number(shiftId)}" data-kind="${esc(kind)}" title="フォロー履歴に『電話』として記録します"><i class="fas fa-pen mr-0.5"></i>電話したと記録</button>
+  return `<div class="flex items-center gap-3 px-2 pb-1 text-2xs">
+    ${tel ? `<a href="tel:${esc(tel)}" class="text-primary-700 hover:underline whitespace-nowrap"><i class="fas fa-phone mr-0.5"></i>${esc(phone)}</a>` : '<span class="text-neutral-400">電話番号なし</span>'}
+    <button type="button" class="text-neutral-600 hover:underline whitespace-nowrap" data-action="dashCallLog" data-id="${Number(shiftId)}" data-kind="${esc(kind)}" title="フォロー履歴に『電話』として記録します"><i class="fas fa-pen mr-0.5"></i>電話したと記録</button>
   </div>`
 }
 // ログインのない人（報告用URLか代理入力で報告する人）と、報告用URLを発行していないことの印（#355）
 function dashLoginBadges(s) {
   if (s.has_login !== false || s.status === 'absent') return ''
-  return '<span class="badge badge-gray text-[10px]" title="アプリのログインがありません。報告用URLか代理入力で報告します">ログインなし</span>'
-    + (s.has_report_link ? '' : ' <span class="badge badge-yellow text-[10px]" title="このシフトの報告用URLをまだ発行していません">URL未発行</span>')
+  return '<span class="badge badge-gray text-3xs" title="アプリのログインがありません。報告用URLか代理入力で報告します">ログインなし</span>'
+    + (s.has_report_link ? '' : ' <span class="badge badge-yellow text-3xs" title="このシフトの報告用URLをまだ発行していません">URL未発行</span>')
 }
 
 // ダッシュボードの絞り込み（#9905）: '' = すべての案件 / 'p:<案件ID>' / 'c:<クライアントID>'。この端末に、管理者ごとに覚える
@@ -464,9 +464,9 @@ async function renderDashboard() {
     <div class="card p-4 min-w-0">
       <div class="flex items-center justify-between">
         <div class="min-w-0">
-          <p class="text-xs text-gray-500">${label}</p>
-          <p class="text-2xl font-bold text-gray-900 mt-0.5 truncate">${value}</p>
-          ${sub ? `<p class="text-xs text-gray-400 mt-0.5">${sub}</p>` : ''}
+          <p class="text-xs text-neutral-500">${label}</p>
+          <p class="text-2xl font-bold text-neutral-900 mt-0.5 truncate">${value}</p>
+          ${sub ? `<p class="text-xs text-neutral-400 mt-0.5">${sub}</p>` : ''}
         </div>
         <span class="w-10 h-10 rounded-xl ${color} flex items-center justify-center"><i class="fas ${icon}"></i></span>
       </div>
@@ -481,55 +481,55 @@ async function renderDashboard() {
     const isEnd = kind === 'work_end'
     return `
     <div class="card p-4">
-      <h3 class="text-sm font-bold text-gray-700 mb-2">${title}
+      <h3 class="text-sm font-bold text-neutral-700 mb-2">${title}
         <span class="badge ${list.length ? 'badge-' + color : 'badge-green'} ml-1">${list.length ? list.length + '名' : 'なし'}</span>
         ${contacted ? `<span class="badge badge-blue ml-1">うち連絡あり${contacted}名</span>` : ''}</h3>
       ${list.length ? `<div class="space-y-1 max-h-60 overflow-y-auto">${list.map(s => `
-        <div class="rounded-lg ${s.contact ? 'bg-blue-50' : color === 'red' ? 'bg-red-50' : 'bg-amber-50'} text-xs">
+        <div class="rounded-lg ${s.contact ? 'bg-primary-50' : color === 'red' ? 'bg-danger-50' : 'bg-warning-50'} text-xs">
           <button type="button" class="w-full text-left px-2 py-1 hover:opacity-80" data-action="dashShiftReport" data-id="${Number(s.shift_id)}">
-            <span class="font-bold text-gray-800">${esc(s.name)}</span>${s.work_date !== data.today ? ' <span class="badge badge-gray text-[10px]">前日</span>' : ''}
-            ${s.other_shifts ? `<span class="badge badge-gray text-[10px]">ほか${Number(s.other_shifts)}シフト</span>` : ''}
-            ${s.contact ? '<span class="badge badge-blue text-[10px]">連絡あり</span>' : ''}
+            <span class="font-bold text-neutral-800">${esc(s.name)}</span>${s.work_date !== data.today ? ' <span class="badge badge-gray text-3xs">前日</span>' : ''}
+            ${s.other_shifts ? `<span class="badge badge-gray text-3xs">ほか${Number(s.other_shifts)}シフト</span>` : ''}
+            ${s.contact ? '<span class="badge badge-blue text-3xs">連絡あり</span>' : ''}
             ${dashLoginBadges(s)}
-            <span class="block text-gray-500">${isEnd ? `${esc(s.end_time)}終了予定・未: ${esc((s.missing || []).map(t => DASH_RS[t] || t).join('・'))}` : `${esc(s.start_time)}開始`}・${dashElapsed(s.overdue_minutes)}経過 ${esc(s.project || '')}</span>
+            <span class="block text-neutral-500">${isEnd ? `${esc(s.end_time)}終了予定・未: ${esc((s.missing || []).map(t => DASH_RS[t] || t).join('・'))}` : `${esc(s.start_time)}開始`}・${dashElapsed(s.overdue_minutes)}経過 ${esc(s.project || '')}</span>
           </button>
           ${dashPhoneLine(s.shift_id, s.phone, kind)}
           ${s.contact ? dashContactLine(s.contact) : ''}
         </div>`).join('')}</div>`
-      : '<p class="text-xs text-gray-400">予定の時刻を過ぎた未報告はありません <i class="fas fa-check text-emerald-500"></i></p>'}
+      : '<p class="text-xs text-neutral-400">予定の時刻を過ぎた未報告はありません <i class="fas fa-check text-success-500"></i></p>'}
     </div>`
   }
 
   // 日報未提出（直近3日）の一覧: 日付・スタッフ・案件・電話。押すとそのシフトの報告状況（日報の代理入力を含む）を開く（#344）
   const missing = data.missing_daily_reports || []
   const missingHtml = missing.length ? `<div class="space-y-1 max-h-72 overflow-y-auto">${missing.map(r => `
-    <div class="rounded-lg bg-red-50 text-xs">
+    <div class="rounded-lg bg-danger-50 text-xs">
       <button type="button" class="w-full text-left px-2 py-1 hover:opacity-80" data-action="dashShiftReport" data-id="${Number(r.shift_id)}">
-        <span class="text-gray-500">${md(r.work_date)} ${esc(formatShiftTime(r.start_time, r.end_time))}</span>
-        <span class="font-bold text-gray-800 ml-1">${esc(r.staff_name)}</span>
-        ${r.has_login ? '' : '<span class="badge badge-gray text-[10px]">ログインなし</span>'}
-        <span class="block text-gray-500">${esc(r.project_name)}</span>
+        <span class="text-neutral-500">${md(r.work_date)} ${esc(formatShiftTime(r.start_time, r.end_time))}</span>
+        <span class="font-bold text-neutral-800 ml-1">${esc(r.staff_name)}</span>
+        ${r.has_login ? '' : '<span class="badge badge-gray text-3xs">ログインなし</span>'}
+        <span class="block text-neutral-500">${esc(r.project_name)}</span>
       </button>
       ${dashPhoneLine(r.shift_id, r.staff_phone, 'daily_report')}
     </div>`).join('')}</div>`
-    : '<p class="text-xs text-gray-400">直近3日の日報はすべて提出されています <i class="fas fa-check text-emerald-500"></i></p>'
+    : '<p class="text-xs text-neutral-400">直近3日の日報はすべて提出されています <i class="fas fa-check text-success-500"></i></p>'
 
   // 今日から数日先までの人員不足の枠と、希望（仮）のままのシフト。押すとシフトボードのその週・その案件を開く（#299）
   const ahead = data.staffing_ahead || { short_roles: [], requested_shifts: [] }
   const aheadHtml = `
-    <h4 class="text-xs font-bold text-gray-600 mb-1">人員不足の枠 <span class="badge ${ahead.short_role_count ? 'badge-red' : 'badge-green'}">${ahead.short_role_count ? `${Number(ahead.short_role_count)}件${ahead.short_more ? '以上' : ''}・${Number(ahead.short_headcount)}名分` : 'なし'}</span></h4>
+    <h4 class="text-xs font-bold text-neutral-600 mb-1">人員不足の枠 <span class="badge ${ahead.short_role_count ? 'badge-red' : 'badge-green'}">${ahead.short_role_count ? `${Number(ahead.short_role_count)}件${ahead.short_more ? '以上' : ''}・${Number(ahead.short_headcount)}名分` : 'なし'}</span></h4>
     ${ahead.short_roles.length ? `<div class="space-y-1 max-h-48 overflow-y-auto mb-3">${ahead.short_roles.map(r => `
-      <button type="button" class="w-full text-left rounded-lg bg-red-50 px-2 py-1 text-xs hover:opacity-80" data-action="openBoardAt" data-date="${esc(r.work_date)}" data-project-id="${Number(r.project_id)}" data-short="1">
-        <span class="text-gray-500">${md(r.work_date)} ${esc(formatShiftTime(r.start_time, r.end_time))}</span>
-        <span class="font-bold text-gray-800 ml-1">${esc(r.project_name)}</span> ${esc(r.role_name)}
-        <span class="block text-gray-600">確定 ${Number(r.filled)}/${Number(r.headcount)}名（<span class="text-red-600 font-bold">${Number(r.shortage)}名不足</span>）${r.requested ? `・希望（仮）${Number(r.requested)}名` : ''}${r.applicants ? `・<span class="text-blue-700">未対応の応募 ${Number(r.applicants)}件</span>` : ''}</span>
-      </button>`).join('')}</div>` : '<p class="text-xs text-gray-400 mb-3">必要人数に足りない枠はありません</p>'}
-    <h4 class="text-xs font-bold text-gray-600 mb-1">希望（仮）のままのシフト <span class="badge ${ahead.requested_shifts.length ? 'badge-yellow' : 'badge-green'}">${ahead.requested_shifts.length ? ahead.requested_shifts.length + (ahead.requested_more ? '件以上' : '件') : 'なし'}</span></h4>
+      <button type="button" class="w-full text-left rounded-lg bg-danger-50 px-2 py-1 text-xs hover:opacity-80" data-action="openBoardAt" data-date="${esc(r.work_date)}" data-project-id="${Number(r.project_id)}" data-short="1">
+        <span class="text-neutral-500">${md(r.work_date)} ${esc(formatShiftTime(r.start_time, r.end_time))}</span>
+        <span class="font-bold text-neutral-800 ml-1">${esc(r.project_name)}</span> ${esc(r.role_name)}
+        <span class="block text-neutral-600">確定 ${Number(r.filled)}/${Number(r.headcount)}名（<span class="text-danger-600 font-bold">${Number(r.shortage)}名不足</span>）${r.requested ? `・希望（仮）${Number(r.requested)}名` : ''}${r.applicants ? `・<span class="text-primary-700">未対応の応募 ${Number(r.applicants)}件</span>` : ''}</span>
+      </button>`).join('')}</div>` : '<p class="text-xs text-neutral-400 mb-3">必要人数に足りない枠はありません</p>'}
+    <h4 class="text-xs font-bold text-neutral-600 mb-1">希望（仮）のままのシフト <span class="badge ${ahead.requested_shifts.length ? 'badge-yellow' : 'badge-green'}">${ahead.requested_shifts.length ? ahead.requested_shifts.length + (ahead.requested_more ? '件以上' : '件') : 'なし'}</span></h4>
     ${ahead.requested_shifts.length ? `<div class="space-y-1 max-h-40 overflow-y-auto">${ahead.requested_shifts.map(s => `
-      <button type="button" class="w-full text-left rounded-lg bg-amber-50 px-2 py-1 text-xs hover:opacity-80" data-action="openBoardAt" data-date="${esc(s.work_date)}" data-project-id="${Number(s.project_id)}">
-        <span class="text-gray-500">${md(s.work_date)} ${esc(formatShiftTime(s.start_time, s.end_time))}</span>
-        <span class="font-bold text-gray-800 ml-1">${esc(s.staff_name)}</span> <span class="text-gray-500">${esc(s.project_name)}</span>
-      </button>`).join('')}</div>` : '<p class="text-xs text-gray-400">確定を待っているシフトはありません</p>'}`
+      <button type="button" class="w-full text-left rounded-lg bg-warning-50 px-2 py-1 text-xs hover:opacity-80" data-action="openBoardAt" data-date="${esc(s.work_date)}" data-project-id="${Number(s.project_id)}">
+        <span class="text-neutral-500">${md(s.work_date)} ${esc(formatShiftTime(s.start_time, s.end_time))}</span>
+        <span class="font-bold text-neutral-800 ml-1">${esc(s.staff_name)}</span> <span class="text-neutral-500">${esc(s.project_name)}</span>
+      </button>`).join('')}</div>` : '<p class="text-xs text-neutral-400">確定を待っているシフトはありません</p>'}`
 
   const photoChanged = data.photo_required_changed
   // 日報一覧へのリンクは、案件で絞っていればその案件で開く（クライアントで絞ったときは日報一覧に同じ絞り込みがないので全案件）
@@ -537,75 +537,75 @@ async function renderDashboard() {
   const headHtml = `<div id="dash-head">
     <div class="flex items-start justify-between mb-3 flex-wrap gap-2">
       <div>
-        <h2 class="text-xl font-bold text-gray-900">管理者ダッシュボード</h2>
-        <p class="text-sm text-gray-500">${dayjs(data.today).format('YYYY年M月D日')} — 今日見るべきこと・対応すべきこと</p>
+        <h2 class="text-xl font-bold text-neutral-900">管理者ダッシュボード</h2>
+        <p class="text-sm text-neutral-500">${dayjs(data.today).format('YYYY年M月D日')} — 今日見るべきこと・対応すべきこと</p>
       </div>
       <div class="flex items-center gap-2 flex-wrap">
         <select id="dash-scope" class="inp w-auto max-w-[16rem] text-sm" aria-label="表示する案件">${dashScopeOptions(data)}</select>
         <button type="button" id="dash-refresh" class="btn btn-outline" data-action="dashRefresh"><i class="fas fa-rotate"></i>更新</button>
-        <span id="dash-status" class="text-[11px] text-gray-400 whitespace-nowrap" aria-live="polite" data-time="${esc(String(data.now || '').slice(11, 16))} 時点">${esc(String(data.now || '').slice(11, 16))} 時点</span>
+        <span id="dash-status" class="text-2xs text-neutral-400 whitespace-nowrap" aria-live="polite" data-time="${esc(String(data.now || '').slice(11, 16))} 時点">${esc(String(data.now || '').slice(11, 16))} 時点</span>
       </div>
     </div>
-    ${scope ? `<div class="mb-4 rounded-lg bg-blue-50 px-3 py-2 text-xs text-blue-800 flex items-center gap-2 flex-wrap">
+    ${scope ? `<div class="mb-4 rounded-lg bg-primary-50 px-3 py-2 text-xs text-primary-800 flex items-center gap-2 flex-wrap">
       <i class="fas fa-filter"></i><span class="flex-1 min-w-0"><b>${esc(scope.label)}</b>${scope.client_id ? 'の案件すべて' : ''}で表示しています（シフト・売上・未報告・日報・インシデント・案件別実績・人員不足・前日確認）。管理者ToDo・要フォロースタッフは会社全体です</span>
       <button type="button" class="underline whitespace-nowrap" data-action="dashScopeClear">すべての案件に戻す</button></div>` : '<div class="mb-2"></div>'}
     </div>`
   const bodyHtml = `<div id="dash-body" class="transition-opacity">
 
     <section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-5" id="kpi-cards">
-      ${kpi('本日の稼働予定', data.working_count + '名', 'fa-users', 'bg-blue-100 text-blue-600', data.working_shift_count !== data.working_count ? `シフト${Number(data.working_shift_count) || 0}件` : '')}
-      ${kpi('本日の売上予定', yen(data.revenue_forecast), 'fa-yen-sign', 'bg-emerald-100 text-emerald-600', '請求の交通費・調整額を含む（精算と同じ計算）'
+      ${kpi('本日の稼働予定', data.working_count + '名', 'fa-users', 'bg-primary-100 text-primary-600', data.working_shift_count !== data.working_count ? `シフト${Number(data.working_shift_count) || 0}件` : '')}
+      ${kpi('本日の売上予定', yen(data.revenue_forecast), 'fa-yen-sign', 'bg-success-100 text-success-600', '請求の交通費・調整額を含む（精算と同じ計算）'
         + (data.revenue_monthly ? `<br><span title="月額（固定）は、その月の最初の稼働日の売上予定に入れます（精算で計上する日と同じ）">うち月額（固定）${yen(data.revenue_monthly)}</span>` : ''))}
-      ${kpi('日報未提出（直近3日）', data.missing_daily_reports.length + '件', 'fa-file-circle-exclamation', data.missing_daily_reports.length ? 'bg-red-100 text-red-600' : 'bg-gray-100 text-gray-400',
-        (data.missing_daily_reports.length ? '<button type="button" class="text-blue-600 hover:underline mr-2" data-action="dashScrollTo" data-target="dash-missing-reports">一覧を見る ↓</button>' : '')
-        + (data.unchecked_daily_reports ? `<a href="#reports/unchecked=1${reportProject}" class="text-blue-600 hover:underline">未確認の日報 ${Number(data.unchecked_daily_reports)}件 →</a>` : ''))}
-      ${kpi('要フォロースタッフ', data.follow_staff.length + '名', 'fa-hand-holding-heart', data.follow_staff.length ? 'bg-amber-100 text-amber-600' : 'bg-gray-100 text-gray-400', scope ? '会社全体' : '')}
+      ${kpi('日報未提出（直近3日）', data.missing_daily_reports.length + '件', 'fa-file-circle-exclamation', data.missing_daily_reports.length ? 'bg-danger-100 text-danger-600' : 'bg-neutral-100 text-neutral-400',
+        (data.missing_daily_reports.length ? '<button type="button" class="text-primary-600 hover:underline mr-2" data-action="dashScrollTo" data-target="dash-missing-reports">一覧を見る ↓</button>' : '')
+        + (data.unchecked_daily_reports ? `<a href="#reports/unchecked=1${reportProject}" class="text-primary-600 hover:underline">未確認の日報 ${Number(data.unchecked_daily_reports)}件 →</a>` : ''))}
+      ${kpi('要フォロースタッフ', data.follow_staff.length + '名', 'fa-hand-holding-heart', data.follow_staff.length ? 'bg-warning-100 text-warning-600' : 'bg-neutral-100 text-neutral-400', scope ? '会社全体' : '')}
     </section>
 
     <section class="grid md:grid-cols-2 xl:grid-cols-4 gap-4 mb-1" id="unreported-section">
-      ${alertList('<i class="fas fa-sun text-amber-500 mr-1"></i>未起床報告', un.wake_up, 'red', 'wake_up')}
-      ${alertList('<i class="fas fa-person-walking-luggage text-blue-500 mr-1"></i>未出発報告', un.departure, 'yellow', 'departure')}
-      ${alertList('<i class="fas fa-store text-purple-500 mr-1"></i>未入店報告', un.check_in, 'red', 'check_in')}
-      ${alertList('<i class="fas fa-door-open text-gray-500 mr-1"></i>勤務終了・退店の未報告', un.work_end || [], 'yellow', 'work_end')}
+      ${alertList('<i class="fas fa-sun text-warning-500 mr-1"></i>未起床報告', un.wake_up, 'red', 'wake_up')}
+      ${alertList('<i class="fas fa-person-walking-luggage text-primary-500 mr-1"></i>未出発報告', un.departure, 'yellow', 'departure')}
+      ${alertList('<i class="fas fa-store text-accent-500 mr-1"></i>未入店報告', un.check_in, 'red', 'check_in')}
+      ${alertList('<i class="fas fa-door-open text-neutral-500 mr-1"></i>勤務終了・退店の未報告', un.work_end || [], 'yellow', 'work_end')}
     </section>
-    <p class="text-[11px] text-gray-400 mb-5">予定の時刻を過ぎた人だけを出します（起床は開始の2時間前、出発は1時間前、入店は開始時刻、勤務終了・退店は終了の30分後。前日分を含む）。名前を押すと代理入力・報告用URLの発行ができます</p>
+    <p class="text-2xs text-neutral-400 mb-5">予定の時刻を過ぎた人だけを出します（起床は開始の2時間前、出発は1時間前、入店は開始時刻、勤務終了・退店は終了の30分後。前日分を含む）。名前を押すと代理入力・報告用URLの発行ができます</p>
 
     <div class="grid lg:grid-cols-2 gap-4 mb-5">
       <section class="card p-4" id="todo-section">
-        <h3 class="font-bold text-gray-800 mb-3"><i class="fas fa-list-check text-blue-600 mr-1"></i>管理者ToDo（運営支援）</h3>
+        <h3 class="font-bold text-neutral-800 mb-3"><i class="fas fa-list-check text-primary-600 mr-1"></i>管理者ToDo（運営支援）</h3>
         <div id="dash-todos"></div>
       </section>
 
       <section class="card p-4" id="incident-section">
-        <h3 class="font-bold text-gray-800 mb-3"><i class="fas fa-bolt text-red-500 mr-1"></i>インシデント・クレーム（直近7日）</h3>
+        <h3 class="font-bold text-neutral-800 mb-3"><i class="fas fa-bolt text-danger-500 mr-1"></i>インシデント・クレーム（直近7日）</h3>
         <div class="space-y-2 max-h-80 overflow-y-auto">
           ${data.incidents.map(i => `
-            <div class="p-2.5 rounded-lg bg-gray-50 border border-gray-100">
+            <div class="p-2.5 rounded-lg bg-neutral-50 border border-neutral-100">
               <div class="flex items-center gap-2 text-xs mb-1">
                 ${i.incident_flag ? '<span class="badge badge-red">インシデント</span>' : ''}
                 ${i.complaint_flag ? '<span class="badge badge-purple">クレーム</span>' : ''}
-                <span class="text-gray-500">${dayjs(i.work_date).format('M/D')}</span>
-                <a href="#staff/${Number(i.staff_id)}" class="text-blue-600 hover:underline">${esc(i.staff_name)}</a>
-                <span class="text-gray-400">${esc(i.project_name)}</span>
-                <a href="#reports/date=${esc(i.work_date)}&project=${Number(i.project_id)}&staff=${Number(i.staff_id)}" class="text-blue-600 hover:underline ml-auto whitespace-nowrap">日報→</a>
+                <span class="text-neutral-500">${dayjs(i.work_date).format('M/D')}</span>
+                <a href="#staff/${Number(i.staff_id)}" class="text-primary-600 hover:underline">${esc(i.staff_name)}</a>
+                <span class="text-neutral-400">${esc(i.project_name)}</span>
+                <a href="#reports/date=${esc(i.work_date)}&project=${Number(i.project_id)}&staff=${Number(i.staff_id)}" class="text-primary-600 hover:underline ml-auto whitespace-nowrap">日報→</a>
               </div>
-              <p class="text-xs text-gray-600">${esc((i.values && i.values.free) || '')}</p>
-            </div>`).join('') || '<p class="text-sm text-gray-400 py-4 text-center">直近のインシデントはありません</p>'}
+              <p class="text-xs text-neutral-600">${esc((i.values && i.values.free) || '')}</p>
+            </div>`).join('') || '<p class="text-sm text-neutral-400 py-4 text-center">直近のインシデントはありません</p>'}
         </div>
       </section>
     </div>
 
     <div class="grid lg:grid-cols-2 gap-4 mb-5">
       <section class="card p-4" id="dash-missing-reports">
-        <h3 class="font-bold text-gray-800 mb-3"><i class="fas fa-file-circle-exclamation text-red-500 mr-1"></i>日報未提出（直近3日）
+        <h3 class="font-bold text-neutral-800 mb-3"><i class="fas fa-file-circle-exclamation text-danger-500 mr-1"></i>日報未提出（直近3日）
           <span class="badge ${missing.length ? 'badge-red' : 'badge-green'} ml-1">${missing.length ? missing.length + '件' : 'なし'}</span></h3>
         ${missingHtml}
-        <p class="text-[11px] text-gray-400 mt-2">名前を押すと、そのシフトの報告状況（日報の代理入力・報告用URL）を開きます。3日より前の分は <a href="#reports/missing=1${reportProject}" class="text-blue-600 hover:underline">日報一覧の「未提出」</a> で見られます</p>
+        <p class="text-2xs text-neutral-400 mt-2">名前を押すと、そのシフトの報告状況（日報の代理入力・報告用URL）を開きます。3日より前の分は <a href="#reports/missing=1${reportProject}" class="text-primary-600 hover:underline">日報一覧の「未提出」</a> で見られます</p>
       </section>
       <section class="card p-4" id="dash-ahead">
-        <h3 class="font-bold text-gray-800 mb-3"><i class="fas fa-calendar-week text-blue-600 mr-1"></i>今後の人員不足・未確定（${esc(dayjs(ahead.from || data.today).format('M/D'))}〜${esc(dayjs(ahead.to || data.today).format('M/D'))}）</h3>
+        <h3 class="font-bold text-neutral-800 mb-3"><i class="fas fa-calendar-week text-primary-600 mr-1"></i>今後の人員不足・未確定（${esc(dayjs(ahead.from || data.today).format('M/D'))}〜${esc(dayjs(ahead.to || data.today).format('M/D'))}）</h3>
         ${aheadHtml}
-        <p class="text-[11px] text-gray-400 mt-2">押すとシフトボードでその週・その案件を開きます</p>
+        <p class="text-2xs text-neutral-400 mt-2">押すとシフトボードでその週・その案件を開きます</p>
       </section>
     </div>
 
@@ -613,7 +613,7 @@ async function renderDashboard() {
 
     <div class="grid lg:grid-cols-2 gap-4 mb-5">
       <section class="card p-4">
-        <h3 class="font-bold text-gray-800 mb-3"><i class="fas fa-hand-holding-heart text-amber-500 mr-1"></i>要フォロースタッフ</h3>
+        <h3 class="font-bold text-neutral-800 mb-3"><i class="fas fa-hand-holding-heart text-warning-500 mr-1"></i>要フォロースタッフ</h3>
         <div class="overflow-x-auto">
         <table class="tbl">
           <thead><tr><th>氏名</th><th>離職リスク</th><th>評価</th><th>メモ</th><th></th></tr></thead>
@@ -623,36 +623,36 @@ async function renderDashboard() {
                 <td class="font-medium">${esc(s.name)}</td>
                 <td>${RISK_BADGE[s.retention_risk] || ''}</td>
                 <td>${Number(s.evaluation_score).toFixed(1)}</td>
-                <td class="text-xs text-gray-500 max-w-[180px] truncate">${esc(s.memo || '')}</td>
-                <td><a href="#staff/${s.staff_id}" class="text-blue-600 text-xs hover:underline">詳細</a></td>
-              </tr>`).join('') || '<tr><td colspan="5" class="text-center text-gray-400 py-4">要フォロースタッフはいません</td></tr>'}
+                <td class="text-xs text-neutral-500 max-w-[180px] truncate">${esc(s.memo || '')}</td>
+                <td><a href="#staff/${s.staff_id}" class="text-primary-600 text-xs hover:underline">詳細</a></td>
+              </tr>`).join('') || '<tr><td colspan="5" class="text-center text-neutral-400 py-4">要フォロースタッフはいません</td></tr>'}
           </tbody>
         </table>
         </div>
       </section>
 
       <section class="card p-4">
-        <h3 class="font-bold text-gray-800 mb-3"><i class="fas fa-briefcase text-blue-600 mr-1"></i>今月の案件別実績</h3>
+        <h3 class="font-bold text-neutral-800 mb-3"><i class="fas fa-briefcase text-primary-600 mr-1"></i>今月の案件別実績</h3>
         <div class="overflow-x-auto">
         <table class="tbl">
           <thead><tr><th>案件</th><th>日報</th>${(data.performance_fields || []).map(f => `<th>${esc(f.label)}</th>`).join('')}</tr></thead>
           <tbody>
             ${data.project_performance.map(p => `
               <tr>
-                <td><a href="#projects/${Number(p.project_id)}" class="text-blue-600 hover:underline font-medium">${esc(p.project_name)}</a></td>
-                <td>${p.report_count ? `<a href="#reports/from=${esc(data.month)}-01&to=${esc(data.today)}&project=${Number(p.project_id)}" class="text-blue-600 hover:underline">${Number(p.report_count)}</a>` : 0}</td>
+                <td><a href="#projects/${Number(p.project_id)}" class="text-primary-600 hover:underline font-medium">${esc(p.project_name)}</a></td>
+                <td>${p.report_count ? `<a href="#reports/from=${esc(data.month)}-01&to=${esc(data.today)}&project=${Number(p.project_id)}" class="text-primary-600 hover:underline">${Number(p.report_count)}</a>` : 0}</td>
                 ${(data.performance_fields || []).map(f => `<td>${Number((p.values || {})[f.key]) || 0}</td>`).join('')}
               </tr>`).join('')}
           </tbody>
         </table>
         </div>
-        ${data.performance_field_count > (data.performance_fields || []).length ? `<p class="text-[11px] text-gray-400 mt-2">日報の項目は先頭の${(data.performance_fields || []).length}件だけを出しています。すべての項目は<a href="#analytics" class="text-blue-600 hover:underline">実績分析</a>で案件を選ぶと見られます</p>` : ''}
+        ${data.performance_field_count > (data.performance_fields || []).length ? `<p class="text-2xs text-neutral-400 mt-2">日報の項目は先頭の${(data.performance_fields || []).length}件だけを出しています。すべての項目は<a href="#analytics" class="text-primary-600 hover:underline">実績分析</a>で案件を選ぶと見られます</p>` : ''}
       </section>
     </div>
 
     <section class="card p-4 mb-5" id="today-shifts">
       <div class="flex items-center justify-between flex-wrap gap-2 mb-3">
-        <h3 class="font-bold text-gray-800"><i class="fas fa-calendar-day text-blue-600 mr-1"></i>本日のシフト・報告状況</h3>
+        <h3 class="font-bold text-neutral-800"><i class="fas fa-calendar-day text-primary-600 mr-1"></i>本日のシフト・報告状況</h3>
         <select id="dash-shift-project" class="inp w-auto text-xs" aria-label="案件で絞り込む"></select>
       </div>
       <div id="dash-shift-filters" class="flex flex-wrap gap-1.5 mb-3"></div>
@@ -662,24 +662,24 @@ async function renderDashboard() {
           <tbody id="dash-shift-rows"></tbody>
         </table>
       </div>
-      <p class="text-[11px] text-gray-400 mt-2">開始時刻・案件・氏名の順。報告の時刻を出し、遅刻は赤、位置情報のない入店は橙、予定の時刻を過ぎた未報告は赤枠で示します</p>
+      <p class="text-2xs text-neutral-400 mt-2">開始時刻・案件・氏名の順。報告の時刻を出し、遅刻は赤、位置情報のない入店は橙、予定の時刻を過ぎた未報告は赤枠で示します</p>
       ${(data.absent_shifts || []).length ? `
       <div class="mt-4" id="today-absent">
-        <h4 class="text-sm font-bold text-gray-700 mb-2"><i class="fas fa-user-xmark text-red-500 mr-1"></i>本日の欠勤（${data.absent_shifts.length}件）</h4>
+        <h4 class="text-sm font-bold text-neutral-700 mb-2"><i class="fas fa-user-xmark text-danger-500 mr-1"></i>本日の欠勤（${data.absent_shifts.length}件）</h4>
         <div class="space-y-1.5">${data.absent_shifts.map(s => `
-          <div class="flex items-center gap-2 flex-wrap p-2 rounded-lg bg-red-50 text-xs">
-            <a href="#staff/${Number(s.staff_id)}" class="font-bold text-gray-800 hover:underline">${esc(s.staff_name)}</a>
-            <span class="text-gray-500">${esc(s.project_name)}・${esc(s.start_time)}〜${esc(s.end_time)}</span>
+          <div class="flex items-center gap-2 flex-wrap p-2 rounded-lg bg-danger-50 text-xs">
+            <a href="#staff/${Number(s.staff_id)}" class="font-bold text-neutral-800 hover:underline">${esc(s.staff_name)}</a>
+            <span class="text-neutral-500">${esc(s.project_name)}・${esc(s.start_time)}〜${esc(s.end_time)}</span>
             <button type="button" class="btn btn-outline text-xs ml-auto" data-action="findSubstitute" data-id="${Number(s.shift_id)}"><i class="fas fa-user-plus"></i>代わりを探す</button>
           </div>`).join('')}</div>
       </div>` : ''}
     </section>
 
     <section class="card p-3 flex items-center justify-between flex-wrap gap-2" id="dash-photo-setting">
-      <p class="text-sm text-gray-700"><i class="fas fa-camera text-blue-600 mr-1"></i>入店/退店報告の写真添付（会社全体）:
+      <p class="text-sm text-neutral-700"><i class="fas fa-camera text-primary-600 mr-1"></i>入店/退店報告の写真添付（会社全体）:
         <span class="badge ${data.photo_required_attendance ? 'badge-green' : 'badge-gray'}">${data.photo_required_attendance ? '必須' : '無効'}</span>
-        ${photoChanged ? `<span class="text-[11px] text-gray-400 ml-1">最終変更 ${esc(dashDateTime(photoChanged.at))} ${esc(photoChanged.name || '')}</span>` : ''}</p>
-      <a href="#account" class="text-xs text-blue-600 underline" title="写真添付の設定は、アカウント設定の画面で、影響する案件の数と変更の記録を確かめてから変更します">アカウント設定で変更</a>
+        ${photoChanged ? `<span class="text-2xs text-neutral-400 ml-1">最終変更 ${esc(dashDateTime(photoChanged.at))} ${esc(photoChanged.name || '')}</span>` : ''}</p>
+      <a href="#account" class="text-xs text-primary-600 underline" title="写真添付の設定は、アカウント設定の画面で、影響する案件の数と変更の記録を確かめてから変更します">アカウント設定で変更</a>
     </section>
     </div>`
   // 更新: 見出しと本体だけを描き直す（上に出している「はじめにやること」・お知らせは残す）
@@ -717,17 +717,17 @@ function dashReportChip(s, t) {
     const nextDay = String(r.at || '').slice(0, 10) > String(s.work_date) ? '翌' : ''
     let cls = 'badge-green', note = ''
     if (r.status === 'late') { cls = 'badge-red'; note = r.late_minutes ? ` 遅刻${Number(r.late_minutes)}分` : ' 遅刻' }
-    else if (r.status === 'no_location') { cls = 'bg-orange-100 text-orange-700'; note = ' 位置なし' }
+    else if (r.status === 'no_location') { cls = 'bg-notice-100 text-notice-700'; note = ' 位置なし' }
     else if (Number(r.early_leave_minutes) > 0) { cls = 'badge-yellow'; note = ` 早退${Number(r.early_leave_minutes)}分` }
     // 入店の位置が現場から離れている（#277。ダッシュボードの API が far を返すとき）
-    if (r.far) { if (cls === 'badge-green') cls = 'bg-orange-100 text-orange-700'; note += ` 位置ずれ${r.distance_m != null ? '（約' + fmtDistance(r.distance_m) + '）' : ''}` }
+    if (r.far) { if (cls === 'badge-green') cls = 'bg-notice-100 text-notice-700'; note += ` 位置ずれ${r.distance_m != null ? '（約' + fmtDistance(r.distance_m) + '）' : ''}` }
     // 電波・混雑で送り直し、押した時刻で記録した報告（#427 #9939。「再送」）。受け付けた時刻を添える
     const dev = r.device_time ? ` title="再送: 押した時刻で記録（受付 ${esc(String(r.received_at || '').slice(5, 16).replace('-', '/'))}）"` : ''
-    return `<span class="badge ${cls} text-[10px]"${dev}>${label} ${esc(nextDay + time)}${esc(note)}${r.device_time ? ' <i class="fas fa-rotate"></i>再送' : ''}</span>`
+    return `<span class="badge ${cls} text-3xs"${dev}>${label} ${esc(nextDay + time)}${esc(note)}${r.device_time ? ' <i class="fas fa-rotate"></i>再送' : ''}</span>`
   }
-  if ((s.pending_types || []).includes(t)) return `<span class="badge badge-yellow text-[10px]" title="打刻修正の申請中">${label} 申請中</span>`
-  if ((s.overdue_types || []).includes(t)) return `<span class="badge bg-white text-red-600 border border-red-300 text-[10px]" title="予定の時刻を過ぎても報告がありません">${label} 未報告</span>`
-  return `<span class="badge badge-gray text-[10px]">${label}</span>`
+  if ((s.pending_types || []).includes(t)) return `<span class="badge badge-yellow text-3xs" title="打刻修正の申請中">${label} 申請中</span>`
+  if ((s.overdue_types || []).includes(t)) return `<span class="badge bg-surface text-danger-600 border border-danger-300 text-3xs" title="予定の時刻を過ぎても報告がありません">${label} 未報告</span>`
+  return `<span class="badge badge-gray text-3xs">${label}</span>`
 }
 function drawDashShifts() {
   const data = DASH_DATA; if (!data) return
@@ -739,36 +739,36 @@ function drawDashShifts() {
   sel.innerHTML = `<option value="">すべての案件（${all.length}件）</option>` + projects.map(([id, name]) => `<option value="${esc(id)}" ${DASH_FILTER.project === id ? 'selected' : ''}>${esc(name)}</option>`).join('')
   sel.onchange = () => { DASH_FILTER.project = sel.value; drawDashShifts() }
   const byProject = all.filter(s => !DASH_FILTER.project || String(s.project_id) === DASH_FILTER.project)
-  const chip = (key, label, n) => `<button type="button" class="badge ${DASH_FILTER.only === key ? 'badge-blue ring-1 ring-blue-400' : 'badge-gray'} text-xs" data-action="dashShiftFilter" data-only="${esc(key)}">${esc(label)} ${Number(n)}</button>`
+  const chip = (key, label, n) => `<button type="button" class="badge ${DASH_FILTER.only === key ? 'badge-blue ring-1 ring-primary-400' : 'badge-gray'} text-xs" data-action="dashShiftFilter" data-only="${esc(key)}">${esc(label)} ${Number(n)}</button>`
   document.getElementById('dash-shift-filters').innerHTML = chip('', 'すべて', byProject.length)
     + Object.entries(DASH_ONLY).map(([k, v]) => chip(k, v.label, byProject.filter(v.test).length)).join('')
   const only = DASH_ONLY[DASH_FILTER.only]
   const list = only ? byProject.filter(only.test) : byProject
   body.innerHTML = list.map(s => {
-    const chips = (s.required_types || []).map(t => dashReportChip(s, t)).join(' ') || '<span class="text-xs text-gray-400">報告なし</span>'
+    const chips = (s.required_types || []).map(t => dashReportChip(s, t)).join(' ') || '<span class="text-xs text-neutral-400">報告なし</span>'
     // 入店以降の報告があるシフト・確定済みのシフトは、ここから欠勤にしない（#221）
-    const absentBtn = s.started ? '<span class="text-[11px] text-gray-400" title="入店以降の報告があるため、欠勤にできません">勤務の報告あり</span>'
-      : s.settle_status === 'confirmed' ? '<span class="text-[11px] text-gray-400">確定済み</span>'
-      : `<button type="button" class="text-xs text-red-600 hover:underline" data-action="markAbsent" data-id="${Number(s.shift_id)}">欠勤にする</button>`
+    const absentBtn = s.started ? '<span class="text-2xs text-neutral-400" title="入店以降の報告があるため、欠勤にできません">勤務の報告あり</span>'
+      : s.settle_status === 'confirmed' ? '<span class="text-2xs text-neutral-400">確定済み</span>'
+      : `<button type="button" class="text-xs text-danger-600 hover:underline" data-action="markAbsent" data-id="${Number(s.shift_id)}">欠勤にする</button>`
     const tel = String(s.staff_phone || '').replace(/[^0-9+]/g, '')
     return `<tr>
-      <td><a href="#staff/${Number(s.staff_id)}" class="text-blue-600 hover:underline font-medium">${esc(s.staff_name)}</a>
-        ${tel ? `<a href="tel:${esc(tel)}" class="text-gray-400 hover:text-blue-600 ml-0.5" title="${esc(s.staff_phone)} に電話"><i class="fas fa-phone text-[11px]"></i></a>` : ''}
-        ${s.staff_unavailable ? '<span class="badge badge-red text-[10px]" title="退職・停止・取引終了などで、今は割り当てられないスタッフです">退職など</span>' : ''}
-        ${s.contact ? `<a href="#consult/${Number(s.contact.consultation_id)}" class="badge badge-blue text-[10px]" title="${esc(s.contact.category_label + ': ' + (s.contact.excerpt || ''))}">連絡あり</a>` : ''}
-        ${s.late_minutes > 0 ? `<span class="badge badge-red text-[10px]">遅刻 ${Number(s.late_minutes)}分</span>` : ''}
-        ${s.early_leave_minutes > 0 ? `<span class="badge badge-yellow text-[10px]">早退 ${Number(s.early_leave_minutes)}分</span>` : ''}
-        ${s.on_break ? '<span class="badge badge-purple text-[10px]">休憩中</span>' : ''}
+      <td><a href="#staff/${Number(s.staff_id)}" class="text-primary-600 hover:underline font-medium">${esc(s.staff_name)}</a>
+        ${tel ? `<a href="tel:${esc(tel)}" class="text-neutral-400 hover:text-primary-600 ml-0.5" title="${esc(s.staff_phone)} に電話"><i class="fas fa-phone text-2xs"></i></a>` : ''}
+        ${s.staff_unavailable ? '<span class="badge badge-red text-3xs" title="退職・停止・取引終了などで、今は割り当てられないスタッフです">退職など</span>' : ''}
+        ${s.contact ? `<a href="#consult/${Number(s.contact.consultation_id)}" class="badge badge-blue text-3xs" title="${esc(s.contact.category_label + ': ' + (s.contact.excerpt || ''))}">連絡あり</a>` : ''}
+        ${s.late_minutes > 0 ? `<span class="badge badge-red text-3xs">遅刻 ${Number(s.late_minutes)}分</span>` : ''}
+        ${s.early_leave_minutes > 0 ? `<span class="badge badge-yellow text-3xs">早退 ${Number(s.early_leave_minutes)}分</span>` : ''}
+        ${s.on_break ? '<span class="badge badge-purple text-3xs">休憩中</span>' : ''}
         ${dashLoginBadges(s)}</td>
       <td class="text-xs">${esc(s.project_name)}</td>
-      <td class="text-xs whitespace-nowrap">${s.carried_over ? `<span class="badge badge-purple text-[10px]">前日から継続</span><br>${esc(dayjs(s.work_date).format('M/D'))} ` : ''}${esc(formatShiftTime(s.start_time, s.end_time))}</td>
+      <td class="text-xs whitespace-nowrap">${s.carried_over ? `<span class="badge badge-purple text-3xs">前日から継続</span><br>${esc(dayjs(s.work_date).format('M/D'))} ` : ''}${esc(formatShiftTime(s.start_time, s.end_time))}</td>
       <td><div class="flex flex-wrap gap-1 min-w-[12rem]">${chips}</div></td>
       <td class="whitespace-nowrap">
-        <button type="button" class="text-xs text-blue-600 hover:underline mr-2" data-action="dashShiftReport" data-id="${Number(s.shift_id)}">${s.has_login === false ? '代理入力・URL' : '報告状況'}</button>
+        <button type="button" class="text-xs text-primary-600 hover:underline mr-2" data-action="dashShiftReport" data-id="${Number(s.shift_id)}">${s.has_login === false ? '代理入力・URL' : '報告状況'}</button>
         ${absentBtn}
       </td>
     </tr>`
-  }).join('') || `<tr><td colspan="5" class="text-center text-gray-400 py-4">${all.length ? '条件に合うシフトはありません' : '本日のシフトはありません'}</td></tr>`
+  }).join('') || `<tr><td colspan="5" class="text-center text-neutral-400 py-4">${all.length ? '条件に合うシフトはありません' : '本日のシフトはありません'}</td></tr>`
 }
 delegate('dashShiftFilter', el => { DASH_FILTER.only = el.dataset.only || ''; drawDashShifts() })
 // KPI カードなどから、ダッシュボードの中の一覧へ移る
@@ -797,37 +797,37 @@ delegate('dashCallLog', el => {
 function dashDayBeforeHtml(data) {
   const d = data.day_before || {}
   if (!d.enabled) return `<section class="card p-3 mb-5 flex items-center justify-between flex-wrap gap-2" id="dash-day-before">
-      <p class="text-sm text-gray-700"><i class="fas fa-user-check text-blue-600 mr-1"></i>前日確認: <span class="badge badge-gray">使っていません</span>
-        <span class="text-[11px] text-gray-500 ml-1">スタッフアプリで前日に『明日の稼働を確認しました』を押してもらい、未確認の人だけに連絡できます</span></p>
-      <button type="button" class="text-xs text-blue-600 underline" data-action="showDayBeforeSetting">設定を変更…</button>
+      <p class="text-sm text-neutral-700"><i class="fas fa-user-check text-primary-600 mr-1"></i>前日確認: <span class="badge badge-gray">使っていません</span>
+        <span class="text-2xs text-neutral-500 ml-1">スタッフアプリで前日に『明日の稼働を確認しました』を押してもらい、未確認の人だけに連絡できます</span></p>
+      <button type="button" class="text-xs text-primary-600 underline" data-action="showDayBeforeSetting">設定を変更…</button>
     </section>`
   const list = d.shifts || []
   const un = list.filter(s => !s.confirmed_at), done = list.filter(s => s.confirmed_at)
   const md = dayjs(d.date).format('M/D') + `（${'日月火水木金土'[dayjs(d.date).day()]}）`
   const row = (s) => `
-    <div class="rounded-lg ${s.confirmed_at ? 'bg-gray-50' : d.past_deadline ? 'bg-red-50' : 'bg-amber-50'} text-xs">
+    <div class="rounded-lg ${s.confirmed_at ? 'bg-neutral-50' : d.past_deadline ? 'bg-danger-50' : 'bg-warning-50'} text-xs">
       <div class="flex items-center gap-2 px-2 py-1 flex-wrap">
-        <span class="text-gray-500 whitespace-nowrap">${esc(formatShiftTime(s.start_time, s.end_time))}</span>
-        <a href="#staff/${Number(s.staff_id)}" class="font-bold text-gray-800 hover:underline">${esc(s.staff_name)}</a>
-        ${s.has_login ? '' : '<span class="badge badge-gray text-[10px]" title="アプリのログインがないため、アプリでは確認できません">ログインなし</span>'}
-        ${s.changed ? '<span class="badge badge-yellow text-[10px]" title="確認の後にシフトの日時・案件・場所が変わりました">確認後に変更</span>' : ''}
-        <span class="text-gray-500">${esc(s.project_name)}</span>
-        ${s.confirmed_at ? `<span class="ml-auto text-emerald-700 whitespace-nowrap"><i class="fas fa-check mr-0.5"></i>${esc(String(s.confirmed_at).slice(11, 16))} ${s.confirmed_by_name ? esc(s.confirmed_by_name) + 'が記録' : '本人が確認'}</span>`
-          : `<button type="button" class="ml-auto text-blue-600 hover:underline whitespace-nowrap" data-action="dashDayBeforeConfirm" data-id="${Number(s.shift_id)}" title="電話などで本人に確かめたときに使います">確認済みにする</button>`}
+        <span class="text-neutral-500 whitespace-nowrap">${esc(formatShiftTime(s.start_time, s.end_time))}</span>
+        <a href="#staff/${Number(s.staff_id)}" class="font-bold text-neutral-800 hover:underline">${esc(s.staff_name)}</a>
+        ${s.has_login ? '' : '<span class="badge badge-gray text-3xs" title="アプリのログインがないため、アプリでは確認できません">ログインなし</span>'}
+        ${s.changed ? '<span class="badge badge-yellow text-3xs" title="確認の後にシフトの日時・案件・場所が変わりました">確認後に変更</span>' : ''}
+        <span class="text-neutral-500">${esc(s.project_name)}</span>
+        ${s.confirmed_at ? `<span class="ml-auto text-success-700 whitespace-nowrap"><i class="fas fa-check mr-0.5"></i>${esc(String(s.confirmed_at).slice(11, 16))} ${s.confirmed_by_name ? esc(s.confirmed_by_name) + 'が記録' : '本人が確認'}</span>`
+          : `<button type="button" class="ml-auto text-primary-600 hover:underline whitespace-nowrap" data-action="dashDayBeforeConfirm" data-id="${Number(s.shift_id)}" title="電話などで本人に確かめたときに使います">確認済みにする</button>`}
       </div>
       ${s.confirmed_at ? '' : dashPhoneLine(s.shift_id, s.staff_phone, 'day_before')}
     </div>`
   return `<section class="card p-4 mb-5" id="dash-day-before">
       <div class="flex items-center justify-between flex-wrap gap-2 mb-3">
-        <h3 class="font-bold text-gray-800"><i class="fas fa-user-check text-blue-600 mr-1"></i>明日 ${esc(md)} のシフトの前日確認
+        <h3 class="font-bold text-neutral-800"><i class="fas fa-user-check text-primary-600 mr-1"></i>明日 ${esc(md)} のシフトの前日確認
           <span class="badge ${d.unconfirmed_staff_count ? (d.past_deadline ? 'badge-red' : 'badge-yellow') : 'badge-green'} ml-1">${d.unconfirmed_staff_count ? '未確認 ' + Number(d.unconfirmed_staff_count) + '名' : list.length ? '全員確認済み' : 'シフトなし'}</span>
-          <span class="text-xs font-normal text-gray-500 ml-1">${Number(d.staff_count) || 0}名・締切 ${esc(d.deadline)}${d.past_deadline ? '（過ぎています）' : ''}</span></h3>
-        <button type="button" class="text-xs text-blue-600 underline" data-action="showDayBeforeSetting">設定を変更…</button>
+          <span class="text-xs font-normal text-neutral-500 ml-1">${Number(d.staff_count) || 0}名・締切 ${esc(d.deadline)}${d.past_deadline ? '（過ぎています）' : ''}</span></h3>
+        <button type="button" class="text-xs text-primary-600 underline" data-action="showDayBeforeSetting">設定を変更…</button>
       </div>
-      ${un.length ? `<div class="space-y-1 max-h-72 overflow-y-auto">${un.map(row).join('')}</div>` : list.length ? '<p class="text-xs text-gray-400">明日のシフトの人は全員確認済みです <i class="fas fa-check text-emerald-500"></i></p>' : '<p class="text-xs text-gray-400">明日のシフトはありません</p>'}
-      ${done.length ? `<details class="mt-2"><summary class="text-xs text-gray-500 cursor-pointer">確認済み（${done.length}件）</summary>
+      ${un.length ? `<div class="space-y-1 max-h-72 overflow-y-auto">${un.map(row).join('')}</div>` : list.length ? '<p class="text-xs text-neutral-400">明日のシフトの人は全員確認済みです <i class="fas fa-check text-success-500"></i></p>' : '<p class="text-xs text-neutral-400">明日のシフトはありません</p>'}
+      ${done.length ? `<details class="mt-2"><summary class="text-xs text-neutral-500 cursor-pointer">確認済み（${done.length}件）</summary>
         <div class="space-y-1 mt-1 max-h-60 overflow-y-auto">${done.map(row).join('')}</div></details>` : ''}
-      <p class="text-[11px] text-gray-400 mt-2">スタッフはアプリのホームで、前日に『明日の稼働を確認しました』を押します。締切を過ぎても未確認の人がいると、ToDo に出ます</p>
+      <p class="text-2xs text-neutral-400 mt-2">スタッフはアプリのホームで、前日に『明日の稼働を確認しました』を押します。締切を過ぎても未確認の人がいると、ToDo に出ます</p>
     </section>`
 }
 delegate('dashDayBeforeConfirm', el => withSubmitLock(el, async () => {
@@ -841,10 +841,10 @@ delegate('showDayBeforeSetting', async () => {
   let s
   try { s = (await axios.get('/api/admin/report-settings/day-before-check')).data } catch (e) { showApiError(e, '設定を読み込めませんでした'); return }
   modal(`
-    <h3 class="font-bold text-lg mb-2"><i class="fas fa-user-check text-blue-600 mr-1"></i>前日確認</h3>
-    <p class="text-xs text-gray-500 mb-3">使うと、スタッフアプリのホームに明日のシフトの『明日の稼働を確認しました』のボタンを出し、ダッシュボードに明日のシフトの確認状況を出します。締切を過ぎても未確認の人がいると、ToDo に出します。</p>
+    <h3 class="font-bold text-lg mb-2"><i class="fas fa-user-check text-primary-600 mr-1"></i>前日確認</h3>
+    <p class="text-xs text-neutral-500 mb-3">使うと、スタッフアプリのホームに明日のシフトの『明日の稼働を確認しました』のボタンを出し、ダッシュボードに明日のシフトの確認状況を出します。締切を過ぎても未確認の人がいると、ToDo に出します。</p>
     <label class="flex items-center gap-2 text-sm mb-3"><input type="checkbox" id="dbc-enabled" class="w-4 h-4" ${s.enabled ? 'checked' : ''}>前日確認を使う</label>
-    <label class="text-sm text-gray-600 block mb-1" for="dbc-deadline">確認の締切（前日の時刻）</label>
+    <label class="text-sm text-neutral-600 block mb-1" for="dbc-deadline">確認の締切（前日の時刻）</label>
     <input id="dbc-deadline" type="time" class="inp" value="${esc(s.deadline || '18:00')}">
     <div class="flex gap-2 mt-4">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="saveDayBeforeSetting">保存する</button></div>`)
 })
@@ -863,8 +863,8 @@ const DASH_TODOS = { todos: [], hidden: [] }
 function dashTodoLink(t) {
   const href = t.href || (t.staff_id ? '#staff/' + Number(t.staff_id) : '')
   // #dash-〜 はダッシュボードの中の一覧（人員不足など）。画面を移らずにそこへ移る
-  if (/^#dash-[a-z-]+$/.test(href)) return `<button type="button" class="text-xs text-blue-600 whitespace-nowrap hover:underline" data-action="dashScrollTo" data-target="${esc(href.slice(1))}">${esc(t.link_label || '詳細→')}</button>`
-  return href ? `<a href="${esc(href)}" class="text-xs text-blue-600 whitespace-nowrap hover:underline">${esc(t.link_label || '詳細→')}</a>` : ''
+  if (/^#dash-[a-z-]+$/.test(href)) return `<button type="button" class="text-xs text-primary-600 whitespace-nowrap hover:underline" data-action="dashScrollTo" data-target="${esc(href.slice(1))}">${esc(t.link_label || '詳細→')}</button>`
+  return href ? `<a href="${esc(href)}" class="text-xs text-primary-600 whitespace-nowrap hover:underline">${esc(t.link_label || '詳細→')}</a>` : ''
 }
 function drawDashTodos() {
   const box = document.getElementById('dash-todos'); if (!box) return
@@ -872,30 +872,30 @@ function drawDashTodos() {
   box.innerHTML = `
     <div class="space-y-2 max-h-80 overflow-y-auto">
       ${DASH_TODOS.todos.map(t => `
-        <div class="flex items-start gap-2.5 p-2.5 rounded-lg ${t.level === 'high' ? 'bg-red-50' : 'bg-amber-50'}">
-          <i class="fas ${t.level === 'high' ? 'fa-circle-exclamation text-red-500' : 'fa-triangle-exclamation text-amber-500'} mt-0.5"></i>
+        <div class="flex items-start gap-2.5 p-2.5 rounded-lg ${t.level === 'high' ? 'bg-danger-50' : 'bg-warning-50'}">
+          <i class="fas ${t.level === 'high' ? 'fa-circle-exclamation text-danger-500' : 'fa-triangle-exclamation text-warning-500'} mt-0.5"></i>
           <div class="flex-1 min-w-0">
-            <p class="text-sm ${t.level === 'high' ? 'text-red-800' : 'text-amber-800'}">${esc(t.text)}</p>
+            <p class="text-sm ${t.level === 'high' ? 'text-danger-800' : 'text-warning-800'}">${esc(t.text)}</p>
             <div class="flex gap-3 mt-1">
-              ${(t.actions || []).includes('done') ? `<button type="button" class="text-[11px] text-gray-600 hover:underline" data-action="dashTodoDone" data-key="${esc(t.key)}"><i class="fas fa-check mr-0.5"></i>${t.follow_id ? 'フォローを完了にする' : '対応済み'}</button>` : ''}
-              ${(t.actions || []).includes('snooze') ? `<button type="button" class="text-[11px] text-gray-600 hover:underline" data-action="dashTodoSnooze" data-key="${esc(t.key)}"><i class="fas fa-clock mr-0.5"></i>あとで（明日まで）</button>` : ''}
+              ${(t.actions || []).includes('done') ? `<button type="button" class="text-2xs text-neutral-600 hover:underline" data-action="dashTodoDone" data-key="${esc(t.key)}"><i class="fas fa-check mr-0.5"></i>${t.follow_id ? 'フォローを完了にする' : '対応済み'}</button>` : ''}
+              ${(t.actions || []).includes('snooze') ? `<button type="button" class="text-2xs text-neutral-600 hover:underline" data-action="dashTodoSnooze" data-key="${esc(t.key)}"><i class="fas fa-clock mr-0.5"></i>あとで（明日まで）</button>` : ''}
             </div>
           </div>
           ${dashTodoLink(t)}
-        </div>`).join('') || '<p class="text-sm text-gray-400 py-4 text-center">対応すべきタスクはありません <i class="fas fa-check text-emerald-500"></i></p>'}
+        </div>`).join('') || '<p class="text-sm text-neutral-400 py-4 text-center">対応すべきタスクはありません <i class="fas fa-check text-success-500"></i></p>'}
     </div>
     ${DASH_TODOS.hidden.length ? `<details class="mt-3">
-      <summary class="text-xs text-gray-500 cursor-pointer">対応済み・あとでにした ToDo（${DASH_TODOS.hidden.length}件）</summary>
+      <summary class="text-xs text-neutral-500 cursor-pointer">対応済み・あとでにした ToDo（${DASH_TODOS.hidden.length}件）</summary>
       <div class="space-y-1.5 mt-2 max-h-60 overflow-y-auto">
         ${DASH_TODOS.hidden.map(t => {
           const d = t.dismissed || {}
-          return `<div class="flex items-start gap-2 p-2 rounded-lg bg-gray-50 text-xs">
+          return `<div class="flex items-start gap-2 p-2 rounded-lg bg-neutral-50 text-xs">
             <div class="flex-1 min-w-0">
-              <p class="text-gray-600">${esc(t.text)}</p>
-              <p class="text-[11px] text-gray-400 mt-0.5">${d.action === 'done' ? '対応済み' : `あとで（${fmt(d.until_at)}まで）`}・${esc(d.user_name || '-')}・${fmt(d.created_at)}</p>
+              <p class="text-neutral-600">${esc(t.text)}</p>
+              <p class="text-2xs text-neutral-400 mt-0.5">${d.action === 'done' ? '対応済み' : `あとで（${fmt(d.until_at)}まで）`}・${esc(d.user_name || '-')}・${fmt(d.created_at)}</p>
             </div>
             ${dashTodoLink(t)}
-            <button type="button" class="text-[11px] text-blue-600 hover:underline whitespace-nowrap" data-action="dashTodoRestore" data-key="${esc(t.key)}">元に戻す</button>
+            <button type="button" class="text-2xs text-primary-600 hover:underline whitespace-nowrap" data-action="dashTodoRestore" data-key="${esc(t.key)}">元に戻す</button>
           </div>`
         }).join('')}
       </div>
@@ -971,11 +971,11 @@ function askAbsentReason(head) {
     bg.style.zIndex = '50'
     bg.innerHTML = `<div class="modal-box p-5" style="max-width:420px" role="dialog" aria-labelledby="absent-reason-title">
       <h3 class="font-bold text-lg mb-1" id="absent-reason-title">欠勤にする</h3>
-      ${head ? `<p class="text-sm text-gray-700 whitespace-pre-wrap mb-2">${esc(head)}</p>` : ''}
-      <p class="text-xs text-gray-500 mb-3">理由を選んでください。理由は精算の「キャンセル料・補償」に入ります（金額は精算の画面で入力します）。</p>
+      ${head ? `<p class="text-sm text-neutral-700 whitespace-pre-wrap mb-2">${esc(head)}</p>` : ''}
+      <p class="text-xs text-neutral-500 mb-3">理由を選んでください。理由は精算の「キャンセル料・補償」に入ります（金額は精算の画面で入力します）。</p>
       <div class="space-y-2">
         ${ABSENT_REASONS.map(([k, l, ic]) => `<button type="button" class="btn btn-outline w-full justify-start" data-reason="${k}"><i class="fas ${ic}"></i>${l}</button>`).join('')}
-        <button type="button" class="btn btn-outline w-full justify-start text-gray-600" data-reason=""><i class="fas fa-minus"></i>理由を残さずに欠勤にする<span class="text-[11px] text-gray-400 ml-1">（あとで精算の画面で選べます）</span></button>
+        <button type="button" class="btn btn-outline w-full justify-start text-neutral-600" data-reason=""><i class="fas fa-minus"></i>理由を残さずに欠勤にする<span class="text-2xs text-neutral-400 ml-1">（あとで精算の画面で選べます）</span></button>
       </div>
       <div class="flex gap-2 mt-4"><button type="button" class="btn btn-outline flex-1" data-reason-cancel>キャンセル</button></div>
     </div>`
@@ -1025,10 +1025,10 @@ delegate('markAbsent', el => markAbsent(Number(el.dataset.id), el))
 async function openSubstitute(shiftId) {
   const s = DASH_SHIFTS.get(shiftId); if (!s) return
   const head = `<h3 class="font-bold text-lg mb-1">代わりのスタッフを探す</h3>
-    <p class="text-xs text-gray-500 mb-3">${esc(dayjs(s.work_date).format('M/D'))} ${esc(s.start_time)}〜${esc(s.end_time)}・${esc(s.project_name)}（欠勤: ${esc(s.staff_name)}）</p>`
+    <p class="text-xs text-neutral-500 mb-3">${esc(dayjs(s.work_date).format('M/D'))} ${esc(s.start_time)}〜${esc(s.end_time)}・${esc(s.project_name)}（欠勤: ${esc(s.staff_name)}）</p>`
   const boardBtn = `<button type="button" class="btn btn-outline w-full mt-2 text-sm" data-action="openBoardAt" data-date="${esc(s.work_date)}" data-project-id="${Number(s.project_id)}"><i class="fas fa-table-cells"></i>シフトボードでこの日を開く</button>`
   if (!s.slot_role_id) {
-    modal(`${head}<p class="text-sm text-gray-600">このシフトは募集枠に入っていないため、候補の一覧を出せません。シフトボードで代わりのシフトを登録してください。</p>${boardBtn}
+    modal(`${head}<p class="text-sm text-neutral-600">このシフトは募集枠に入っていないため、候補の一覧を出せません。シフトボードで代わりのシフトを登録してください。</p>${boardBtn}
       <button type="button" class="btn btn-outline w-full mt-2 text-sm" onclick="closeModal()">閉じる</button>`)
     return
   }
@@ -1036,14 +1036,14 @@ async function openSubstitute(shiftId) {
   try { data = (await axios.get('/api/admin/shift-board/candidates?slot_role_id=' + Number(s.slot_role_id))).data } catch (e) { showApiError(e, '候補を読み込めませんでした'); return }
   const list = (data.candidates || []).filter(c => c.staff_id !== s.staff_id)
   modal(`${head}
-    <p class="text-[11px] text-gray-400 mb-2">空きのある人・同じ開催場所や案件の経験がある人から順に並べています</p>
-    <div class="max-h-80 overflow-y-auto border border-gray-100 rounded-lg divide-y divide-gray-50">
-      ${list.map(c => `<label class="flex items-center gap-2 px-2 py-1.5 text-sm ${c.busy || c.ng ? 'bg-red-50' : ''}">
+    <p class="text-2xs text-neutral-400 mb-2">空きのある人・同じ開催場所や案件の経験がある人から順に並べています</p>
+    <div class="max-h-80 overflow-y-auto border border-neutral-100 rounded-lg divide-y divide-neutral-50">
+      ${list.map(c => `<label class="flex items-center gap-2 px-2 py-1.5 text-sm ${c.busy || c.ng ? 'bg-danger-50' : ''}">
         <input type="radio" name="sub-staff" value="${Number(c.staff_id)}">
         <span class="flex-1 min-w-0"><span class="font-bold">${esc(c.name)}</span>
-          <span class="block text-[11px] text-gray-500">${c.busy ? `<span class="text-red-600">${esc((c.busy_detail || []).join('、'))}</span>` : '<span class="text-emerald-600">空き</span>'}${c.ng ? '<span class="text-red-600 ml-1">NG</span>' : ''}${c.on_leave ? '<span class="text-amber-600 ml-1">休職中</span>' : ''}
+          <span class="block text-2xs text-neutral-500">${c.busy ? `<span class="text-danger-600">${esc((c.busy_detail || []).join('、'))}</span>` : '<span class="text-success-600">空き</span>'}${c.ng ? '<span class="text-danger-600 ml-1">NG</span>' : ''}${c.on_leave ? '<span class="text-warning-600 ml-1">休職中</span>' : ''}
             ・この場所 ${Number(c.site_count) || 0}回・この案件 ${Number(c.project_count) || 0}回</span></span>
-      </label>`).join('') || '<p class="p-3 text-sm text-gray-400">候補がいません</p>'}
+      </label>`).join('') || '<p class="p-3 text-sm text-neutral-400">候補がいません</p>'}
     </div>
     <button type="button" class="btn btn-primary w-full mt-3" data-action="assignSubstitute" data-id="${Number(shiftId)}">代打として割り当てる</button>
     ${boardBtn}
@@ -1092,8 +1092,8 @@ delegate('dashShiftReport', el => {
   const id = Number(el.dataset.id)
   const s = DASH_SHIFTS.get(id) || {}
   modal(`<h3 class="font-bold text-lg mb-1">${esc(s.staff_name || '')}</h3>
-    <p class="text-xs text-gray-500 mb-3">${s.work_date ? esc(dayjs(s.work_date).format('M/D')) + ' ' : ''}${esc(s.start_time || '')}〜${esc(s.end_time || '')}・${esc(s.project_name || '')}</p>
-    <div id="shift-report-panel" class="mb-3"><p class="text-xs text-gray-400">読み込み中…</p></div>
+    <p class="text-xs text-neutral-500 mb-3">${s.work_date ? esc(dayjs(s.work_date).format('M/D')) + ' ' : ''}${esc(s.start_time || '')}〜${esc(s.end_time || '')}・${esc(s.project_name || '')}</p>
+    <div id="shift-report-panel" class="mb-3"><p class="text-xs text-neutral-400">読み込み中…</p></div>
     <div class="flex gap-2">
       ${s.staff_id ? `<a class="btn btn-outline flex-1 text-xs" href="#staff/${Number(s.staff_id)}" onclick="closeModal()">スタッフ詳細</a>` : ''}
       <button type="button" class="btn btn-outline flex-1 text-xs" onclick="closeModal(); renderDashboard()">閉じて更新</button>
@@ -1127,9 +1127,9 @@ function opLogValue(field, v, names) {
   return typeof v === 'object' ? JSON.stringify(v) : String(v)
 }
 function opLogRowsHtml(logs, names) {
-  return logs.map(l => `<div class="border-b border-gray-100 py-1.5">
-      <p class="text-gray-700"><span class="font-bold">${esc(l.action_label)}</span> <span class="text-gray-400">${esc(dashDateTime(l.created_at))}・${esc(l.actor_name || '（不明）')}</span>${l.notify_off ? ' <span class="badge badge-gray" title="スタッフに通知を送らずに操作しました"><i class="fas fa-bell-slash mr-0.5"></i>通知なし</span>' : ''}</p>
-      ${l.changes.length ? `<ul class="text-gray-600 mt-0.5 space-y-0.5">${l.changes.map(c => `<li><span class="text-gray-400">${esc(c.label)}:</span> ${esc(opLogValue(c.field, c.before, names))} <i class="fas fa-arrow-right text-[9px] text-gray-400"></i> ${esc(opLogValue(c.field, c.after, names))}</li>`).join('')}</ul>` : ''}
+  return logs.map(l => `<div class="border-b border-neutral-100 py-1.5">
+      <p class="text-neutral-700"><span class="font-bold">${esc(l.action_label)}</span> <span class="text-neutral-400">${esc(dashDateTime(l.created_at))}・${esc(l.actor_name || '（不明）')}</span>${l.notify_off ? ' <span class="badge badge-gray" title="スタッフに通知を送らずに操作しました"><i class="fas fa-bell-slash mr-0.5"></i>通知なし</span>' : ''}</p>
+      ${l.changes.length ? `<ul class="text-neutral-600 mt-0.5 space-y-0.5">${l.changes.map(c => `<li><span class="text-neutral-400">${esc(c.label)}:</span> ${esc(opLogValue(c.field, c.before, names))} <i class="fas fa-arrow-right text-4xs text-neutral-400"></i> ${esc(opLogValue(c.field, c.after, names))}</li>`).join('')}</ul>` : ''}
     </div>`).join('')
 }
 const OP_LOG_STATE = new Map() // 表示先ごとの読み込み済みの履歴（続きの読み込みに使う）
@@ -1141,16 +1141,16 @@ async function loadOpLog(hostId, entity, id, more) {
   if (more && st.logs.length) params.before = st.logs[st.logs.length - 1].log_id
   let d
   try { d = (await axios.get('/api/admin/operation-logs', { params })).data } catch (e) {
-    host.innerHTML = `<p class="text-xs text-red-600">${esc(showApiError(e, '変更履歴を読み込めませんでした'))}</p>`; return
+    host.innerHTML = `<p class="text-xs text-danger-600">${esc(showApiError(e, '変更履歴を読み込めませんでした'))}</p>`; return
   }
   st.logs = st.logs.concat(d.logs || [])
   for (const k of ['staff', 'project', 'user']) Object.assign(st.names[k], (d.names || {})[k] || {})
   st.has_more = !!d.has_more
   OP_LOG_STATE.set(hostId, st)
-  host.innerHTML = `<div class="rounded-lg border border-gray-100 p-2 text-xs">
-      <p class="font-bold text-gray-700 mb-1"><i class="fas fa-clock-rotate-left mr-1"></i>変更履歴（新しい順）</p>
-      ${st.logs.length ? `<div class="max-h-64 overflow-y-auto">${opLogRowsHtml(st.logs, st.names)}</div>` : '<p class="text-gray-400">記録された変更はありません（記録を始める前の変更は残っていません）</p>'}
-      ${st.has_more ? `<button type="button" class="text-blue-600 hover:underline mt-1" data-action="opLogMore" data-host="${esc(hostId)}" data-entity="${esc(entity)}" data-id="${Number(id)}">さらに読み込む</button>` : ''}
+  host.innerHTML = `<div class="rounded-lg border border-neutral-100 p-2 text-xs">
+      <p class="font-bold text-neutral-700 mb-1"><i class="fas fa-clock-rotate-left mr-1"></i>変更履歴（新しい順）</p>
+      ${st.logs.length ? `<div class="max-h-64 overflow-y-auto">${opLogRowsHtml(st.logs, st.names)}</div>` : '<p class="text-neutral-400">記録された変更はありません（記録を始める前の変更は残っていません）</p>'}
+      ${st.has_more ? `<button type="button" class="text-primary-600 hover:underline mt-1" data-action="opLogMore" data-host="${esc(hostId)}" data-entity="${esc(entity)}" data-id="${Number(id)}">さらに読み込む</button>` : ''}
     </div>`
 }
 delegate('opLogShow', el => {
@@ -1164,10 +1164,10 @@ delegate('opLogShow', el => {
     host.dataset.opOpen = '1'
   } else {
     hostId = 'op-log-modal'
-    modal(`<h3 class="font-bold text-lg mb-2">${esc(el.dataset.title || '変更履歴')}</h3><div id="op-log-modal"><p class="text-xs text-gray-400">読み込み中…</p></div>
+    modal(`<h3 class="font-bold text-lg mb-2">${esc(el.dataset.title || '変更履歴')}</h3><div id="op-log-modal"><p class="text-xs text-neutral-400">読み込み中…</p></div>
       <button type="button" class="btn btn-outline w-full mt-3" onclick="closeModal()">閉じる</button>`)
   }
-  document.getElementById(hostId).innerHTML = '<p class="text-xs text-gray-400">読み込み中…</p>'
+  document.getElementById(hostId).innerHTML = '<p class="text-xs text-neutral-400">読み込み中…</p>'
   withSubmitLock(el, () => loadOpLog(hostId, entity, id, false))
 })
 delegate('opLogMore', el => withSubmitLock(el, () => loadOpLog(el.dataset.host, el.dataset.entity, Number(el.dataset.id), true)))
@@ -1230,7 +1230,7 @@ window.STAFF_AV_TARGET_CHOICE_HELP = STAFF_AV_TARGET_CHOICE_HELP
 const STAFF_PICK = new Set()
 // 最終ログイン（ログイン・アプリの操作の新しいほう。#286）。ログインできる人で一度も使っていなければ「未ログイン」
 function staffLastLoginCell(s) {
-  if (s.user_role !== 'staff') return '<span class="text-gray-300" title="ログインなし（名簿のみ）">-</span>'
+  if (s.user_role !== 'staff') return '<span class="text-neutral-300" title="ログインなし（名簿のみ）">-</span>'
   if (!s.app_last_used_at) return '<span class="badge badge-yellow" title="ログインを発行してから、まだ一度もアプリを使っていません">未ログイン</span>'
   return esc(dayjs(String(s.app_last_used_at).replace(' ', 'T')).format('YY/M/D HH:mm'))
 }
@@ -1244,7 +1244,7 @@ const STAFF_SORT = {
   last_login: s => s.app_last_used_at || null,
 }
 // 一覧の「成約」（#184）。該当の項目・案件が無いときは null で、0 ではなく「—」と出す
-const seiyakuCell = (v, why) => (v == null ? `<span class="text-gray-300 font-normal" title="${esc(why)}">—</span>` : String(Number(v) || 0))
+const seiyakuCell = (v, why) => (v == null ? `<span class="text-neutral-300 font-normal" title="${esc(why)}">—</span>` : String(Number(v) || 0))
 const isRetiredStaff = s => s.employment_status === 'retired'
 function staffEmpBadge(s) {
   const st = s.employment_status || 'working'
@@ -1293,10 +1293,10 @@ function drawStaffTable(filter) {
   }
   const L = STAFF_LIST
   const chip = (on, attrs, label) => `<button type="button" class="btn ${on ? 'btn-primary' : 'btn-outline'} text-xs" ${attrs}>${label}</button>`
-  const th = (k, label) => `<th class="cursor-pointer select-none whitespace-nowrap" data-action="sortStaff" data-key="${k}" title="クリックで並べ替え">${label}${L.sort === k ? `<i class="fas fa-caret-${L.dir > 0 ? 'up' : 'down'} ml-1 text-blue-600"></i>` : ''}</th>`
+  const th = (k, label) => `<th class="cursor-pointer select-none whitespace-nowrap" data-action="sortStaff" data-key="${k}" title="クリックで並べ替え">${label}${L.sort === k ? `<i class="fas fa-caret-${L.dir > 0 ? 'up' : 'down'} ml-1 text-primary-600"></i>` : ''}</th>`
   $app.innerHTML = `
     <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
-      <h2 class="text-xl font-bold text-gray-900">スタッフマスタ <span class="text-sm font-normal text-gray-400" id="staff-count"></span></h2>
+      <h2 class="text-xl font-bold text-neutral-900">スタッフマスタ <span class="text-sm font-normal text-neutral-400" id="staff-count"></span></h2>
       <div class="flex gap-2 flex-wrap">
         <button class="btn btn-outline" data-action="reloadStaffList" title="最新の情報に読み直す" aria-label="読み直す"><i class="fas fa-rotate"></i></button>
         <button class="btn btn-outline" onclick="showRosterFieldSettings()"><i class="fas fa-sliders"></i>必須項目の設定</button>
@@ -1309,22 +1309,22 @@ function drawStaffTable(filter) {
       <div class="flex gap-2 flex-wrap items-center">
         <input id="staff-q" class="inp text-sm flex-1 min-w-[220px]" placeholder="氏名・フリガナ・電話・番号・スキル・エリア・所属で検索" value="${esc(L.q)}">
         <select id="staff-dormant" class="inp text-sm w-auto">${STAFF_DORMANT.map(([k, v]) => `<option value="${k}" ${L.dormant === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
-        <label class="text-xs text-gray-600 flex items-center gap-1"><input type="checkbox" id="staff-retired" ${L.retired ? 'checked' : ''} ${L.merged ? 'disabled' : ''}>退職者を含む</label>
-        ${staffCache.some(s => s.merged_into_staff_id) ? `<label class="text-xs text-gray-600 flex items-center gap-1"><input type="checkbox" id="staff-merged" ${L.merged ? 'checked' : ''}>統合済みだけを表示</label>` : ''}
-        ${L.q || L.states.length || L.types.length || L.dormant || L.merged ? '<button type="button" class="text-xs text-blue-600 hover:underline" data-action="clearStaffFilter">条件をクリア</button>' : ''}
+        <label class="text-xs text-neutral-600 flex items-center gap-1"><input type="checkbox" id="staff-retired" ${L.retired ? 'checked' : ''} ${L.merged ? 'disabled' : ''}>退職者を含む</label>
+        ${staffCache.some(s => s.merged_into_staff_id) ? `<label class="text-xs text-neutral-600 flex items-center gap-1"><input type="checkbox" id="staff-merged" ${L.merged ? 'checked' : ''}>統合済みだけを表示</label>` : ''}
+        ${L.q || L.states.length || L.types.length || L.dormant || L.merged ? '<button type="button" class="text-xs text-primary-600 hover:underline" data-action="clearStaffFilter">条件をクリア</button>' : ''}
       </div>
       <div class="flex gap-1.5 flex-wrap items-center">
-        <span class="text-[11px] text-gray-400 w-10">状態</span>
+        <span class="text-2xs text-neutral-400 w-10">状態</span>
         ${STAFF_STATE_FILTERS.map(([k, v]) => chip(L.states.includes(k), `data-action="toggleStaffFilter" data-group="states" data-key="${k}"`, v)).join('')}
-        <span class="text-[11px] text-gray-400">（選んだ条件をすべて満たす人）</span>
+        <span class="text-2xs text-neutral-400">（選んだ条件をすべて満たす人）</span>
       </div>
       <div class="flex gap-1.5 flex-wrap items-center">
-        <span class="text-[11px] text-gray-400 w-10">区分</span>
+        <span class="text-2xs text-neutral-400 w-10">区分</span>
         ${Object.entries(AFF_TYPE_LABEL).map(([k, v]) => chip(L.types.includes(k), `data-action="toggleStaffFilter" data-group="types" data-key="${k}"`, esc(v))).join('')}
-        <span class="text-[11px] text-gray-400">（選んだどれかに当たる人）</span>
+        <span class="text-2xs text-neutral-400">（選んだどれかに当たる人）</span>
       </div>
     </div>
-    <div id="staff-bulk" class="hidden fixed bottom-4 inset-x-4 side-offset-left md:right-6 z-20 card p-3 bg-white border border-blue-200 shadow-lg flex items-center gap-2 flex-wrap"></div>
+    <div id="staff-bulk" class="hidden fixed bottom-4 inset-x-4 side-offset-left md:right-6 z-20 card p-3 bg-surface border border-primary-200 shadow-lg flex items-center gap-2 flex-wrap"></div>
     <div class="card overflow-x-auto">
       <table class="tbl">
         <thead><tr><th class="w-8"><input type="checkbox" id="staff-pick-all" class="w-4 h-4 align-middle" data-action="staffPickAll" title="表示中のスタッフをすべて選ぶ" aria-label="表示中のスタッフをすべて選ぶ"></th>${th('code', '番号')}${th('name', '氏名')}<th>在籍</th><th>所属区分</th><th>所属案件</th>${th('month_days', '今月稼働')}${th('month_seiyaku', '今月成約')}${th('evaluation_score', '評価')}${th('retention_risk', '離職リスク')}<th>要フォロー</th>${th('last_work_date', '最終稼働')}${th('last_report_date', '最終日報')}${th('last_login', '最終ログイン')}</tr></thead>
@@ -1353,20 +1353,20 @@ function drawStaffRows() {
   document.getElementById('staff-rows').innerHTML = list.map(s => `
             <tr class="cursor-pointer${isRetiredStaff(s) ? ' opacity-60' : ''}" data-action="openStaffDetail" data-id="${Number(s.staff_id)}">
               <td class="w-8" data-action="staffPickCell" data-id="${Number(s.staff_id)}"><input type="checkbox" class="w-4 h-4 align-middle" aria-label="${escAttr(s.name + ' を選ぶ')}" ${STAFF_PICK.has(Number(s.staff_id)) ? 'checked' : ''}></td>
-              <td class="text-gray-400">${esc(staffCodeLabel(s))}</td>
-              <td class="font-medium text-blue-700">${esc(s.name)}${s.merged_into_staff_id ? ' <span class="badge badge-gray" title="別のスタッフに統合済み">統合済み</span>' : s.is_provisional ? ' <span class="badge badge-red" title="仮登録（氏名・電話のみ）。本登録で必須項目を入力してください">仮</span>' : ''}${Number(s.doc_expiring) > 0 ? ` <span class="badge badge-yellow" title="有効期限が30日以内・期限切れの書類が${Number(s.doc_expiring)}件あります（スタッフ詳細の「ファイル」で確かめてください）"><i class="fas fa-file-circle-exclamation"></i>書類期限</span>` : ''}${Number(s.availability_exempt) === 1 ? ' <span class="badge badge-gray" title="出勤可能日の提出を「しない」にしている人です。未提出の案内・提出のお願いの通知を出しません">出勤可能日 提出しない</span>' : ''}${s.kana ? `<div class="text-[11px] text-gray-400 font-normal">${esc(s.kana)}</div>` : ''}</td>
+              <td class="text-neutral-400">${esc(staffCodeLabel(s))}</td>
+              <td class="font-medium text-primary-700">${esc(s.name)}${s.merged_into_staff_id ? ' <span class="badge badge-gray" title="別のスタッフに統合済み">統合済み</span>' : s.is_provisional ? ' <span class="badge badge-red" title="仮登録（氏名・電話のみ）。本登録で必須項目を入力してください">仮</span>' : ''}${Number(s.doc_expiring) > 0 ? ` <span class="badge badge-yellow" title="有効期限が30日以内・期限切れの書類が${Number(s.doc_expiring)}件あります（スタッフ詳細の「ファイル」で確かめてください）"><i class="fas fa-file-circle-exclamation"></i>書類期限</span>` : ''}${Number(s.availability_exempt) === 1 ? ' <span class="badge badge-gray" title="出勤可能日の提出を「しない」にしている人です。未提出の案内・提出のお願いの通知を出しません">出勤可能日 提出しない</span>' : ''}${s.kana ? `<div class="text-2xs text-neutral-400 font-normal">${esc(s.kana)}</div>` : ''}</td>
               <td class="whitespace-nowrap">${staffEmpBadge(s)}</td>
-              <td>${affTypeBadge(s.affiliation_type)}${s.board_proposal_id ? ' <span class="badge badge-purple" title="案件掲示板の提案から取り込んだスタッフ"><i class="fas fa-clipboard-list"></i>掲示板経由</span>' : ''}<div class="text-[11px] text-gray-400 max-w-[160px] truncate">${esc(s.affiliation_type === 'linked_external' ? s.owner_company_name : (s.affiliation || ''))}</div></td>
+              <td>${affTypeBadge(s.affiliation_type)}${s.board_proposal_id ? ' <span class="badge badge-purple" title="案件掲示板の提案から取り込んだスタッフ"><i class="fas fa-clipboard-list"></i>掲示板経由</span>' : ''}<div class="text-2xs text-neutral-400 max-w-[160px] truncate">${esc(s.affiliation_type === 'linked_external' ? s.owner_company_name : (s.affiliation || ''))}</div></td>
               <td class="text-xs max-w-[200px] truncate">${esc(s.projects || '-')}</td>
               <td>${Number(s.month_days || 0)}日</td>
               <td class="font-bold">${seiyakuCell(s.month_seiyaku, '今月、日報テンプレートに「成約」の項目がある案件の稼働がありません')}</td>
               <td>${Number(s.evaluation_score).toFixed(1)}</td>
               <td>${RISK_BADGE[s.retention_risk] || ''}</td>
-              <td>${s.follow_flag ? '<span class="badge badge-red">要フォロー</span>' : '<span class="text-gray-300">-</span>'}</td>
-              <td class="text-xs text-gray-500 whitespace-nowrap">${s.last_work_date ? esc(dayjs(s.last_work_date).format('YY/M/D')) : '-'}</td>
-              <td class="text-xs text-gray-500 whitespace-nowrap">${s.last_report_date ? esc(dayjs(s.last_report_date).format('YY/M/D')) : '-'}</td>
-              <td class="text-xs text-gray-500 whitespace-nowrap">${staffLastLoginCell(s)}</td>
-            </tr>`).join('') || '<tr><td colspan="14" class="text-center text-gray-400 py-6">条件に合うスタッフはいません</td></tr>'
+              <td>${s.follow_flag ? '<span class="badge badge-red">要フォロー</span>' : '<span class="text-neutral-300">-</span>'}</td>
+              <td class="text-xs text-neutral-500 whitespace-nowrap">${s.last_work_date ? esc(dayjs(s.last_work_date).format('YY/M/D')) : '-'}</td>
+              <td class="text-xs text-neutral-500 whitespace-nowrap">${s.last_report_date ? esc(dayjs(s.last_report_date).format('YY/M/D')) : '-'}</td>
+              <td class="text-xs text-neutral-500 whitespace-nowrap">${staffLastLoginCell(s)}</td>
+            </tr>`).join('') || '<tr><td colspan="14" class="text-center text-neutral-400 py-6">条件に合うスタッフはいません</td></tr>'
   drawStaffBulkBar()
 }
 // まとめての操作の帯（選んだ人がいるときだけ、画面の下に出す）。今は出勤可能日の提出（する／しない）の切り替え（#9907 #9918）
@@ -1381,11 +1381,11 @@ function drawStaffBulkBar() {
   const space = document.getElementById('staff-bulk-space')
   if (space) space.classList.toggle('hidden', !STAFF_PICK.size)
   if (!STAFF_PICK.size) { bar.innerHTML = ''; return }
-  bar.innerHTML = `<span class="text-sm font-bold text-gray-800">${STAFF_PICK.size}人を選択中</span>
-    <span class="text-xs text-gray-500 ml-1">出勤可能日の提出を</span>
+  bar.innerHTML = `<span class="text-sm font-bold text-neutral-800">${STAFF_PICK.size}人を選択中</span>
+    <span class="text-xs text-neutral-500 ml-1">出勤可能日の提出を</span>
     <button type="button" class="btn btn-outline text-xs" data-action="staffBulkAvTarget" data-target="1"><i class="fas fa-calendar-check"></i>「する」にする</button>
     <button type="button" class="btn btn-outline text-xs" data-action="staffBulkAvTarget" data-target="0"><i class="fas fa-calendar-xmark"></i>「しない」にする</button>
-    <button type="button" class="text-xs text-gray-500 hover:underline ml-auto" data-action="staffPickClear">選択を解除</button>`
+    <button type="button" class="text-xs text-neutral-500 hover:underline ml-auto" data-action="staffPickClear">選択を解除</button>`
 }
 // 行の左端のチェック欄（欄のどこを押しても選ぶ。行を押したときの詳細は開かない）
 delegate('staffPickCell', (el, ev) => {
@@ -1440,7 +1440,7 @@ delegate('sortStaff', el => {
   saveStaffListState(); drawStaffRows()
   document.querySelectorAll('[data-action="sortStaff"]').forEach(h => {
     const ic = h.querySelector('i'); if (ic) ic.remove()
-    if (h.dataset.key === STAFF_LIST.sort) h.insertAdjacentHTML('beforeend', `<i class="fas fa-caret-${STAFF_LIST.dir > 0 ? 'up' : 'down'} ml-1 text-blue-600"></i>`)
+    if (h.dataset.key === STAFF_LIST.sort) h.insertAdjacentHTML('beforeend', `<i class="fas fa-caret-${STAFF_LIST.dir > 0 ? 'up' : 'down'} ml-1 text-primary-600"></i>`)
   })
 })
 delegate('openStaffDetail', el => { staffListScroll = window.scrollY; location.hash = 'staff/' + Number(el.dataset.id) })
@@ -1465,7 +1465,7 @@ function ageLabel(p) {
 function ageInputHtml(id, p, cls) {
   const dob = p && p.date_of_birth
   return `<span class="inline-flex items-center gap-1"><input id="${id}" type="text" inputmode="numeric" maxlength="3" class="${cls || 'inp text-xs'} w-20" value="${p && p.age_estimated && p.age != null ? Number(p.age) : ''}" placeholder="例: 30" ${dob ? 'disabled' : ''} aria-label="年齢（生年月日が分からないとき）">歳</span>
-    <span class="block text-[11px] text-gray-400">生年月日が分からないときだけ入れます（入れた日から年が経つと自動で増えます。生年月日を入れたらそちらを使います）</span>`
+    <span class="block text-2xs text-neutral-400">生年月日が分からないときだけ入れます（入れた日から年が経つと自動で増えます。生年月日を入れたらそちらを使います）</span>`
 }
 document.addEventListener('input', (ev) => {
   const t = ev.target
@@ -1478,11 +1478,11 @@ function genderOptions(v) {
 }
 // 基本情報欄の上部に出す「どこで編集できるか」の案内
 function basicInfoNotice(p) {
-  if (p.merged_into_staff_id) return `<div class="text-xs bg-gray-100 text-gray-700 rounded-lg p-2 mb-3" id="staff-merged-notice"><i class="fas fa-code-merge mr-1"></i>このスタッフは別のスタッフに統合済みです（シフト・勤怠・日報などは統合先に移しました）。<a class="text-blue-600 underline" href="#staff/${p.merged_into_staff_id}">統合先を開く</a></div>`
-  if (p.affiliation_type === 'own_employee') return `<div class="text-xs bg-emerald-50 text-emerald-700 rounded-lg p-2 mb-3"><i class="fas fa-id-card mr-1"></i>自社雇用スタッフです。通勤可能時間・稼働開始可能日・稼働可能エリア・スキル・経歴・PRポイント・備考（業務側の情報）はこの画面の「編集」から編集できます（備考は連携先には共有されません）。氏名・生年月日・最寄駅・在籍状況などの労務側の情報は従業員管理から編集してください。</div>`
-  if (p.affiliation_type === 'linked_external') return `<div class="text-xs bg-blue-50 text-blue-700 rounded-lg p-2 mb-3"><i class="fas fa-lock mr-1"></i>基本情報は所属元「${esc(p.owner_company_name || '')}」が管理しています（閲覧のみ）。生年月日は年代だけが共有され、備考は共有されません。管理者メモ（「編集」から）・稼働先追記項目は記入できます。</div>`
-  if (!p.can_edit_in_master) return `<div class="text-xs bg-gray-50 text-gray-600 rounded-lg p-2 mb-3"><i class="fas fa-lock mr-1"></i>このスタッフの基本情報は編集できません。</div>`
-  if (p.is_provisional) return `<div class="text-xs bg-red-50 text-red-700 rounded-lg p-2 mb-3"><i class="fas fa-bolt mr-1"></i>仮登録のスタッフです（氏名・電話のみで稼働できます）。すでに登録のある人（他社連携など）と同じ人なら「区分・登録状態」の「既存のスタッフに統合」を、別の人なら「本登録」を使ってください。</div>`
+  if (p.merged_into_staff_id) return `<div class="text-xs bg-neutral-100 text-neutral-700 rounded-lg p-2 mb-3" id="staff-merged-notice"><i class="fas fa-code-merge mr-1"></i>このスタッフは別のスタッフに統合済みです（シフト・勤怠・日報などは統合先に移しました）。<a class="text-primary-600 underline" href="#staff/${p.merged_into_staff_id}">統合先を開く</a></div>`
+  if (p.affiliation_type === 'own_employee') return `<div class="text-xs bg-success-50 text-success-700 rounded-lg p-2 mb-3"><i class="fas fa-id-card mr-1"></i>自社雇用スタッフです。通勤可能時間・稼働開始可能日・稼働可能エリア・スキル・経歴・PRポイント・備考（業務側の情報）はこの画面の「編集」から編集できます（備考は連携先には共有されません）。氏名・生年月日・最寄駅・在籍状況などの労務側の情報は従業員管理から編集してください。</div>`
+  if (p.affiliation_type === 'linked_external') return `<div class="text-xs bg-primary-50 text-primary-700 rounded-lg p-2 mb-3"><i class="fas fa-lock mr-1"></i>基本情報は所属元「${esc(p.owner_company_name || '')}」が管理しています（閲覧のみ）。生年月日は年代だけが共有され、備考は共有されません。管理者メモ（「編集」から）・稼働先追記項目は記入できます。</div>`
+  if (!p.can_edit_in_master) return `<div class="text-xs bg-neutral-50 text-neutral-600 rounded-lg p-2 mb-3"><i class="fas fa-lock mr-1"></i>このスタッフの基本情報は編集できません。</div>`
+  if (p.is_provisional) return `<div class="text-xs bg-danger-50 text-danger-700 rounded-lg p-2 mb-3"><i class="fas fa-bolt mr-1"></i>仮登録のスタッフです（氏名・電話のみで稼働できます）。すでに登録のある人（他社連携など）と同じ人なら「区分・登録状態」の「既存のスタッフに統合」を、別の人なら「本登録」を使ってください。</div>`
   return ''
 }
 
@@ -1490,11 +1490,11 @@ function basicInfoNotice(p) {
 // 備考列は廃止。以前入力した備考は業務内容の末尾に引き継いで編集する
 function careerRowHtml(r = {}) {
   return `<tr class="career-row align-top">
-    <td class="p-1"><input type="text" class="inp text-xs cr-from cr-month w-full bg-white" value="${esc(r.from || '')}" placeholder="選択" readonly></td>
-    <td class="p-1"><input type="text" class="inp text-xs cr-to cr-month w-full bg-white" value="${esc(r.to || '')}" placeholder="選択" readonly></td>
+    <td class="p-1"><input type="text" class="inp text-xs cr-from cr-month w-full bg-surface" value="${esc(r.from || '')}" placeholder="選択" readonly></td>
+    <td class="p-1"><input type="text" class="inp text-xs cr-to cr-month w-full bg-surface" value="${esc(r.to || '')}" placeholder="選択" readonly></td>
     <td class="p-1"><input class="inp text-xs cr-company w-full" value="${esc(r.company || '')}" placeholder="勤務先・店舗など"></td>
     <td class="p-1"><textarea rows="3" class="inp text-xs cr-work w-full" style="resize:vertical" placeholder="業務内容">${esc([r.work, r.note].filter(Boolean).join('\n'))}</textarea></td>
-    <td class="p-1 text-center"><button type="button" class="btn btn-outline text-xs px-2" title="この行を削除" onclick="removeCareerRow(this)"><i class="fas fa-trash text-red-500"></i></button></td>
+    <td class="p-1 text-center"><button type="button" class="btn btn-outline text-xs px-2" title="この行を削除" onclick="removeCareerRow(this)"><i class="fas fa-trash text-danger-500"></i></button></td>
   </tr>`
 }
 // 開始・終了はカレンダー（年月選択）から選ぶ。flatpickr が読めない環境では type=month にフォールバック
@@ -1506,11 +1506,11 @@ function initCareerPickers(root) {
     flatpickr(el, {
       locale: (flatpickr.l10ns && flatpickr.l10ns.ja) || 'default', disableMobile: true, allowInput: false,
       plugins: [new monthSelectPlugin({ shorthand: false, dateFormat: 'Y-m', altFormat: 'Y年n月' })],
-      altInput: true, altInputClass: 'inp text-xs w-full bg-white cursor-pointer',
+      altInput: true, altInputClass: 'inp text-xs w-full bg-surface cursor-pointer',
       onReady: (_, __, fp) => {
         // 選択を取り消せるよう「クリア」ボタンを付ける
         const btn = document.createElement('button'); btn.type = 'button'; btn.textContent = 'クリア'
-        btn.className = 'text-xs text-gray-500 hover:text-red-500 w-full py-1 border-t border-gray-100'
+        btn.className = 'text-xs text-neutral-500 hover:text-danger-500 w-full py-1 border-t border-neutral-100'
         btn.onclick = () => { fp.clear(); fp.close() }
         fp.calendarContainer.appendChild(btn)
       },
@@ -1537,45 +1537,45 @@ const fmtYm = v => v ? String(v).replace(/^(\d{4})-(\d{2})$/, (_, y, m) => `${y}
 // 経歴テーブル（閲覧用）。テーブル未入力で旧形式の経歴テキストがあればそれを表示する
 function careerTableReadonly(p) {
   const rows = Array.isArray(p.career_rows) ? p.career_rows : []
-  if (!rows.length) return `<p class="text-xs text-gray-600 whitespace-pre-wrap">${esc(p.career || '-')}</p>`
+  if (!rows.length) return `<p class="text-xs text-neutral-600 whitespace-pre-wrap">${esc(p.career || '-')}</p>`
   return `<div class="overflow-x-auto"><table class="tbl text-xs" id="staff-career-table">
     <thead><tr><th class="whitespace-nowrap">開始</th><th class="whitespace-nowrap">終了</th><th>勤務</th><th>業務内容</th></tr></thead>
     <tbody>${rows.map(r => `<tr><td class="whitespace-nowrap">${esc(fmtYm(r.from)) || '-'}</td><td class="whitespace-nowrap">${esc(fmtYm(r.to)) || '-'}</td>
-      <td>${esc(r.company || '')}</td><td class="whitespace-pre-wrap">${esc(r.work || '')}${r.note ? `<span class="text-gray-400">（${esc(r.note)}）</span>` : ''}</td></tr>`).join('')}</tbody></table></div>`
+      <td>${esc(r.company || '')}</td><td class="whitespace-pre-wrap">${esc(r.work || '')}${r.note ? `<span class="text-neutral-400">（${esc(r.note)}）</span>` : ''}</td></tr>`).join('')}</tbody></table></div>`
 }
 function staffBusinessSectionHtml(p, edBiz) {
   const rows = Array.isArray(p.career_rows) ? p.career_rows : []
   // 旧形式（テキスト）の経歴しか無い場合は、1行目の業務内容に引き継いで表示する（保存するとテーブル形式になる）
   const initRows = rows.length ? rows : (p.career ? [{ work: p.career }] : [{}])
-  const label = (icon, text, extra = '') => `<p class="text-xs text-gray-500 mb-1"><i class="fas ${icon} text-gray-400 mr-1"></i>${text}${extra}</p>`
+  const label = (icon, text, extra = '') => `<p class="text-xs text-neutral-500 mb-1"><i class="fas ${icon} text-neutral-400 mr-1"></i>${text}${extra}</p>`
   return `
-    <div class="mt-4 pt-3 border-t border-gray-100 space-y-4" id="staff-business-info">
+    <div class="mt-4 pt-3 border-t border-neutral-100 space-y-4" id="staff-business-info">
       <div id="staff-career-block">
         <div class="flex items-center justify-between gap-2 mb-1 flex-wrap">
           ${label('fa-briefcase', '経歴')}
           ${edBiz ? `<button type="button" class="btn btn-outline text-xs" id="staff-career-add" onclick="addCareerRow()"><i class="fas fa-plus"></i>行を追加</button>` : ''}
         </div>
         ${edBiz ? `
-        ${!rows.length && p.career ? '<p class="text-xs text-amber-600 mb-1"><i class="fas fa-circle-info mr-1"></i>以前のテキスト形式の経歴を1行目に表示しています。開始・終了・勤務などに分けて入力し直してください。</p>' : ''}
+        ${!rows.length && p.career ? '<p class="text-xs text-warning-600 mb-1"><i class="fas fa-circle-info mr-1"></i>以前のテキスト形式の経歴を1行目に表示しています。開始・終了・勤務などに分けて入力し直してください。</p>' : ''}
         <div class="overflow-x-auto"><table class="w-full text-xs min-w-[640px]" style="table-layout:fixed" id="staff-career-table">
           <colgroup><col style="width:120px"><col style="width:120px"><col style="width:24%"><col><col style="width:44px"></colgroup>
-          <thead><tr class="text-gray-500 text-left">
+          <thead><tr class="text-neutral-500 text-left">
             <th class="p-1 font-normal">開始</th><th class="p-1 font-normal">終了</th>
             <th class="p-1 font-normal">勤務</th><th class="p-1 font-normal">業務内容</th><th class="p-1"></th>
           </tr></thead>
           <tbody id="staff-career-rows">${initRows.map(careerRowHtml).join('')}</tbody>
         </table></div>
-        <p class="text-xs text-gray-400 mt-1">開始・終了はクリックしてカレンダーから選択します。終了が空欄の場合は「現在まで」として扱います。</p>` : careerTableReadonly(p)}
+        <p class="text-xs text-neutral-400 mt-1">開始・終了はクリックしてカレンダーから選択します。終了が空欄の場合は「現在まで」として扱います。</p>` : careerTableReadonly(p)}
       </div>
       <div>
         ${label('fa-star', '経験・スキル・人柄・PRポイント等')}
         ${edBiz ? `<textarea id="staff-pr-points" rows="4" class="inp text-xs w-full">${esc(p.pr_points || '')}</textarea>`
-          : `<p class="text-xs text-gray-600 whitespace-pre-wrap">${esc(p.pr_points || '-')}</p>`}
+          : `<p class="text-xs text-neutral-600 whitespace-pre-wrap">${esc(p.pr_points || '-')}</p>`}
       </div>
       ${p.affiliation_type === 'linked_external' ? '' : `<div>
-        ${label('fa-comment-dots', '備考', ' <span class="text-gray-400">（自社内のみ・連携先には共有されません）</span>')}
+        ${label('fa-comment-dots', '備考', ' <span class="text-neutral-400">（自社内のみ・連携先には共有されません）</span>')}
         ${edBiz ? `<textarea id="staff-remarks" rows="3" class="inp text-xs w-full">${esc(p.remarks || '')}</textarea>`
-          : `<p class="text-xs text-gray-600 whitespace-pre-wrap">${esc(p.remarks || '-')}</p>`}
+          : `<p class="text-xs text-neutral-600 whitespace-pre-wrap">${esc(p.remarks || '-')}</p>`}
       </div>`}
     </div>`
 }
@@ -1588,7 +1588,7 @@ function staffDetailHeaderHtml(sid, p) {
   const EMP_STATUS_LABEL = STAFF_EMP_STATUS_LABEL
   const nb = staffNeighbors(sid)
   return `
-    ${nb && nb.total > 1 ? `<div class="flex items-center gap-2 mb-2 text-xs text-gray-500">
+    ${nb && nb.total > 1 ? `<div class="flex items-center gap-2 mb-2 text-xs text-neutral-500">
       <span>一覧の ${nb.pos} / ${nb.total} 人目</span>
       ${nb.prev ? `<a href="#staff/${nb.prev}" class="btn btn-outline text-xs"><i class="fas fa-chevron-left"></i>前の人</a>` : ''}
       ${nb.next ? `<a href="#staff/${nb.next}" class="btn btn-outline text-xs">次の人<i class="fas fa-chevron-right"></i></a>` : ''}
@@ -1596,7 +1596,7 @@ function staffDetailHeaderHtml(sid, p) {
     <div class="flex items-center gap-3 mb-5 flex-wrap">
       <a href="#staff" class="btn btn-outline" title="スタッフ一覧に戻る（絞り込みはそのまま）"><i class="fas fa-arrow-left"></i></a>
       <div class="flex-1">
-        <h2 class="text-xl font-bold text-gray-900">${esc(p.name)} <span class="text-sm text-gray-400 font-normal">${esc(p.user_role === 'roster_only' ? '' : staffCodeLabel(p))}</span></h2>
+        <h2 class="text-xl font-bold text-neutral-900">${esc(p.name)} <span class="text-sm text-neutral-400 font-normal">${esc(p.user_role === 'roster_only' ? '' : staffCodeLabel(p))}</span></h2>
         <div class="flex gap-2 mt-1 flex-wrap">
           ${affTypeBadge(p.affiliation_type)}
           ${p.board_source ? `<a href="#board/t${p.board_source.thread_id}" class="badge badge-purple" title="案件掲示板のやり取りを開く"><i class="fas fa-clipboard-list mr-1"></i>掲示板経由（提案: ${esc(p.board_source.proposer_company_name)}）</a>` : ''}
@@ -1633,7 +1633,7 @@ function partnerSelectHtml(affData, current) {
   if (current && !names.includes(current)) names.unshift(current)
   // 所属会社が空のときは空欄を選んだままにする（保存で先頭の取引先に変わらないように）
   return `<select id="staff-affiliation" class="inp text-xs">${current ? '' : '<option value="" selected>（選択してください）</option>'}${names.map(n => `<option value="${esc(n)}" ${n === current ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select>
-    <a href="#partners" class="text-[11px] text-blue-600 hover:underline">協力会社の管理（登録・連絡先の編集・統合）</a>`
+    <a href="#partners" class="text-2xs text-primary-600 hover:underline">協力会社の管理（登録・連絡先の編集・統合）</a>`
 }
 function staffBasicCardHtml(sid, p, affData, editing) {
   const EMP_STATUS_LABEL = STAFF_EMP_STATUS_LABEL
@@ -1644,12 +1644,12 @@ function staffBasicCardHtml(sid, p, affData, editing) {
   const canBase = !!p.can_edit_in_master, canBiz = !!p.can_edit_business, canEdit = !p.merged_into_staff_id
   const ed = editing && canBase
   const edBiz = editing && canBiz
-  const bi = (label, html) => `<div class="flex items-start gap-2 min-w-0"><dt class="w-28 text-gray-400 shrink-0 pt-1">${label}</dt><dd class="flex-1 min-w-0 pt-1">${html}</dd></div>`
+  const bi = (label, html) => `<div class="flex items-start gap-2 min-w-0"><dt class="w-28 text-neutral-400 shrink-0 pt-1">${label}</dt><dd class="flex-1 min-w-0 pt-1">${html}</dd></div>`
   // 他社連携の行には、生年月日（年代だけ）と備考は共有されない（利用者の要望 9001。API も返さない）
   const linked = p.affiliation_type === 'linked_external'
   return `
         <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
-          <h3 class="text-sm font-bold text-gray-700">基本情報 <span class="text-xs font-normal text-gray-400">（スタッフマスタ共有項目）</span></h3>
+          <h3 class="text-sm font-bold text-neutral-700">基本情報 <span class="text-xs font-normal text-neutral-400">（スタッフマスタ共有項目）</span></h3>
           <div class="flex gap-2 flex-wrap">
             ${p.affiliation_type === 'own_employee' && !p.merged_into_staff_id ? `<a class="btn btn-outline text-xs" href="#employees/${sid}"><i class="fas fa-id-card"></i>労務情報は従業員管理で編集</a>` : ''}
             ${!canEdit ? '' : editing
@@ -1659,22 +1659,22 @@ function staffBasicCardHtml(sid, p, affData, editing) {
           </div>
         </div>
         ${basicInfoNotice(p)}
-        ${editing ? `<div class="text-xs bg-blue-50 text-blue-700 rounded-lg p-2 mb-3" id="staff-editing-notice"><i class="fas fa-pen mr-1"></i>編集中です。${canBase ? '' : canBiz ? '入力欄になっている業務側の項目と管理者メモを編集できます。' : '管理者メモを編集できます。'}変更後は「保存」を押してください。</div>` : ''}
+        ${editing ? `<div class="text-xs bg-primary-50 text-primary-700 rounded-lg p-2 mb-3" id="staff-editing-notice"><i class="fas fa-pen mr-1"></i>編集中です。${canBase ? '' : canBiz ? '入力欄になっている業務側の項目と管理者メモを編集できます。' : '管理者メモを編集できます。'}変更後は「保存」を押してください。</div>` : ''}
         <dl class="grid md:grid-cols-2 gap-x-6 gap-y-2 text-sm">
           ${bi('氏名', ed ? `<input id="staff-name" class="inp text-xs" value="${esc(p.name || '')}">` : esc(p.name))}
           ${bi('フリガナ', ed ? `<input id="staff-kana" class="inp text-xs" value="${esc(p.kana || '')}">` : esc(p.kana || '-'))}
           ${bi('性別', ed ? `<select id="staff-gender" class="inp text-xs">${genderOptions(p.gender)}</select>` : esc(GENDER_LABEL_ADMIN[p.gender] || '-'))}
-          ${linked ? bi('年代', esc(p.age_group || '-') + '<span class="block text-[11px] text-gray-400">生年月日は所属元から共有されません</span>')
+          ${linked ? bi('年代', esc(p.age_group || '-') + '<span class="block text-2xs text-neutral-400">生年月日は所属元から共有されません</span>')
             : bi('生年月日', ed ? `<input type="date" id="staff-dob" class="inp text-xs" value="${esc(p.date_of_birth || '')}" data-age-input="staff-age">` : esc(p.date_of_birth || '-'))
               + bi('年齢', ed ? ageInputHtml('staff-age', p) : esc(ageLabel(p)))}
-          ${bi('在籍状況', `<span class="badge ${p.employment_status === 'retired' ? 'badge-gray' : p.employment_status === 'leave' ? 'badge-yellow' : p.employment_status === 'preboarding' ? 'badge-purple' : 'badge-green'}">${EMP_STATUS_LABEL[p.employment_status] || '在職中'}</span>${p.retired_at ? ` <span class="text-xs ${p.employment_status === 'retired' ? 'text-gray-500' : 'text-amber-600'}">${p.employment_status === 'retired' ? '退職日' : '退職予定日'} ${esc(p.retired_at)}</span>` : ''}`)}
+          ${bi('在籍状況', `<span class="badge ${p.employment_status === 'retired' ? 'badge-gray' : p.employment_status === 'leave' ? 'badge-yellow' : p.employment_status === 'preboarding' ? 'badge-purple' : 'badge-green'}">${EMP_STATUS_LABEL[p.employment_status] || '在職中'}</span>${p.retired_at ? ` <span class="text-xs ${p.employment_status === 'retired' ? 'text-neutral-500' : 'text-warning-600'}">${p.employment_status === 'retired' ? '退職日' : '退職予定日'} ${esc(p.retired_at)}</span>` : ''}`)}
           ${bi('所属会社名', ed && p.affiliation_type === 'partner_manual' ? partnerSelectHtml(affData, p.affiliation)
               : ed ? `<input id="staff-affiliation" class="inp text-xs" value="${esc(p.affiliation || '')}">` : esc(p.affiliation || '-'))}
           ${bi('所属先担当者名', ed ? `<input id="staff-affiliation-contact" class="inp text-xs" value="${esc(p.affiliation_contact || '')}">` : esc(p.affiliation_contact || '-'))}
           ${p.affiliation_type === 'own_employee' ? bi('社員番号 / 所属', esc([p.employee_number, p.department, p.job_title].filter(Boolean).join(' / ') || '-')) : ''}
           ${bi('電話番号', ed ? `<input id="staff-phone" class="inp text-xs" type="tel" inputmode="tel" maxlength="20" value="${esc(p.phone || '')}" data-orig="${esc(p.phone || '')}" placeholder="09012345678">`
-              : `<span class="text-xs">${esc(p.affiliation_type === 'own_employee' ? (p.emp_phone || p.phone || '-') : (p.phone || '-'))}</span>${p.affiliation_type === 'own_employee' && editing ? '<span class="block text-[11px] text-gray-400">従業員管理の電話番号から変更します</span>' : ''}`)}
-          ${p.affiliation_type === 'own_employee' ? bi('個人メール', `<span class="text-xs">${esc(p.emp_email || '-')}</span> <span class="text-[11px] text-gray-400">（従業員管理。通知には使いません）</span>`) : ''}
+              : `<span class="text-xs">${esc(p.affiliation_type === 'own_employee' ? (p.emp_phone || p.phone || '-') : (p.phone || '-'))}</span>${p.affiliation_type === 'own_employee' && editing ? '<span class="block text-2xs text-neutral-400">従業員管理の電話番号から変更します</span>' : ''}`)}
+          ${p.affiliation_type === 'own_employee' ? bi('個人メール', `<span class="text-xs">${esc(p.emp_email || '-')}</span> <span class="text-2xs text-neutral-400">（従業員管理。通知には使いません）</span>`) : ''}
           ${staffLoginEmailHtml(p, editing)}
           ${bi('最寄駅', ed ? `<div class="flex gap-1"><input id="staff-station-line" placeholder="路線" class="inp text-xs" value="${esc(p.nearest_station_line || '')}"><input id="staff-station" placeholder="駅" class="inp text-xs" value="${esc(p.nearest_station || '')}"></div>`
               : esc([p.nearest_station_line, p.nearest_station].filter(Boolean).join(' ') || '-'))}
@@ -1688,34 +1688,34 @@ function staffBasicCardHtml(sid, p, affData, editing) {
 
         ${staffBusinessSectionHtml(p, edBiz)}
 
-        <div class="mt-4 pt-3 border-t border-gray-100 space-y-4" id="staff-memo-block">
+        <div class="mt-4 pt-3 border-t border-neutral-100 space-y-4" id="staff-memo-block">
           <div>
-            <p class="text-xs text-gray-500 mb-1"><i class="fas fa-note-sticky text-gray-400 mr-1"></i>管理者メモ <span class="text-gray-400">（自社内のみ・連携先には共有されません）</span></p>
+            <p class="text-xs text-neutral-500 mb-1"><i class="fas fa-note-sticky text-neutral-400 mr-1"></i>管理者メモ <span class="text-neutral-400">（自社内のみ・連携先には共有されません）</span></p>
             ${editing ? `<textarea id="staff-memo" rows="3" class="inp text-xs w-full">${esc(p.memo || '')}</textarea>`
-              : `<p class="text-xs text-gray-600 whitespace-pre-wrap" id="staff-memo-view">${esc(p.memo || '-')}</p>`}
+              : `<p class="text-xs text-neutral-600 whitespace-pre-wrap" id="staff-memo-view">${esc(p.memo || '-')}</p>`}
             ${editing || !canEdit ? '' : `<div class="flex gap-2 mt-2 flex-wrap items-center">
               <button class="btn ${p.follow_flag ? 'btn-danger' : 'btn-outline'} text-xs" onclick="toggleFollow(${sid}, ${p.follow_flag ? 0 : 1})">
                 ${p.follow_flag ? 'フォロー解除' : '要フォロー登録'}</button>
-              <label class="text-xs text-gray-500 flex items-center gap-1" title="中・高にすると、ダッシュボードの要フォロースタッフと一覧の『離職リスク』に出ます">離職リスク
+              <label class="text-xs text-neutral-500 flex items-center gap-1" title="中・高にすると、ダッシュボードの要フォロースタッフと一覧の『離職リスク』に出ます">離職リスク
                 <select class="inp text-xs w-auto" data-staff-risk="${sid}" data-orig="${esc(p.retention_risk || 'low')}">
                   ${[['low', '低'], ['mid', '中'], ['high', '高']].map(([k, v]) => `<option value="${k}" ${(p.retention_risk || 'low') === k ? 'selected' : ''}>${v}</option>`).join('')}
                 </select></label>
             </div>`}
           </div>
           ${ed ? `
-          <div class="pt-3 border-t border-gray-100">
-            <p class="text-xs text-gray-500 mb-1"><i class="fas fa-person-walking-arrow-right text-gray-400 mr-1"></i>在籍状況</p>
+          <div class="pt-3 border-t border-neutral-100">
+            <p class="text-xs text-neutral-500 mb-1"><i class="fas fa-person-walking-arrow-right text-neutral-400 mr-1"></i>在籍状況</p>
             <div class="flex gap-2 flex-wrap items-center">
               <select id="staff-emp-status" class="inp text-sm w-40" data-orig="${esc(p.employment_status || 'working')}"
                 onchange="document.getElementById('staff-retired-wrap').classList.toggle('hidden', this.value !== 'retired' && !document.getElementById('staff-retired-date').value)">
                 ${Object.entries(EMP_STATUS_LABEL).map(([k, l]) => `<option value="${k}" ${(p.employment_status || 'working') === k ? 'selected' : ''}>${l}</option>`).join('')}
               </select>
               <span id="staff-retired-wrap" class="flex items-center gap-2 ${p.employment_status === 'retired' || p.retired_at ? '' : 'hidden'}">
-                <span class="text-xs text-gray-500">退職日</span>
+                <span class="text-xs text-neutral-500">退職日</span>
                 <input type="date" id="staff-retired-date" class="inp text-sm w-44" value="${esc(p.retired_at || '')}" data-orig="${esc(p.retired_at || '')}">
               </span>
             </div>
-            <p class="text-xs text-gray-400 mt-1">退職日に今日以降の日付を入れると「退職予定」になり、退職日の当日まではログインできます（翌日に退職へ切り替わります）。退職日から7年経過すると、出退勤記録・シフト・評価・やり取り履歴等が定期削除の対象になります</p>
+            <p class="text-xs text-neutral-400 mt-1">退職日に今日以降の日付を入れると「退職予定」になり、退職日の当日まではログインできます（翌日に退職へ切り替わります）。退職日から7年経過すると、出退勤記録・シフト・評価・やり取り履歴等が定期削除の対象になります</p>
           </div>` : ''}
         </div>
 `
@@ -1727,10 +1727,10 @@ function staffAvTargetFieldHtml(p, editing) {
   const exempt = Number(p.availability_exempt) === 1
   const body = editing
     ? `<select id="staff-av-target-input" class="inp text-xs w-auto" data-orig="${exempt ? '0' : '1'}"><option value="1" ${exempt ? '' : 'selected'}>する</option><option value="0" ${exempt ? 'selected' : ''}>しない</option></select>
-      <span class="block text-[11px] text-gray-400 mt-0.5">${esc(STAFF_AV_TARGET_CHOICE_HELP)}</span>`
+      <span class="block text-2xs text-neutral-400 mt-0.5">${esc(STAFF_AV_TARGET_CHOICE_HELP)}</span>`
     : `<span id="staff-av-target-view">${staffAvTargetViewHtml(exempt)}</span>`
   // 編集中は説明が長いので2列分の幅を使う
-  return `<div class="flex items-start gap-2 min-w-0${editing ? ' md:col-span-2' : ''}"><dt class="w-28 text-gray-400 shrink-0 pt-1">出勤可能日の提出</dt><dd class="flex-1 min-w-0 pt-1">${body}</dd></div>`
+  return `<div class="flex items-start gap-2 min-w-0${editing ? ' md:col-span-2' : ''}"><dt class="w-28 text-neutral-400 shrink-0 pt-1">出勤可能日の提出</dt><dd class="flex-1 min-w-0 pt-1">${body}</dd></div>`
 }
 function staffAvTargetViewHtml(exempt) {
   return exempt ? `<span class="badge badge-gray" title="${escAttr(staffAvTargetHelp(true))}">しない</span>` : `<span class="badge badge-green" title="${escAttr(staffAvTargetHelp(false))}">する</span>`
@@ -1749,15 +1749,15 @@ window.staffAvTargetChanged = function (sid, exempt) {
 // メールを送れる環境では確認メールを送り、本人が確認したときに切り替わる。送れない環境では保存した時点で切り替わる（#9803）
 function staffLoginEmailHtml(p, editing) {
   if (p.affiliation_type === 'linked_external' || p.affiliation_type === 'skillsheet_only') return ''
-  const row = (html) => `<div class="flex items-start gap-2 min-w-0"><dt class="w-28 text-gray-400 shrink-0 pt-1">メール（通知・パスワード再設定）</dt><dd class="flex-1 min-w-0 pt-1" id="staff-login-email-row">${html}</dd></div>`
-  if (!p.has_own_login) return row('<span class="text-xs text-gray-400">ログインなし</span>')
+  const row = (html) => `<div class="flex items-start gap-2 min-w-0"><dt class="w-28 text-neutral-400 shrink-0 pt-1">メール（通知・パスワード再設定）</dt><dd class="flex-1 min-w-0 pt-1" id="staff-login-email-row">${html}</dd></div>`
+  if (!p.has_own_login) return row('<span class="text-xs text-neutral-400">ログインなし</span>')
   const direct = p.login_email_mode === 'direct'
   const pendHtml = staffPendingLoginEmailHtml(p, direct)
   if (editing && !p.merged_into_staff_id) {
     return row(`<input id="staff-login-email" class="inp text-xs" type="email" maxlength="254" autocomplete="off" value="${esc(p.email || '')}" data-orig="${esc(p.email || '')}" placeholder="例: taro@example.com">
-      <span class="block text-[11px] text-gray-400">${direct ? '保存した時点で新しいアドレスに切り替わります（メールを送れない設定のため、確認用のメールは送りません）' : '変更すると新しいアドレスに確認メールを送り、本人が確認したときに切り替わります'}。空欄で保存すると削除します</span>${pendHtml}`)
+      <span class="block text-2xs text-neutral-400">${direct ? '保存した時点で新しいアドレスに切り替わります（メールを送れない設定のため、確認用のメールは送りません）' : '変更すると新しいアドレスに確認メールを送り、本人が確認したときに切り替わります'}。空欄で保存すると削除します</span>${pendHtml}`)
   }
-  return row((p.email ? `<span class="text-xs">${esc(p.email)}</span>` : '<span class="text-xs text-red-600"><i class="fas fa-triangle-exclamation mr-1"></i>未登録（通知メール・パスワード再設定が使えません）</span>') + pendHtml)
+  return row((p.email ? `<span class="text-xs">${esc(p.email)}</span>` : '<span class="text-xs text-danger-600"><i class="fas fa-triangle-exclamation mr-1"></i>未登録（通知メール・パスワード再設定が使えません）</span>') + pendHtml)
 }
 // 確認待ちのメールアドレス（#9803）。管理者の保存・変更申請の承認で作られ、本人が確認用のメールを開くまで切り替わらない。
 // メールを送れない環境では確認用のメールが届かないので、管理者が「このアドレスに切り替える」か「取り消す」を選ぶ
@@ -1769,9 +1769,9 @@ function staffPendingLoginEmailHtml(p, direct) {
     ? 'メールを送れない設定のため、確認用のメールは届いていません。切り替えるか取り消してください'
     : pend.expired ? `確認の期限（${dayjs(pend.expires_at).format('M/D HH:mm')}）が切れています。切り替えるには、もう一度保存して確認メールを送り直してください`
       : `本人が確認メールのリンクを開くと切り替わります。期限 ${dayjs(pend.expires_at).format('M/D HH:mm')}`
-  return `<span class="block text-xs mt-1 p-2 rounded-lg bg-amber-50" id="staff-login-email-pending">
+  return `<span class="block text-xs mt-1 p-2 rounded-lg bg-warning-50" id="staff-login-email-pending">
       <span class="badge badge-yellow">確認待ちのメールアドレス</span> <span class="break-all">${esc(pend.email)}</span>
-      <span class="block text-[11px] text-gray-500 mt-0.5">${esc(note)}${pend.created_at ? `（${esc(dayjs(pend.created_at).format('YYYY/M/D'))} に受付）` : ''}</span>
+      <span class="block text-2xs text-neutral-500 mt-0.5">${esc(note)}${pend.created_at ? `（${esc(dayjs(pend.created_at).format('YYYY/M/D'))} に受付）` : ''}</span>
       ${canEdit ? `<span class="flex gap-2 mt-1 flex-wrap">
         ${direct ? `<button type="button" class="btn btn-primary text-xs" data-action="applyPendingLoginEmail" data-sid="${Number(p.staff_id)}" data-id="${Number(pend.verification_id)}" data-email="${esc(pend.email)}">このアドレスに切り替える</button>` : ''}
         <button type="button" class="btn btn-outline text-xs" data-action="cancelPendingLoginEmail" data-sid="${Number(p.staff_id)}" data-id="${Number(pend.verification_id)}" data-email="${esc(pend.email)}">取り消す</button>
@@ -1844,7 +1844,7 @@ async function renderStaffDetail(sid, opts = {}) {
       <div class="space-y-4">
         <section class="card p-4" id="staff-files">
           <div class="flex items-center justify-between mb-3">
-            <h3 class="text-sm font-bold text-gray-700"><i class="fas fa-folder-open text-blue-500 mr-1"></i>ファイル</h3>
+            <h3 class="text-sm font-bold text-neutral-700"><i class="fas fa-folder-open text-primary-500 mr-1"></i>ファイル</h3>
             <button class="btn btn-outline text-xs" onclick="openDocumentUpload('staff', ${sid})"><i class="fas fa-upload"></i>アップロード</button>
           </div>
           <div id="staff-documents-list">${documentListHtml(docData.documents, 'staff', sid)}</div>
@@ -1852,10 +1852,10 @@ async function renderStaffDetail(sid, opts = {}) {
 
         <section class="card p-4" id="staff-evaluation">
           <div class="flex items-center gap-2 mb-3">
-            <h3 class="text-sm font-bold text-gray-700">評価（${evalRadar ? esc(evalRadar.evaluation_period) : '-'}）</h3>
+            <h3 class="text-sm font-bold text-neutral-700">評価（${evalRadar ? esc(evalRadar.evaluation_period) : '-'}）</h3>
             <button class="btn btn-outline text-xs ml-auto" data-action="showEvaluationModal" data-id="${Number(sid)}"><i class="fas fa-plus"></i>評価を登録</button>
           </div>
-          ${evalRadar ? `<canvas id="eval-chart" height="220"></canvas>${evalRadar.comment ? `<p class="text-xs text-gray-600 mt-2 whitespace-pre-wrap">${esc(evalRadar.comment)}</p>` : ''}` : '<p class="text-sm text-gray-400">評価データがありません</p>'}
+          ${evalRadar ? `<canvas id="eval-chart" height="220"></canvas>${evalRadar.comment ? `<p class="text-xs text-neutral-600 mt-2 whitespace-pre-wrap">${esc(evalRadar.comment)}</p>` : ''}` : '<p class="text-sm text-neutral-400">評価データがありません</p>'}
           ${evaluationHistoryHtml(sid, data.evaluations)}
         </section>
       </div>
@@ -1864,12 +1864,12 @@ async function renderStaffDetail(sid, opts = {}) {
     <div id="staff-shift-panel" class="mb-4"></div>
 
     <section class="card p-4 mb-4">
-      <h3 class="text-sm font-bold text-gray-700 mb-3">月次実績推移 <span class="text-xs font-normal text-gray-400">（今月と前の2か月。日報のない月は0）</span></h3>
+      <h3 class="text-sm font-bold text-neutral-700 mb-3">月次実績推移 <span class="text-xs font-normal text-neutral-400">（今月と前の2か月。日報のない月は0）</span></h3>
       <div class="overflow-x-auto">
       <table class="tbl">
         <thead><tr><th>月</th><th>日数</th>${staffPerfCols.cols.map(f => `<th class="whitespace-nowrap">${esc(f.label)}</th>`).join('')}</tr></thead>
         <tbody>${data.performance.map(m => `
-          <tr class="${m.days ? '' : 'text-gray-400'}"><td>${esc(dayjs(m.ym + '-01').format('YYYY年M月'))}</td><td>${Number(m.days) || 0}</td>${staffPerfCols.cols.map(f => `<td class="${f.key === 'seiyaku' ? 'font-bold' : ''}">${perfValue(m, f.key)}</td>`).join('')}</tr>`).join('') || `<tr><td colspan="${staffPerfCols.cols.length + 2}" class="text-gray-400 text-center py-3">データなし</td></tr>`}
+          <tr class="${m.days ? '' : 'text-neutral-400'}"><td>${esc(dayjs(m.ym + '-01').format('YYYY年M月'))}</td><td>${Number(m.days) || 0}</td>${staffPerfCols.cols.map(f => `<td class="${f.key === 'seiyaku' ? 'font-bold' : ''}">${perfValue(m, f.key)}</td>`).join('')}</tr>`).join('') || `<tr><td colspan="${staffPerfCols.cols.length + 2}" class="text-neutral-400 text-center py-3">データなし</td></tr>`}
         </tbody>
       </table>
       </div>
@@ -1878,38 +1878,38 @@ async function renderStaffDetail(sid, opts = {}) {
 
     <div class="grid lg:grid-cols-2 gap-4">
       <section class="card p-4">
-        <h3 class="text-sm font-bold text-gray-700 mb-3"><i class="fas fa-handshake-angle text-amber-500 mr-1"></i>フォロー履歴</h3>
+        <h3 class="text-sm font-bold text-neutral-700 mb-3"><i class="fas fa-handshake-angle text-warning-500 mr-1"></i>フォロー履歴</h3>
         <div class="space-y-2 max-h-72 overflow-y-auto">
           ${data.follow_logs.map(f => `
-            <div class="p-2.5 rounded-lg bg-gray-50">
+            <div class="p-2.5 rounded-lg bg-neutral-50">
               <div class="flex items-center gap-2 text-xs mb-1">
                 <span class="badge badge-purple">${esc(FOLLOW_LABELS[f.follow_type] || f.follow_type)}</span>
-                <span class="text-gray-400">${dayjs(f.created_at).format('M/D HH:mm')}</span>
-                <span class="text-gray-500">${esc(f.manager_name || '')}</span>
+                <span class="text-neutral-400">${dayjs(f.created_at).format('M/D HH:mm')}</span>
+                <span class="text-neutral-500">${esc(f.manager_name || '')}</span>
                 ${f.status === 'open' ? '<span class="badge badge-yellow">対応中</span>' : '<span class="badge badge-green">完了</span>'}
               </div>
-              <p class="text-xs text-gray-700 whitespace-pre-wrap">${esc(f.content)}</p>
-              ${f.next_action ? `<p class="text-xs text-blue-700 mt-1 whitespace-pre-wrap"><i class="fas fa-arrow-right mr-1"></i>${esc(f.next_action)}</p>` : ''}
-            </div>`).join('') || '<p class="text-sm text-gray-400">フォロー履歴はありません</p>'}
+              <p class="text-xs text-neutral-700 whitespace-pre-wrap">${esc(f.content)}</p>
+              ${f.next_action ? `<p class="text-xs text-primary-700 mt-1 whitespace-pre-wrap"><i class="fas fa-arrow-right mr-1"></i>${esc(f.next_action)}</p>` : ''}
+            </div>`).join('') || '<p class="text-sm text-neutral-400">フォロー履歴はありません</p>'}
         </div>
       </section>
 
       <section class="card p-4">
-        <h3 class="text-sm font-bold text-gray-700 mb-3 flex items-center"><i class="fas fa-file-lines text-blue-500 mr-1"></i>日報履歴<a href="#reports/staff=${Number(sid)}" class="ml-auto text-xs font-normal text-blue-600 hover:underline">日報一覧で見る</a></h3>
+        <h3 class="text-sm font-bold text-neutral-700 mb-3 flex items-center"><i class="fas fa-file-lines text-primary-500 mr-1"></i>日報履歴<a href="#reports/staff=${Number(sid)}" class="ml-auto text-xs font-normal text-primary-600 hover:underline">日報一覧で見る</a></h3>
         <div class="space-y-2 max-h-72 overflow-y-auto">
           ${data.reports.map(r => `
-            <div class="p-2.5 rounded-lg bg-gray-50">
+            <div class="p-2.5 rounded-lg bg-neutral-50">
               <div class="flex items-center gap-2 text-xs mb-1">
-                <span class="font-bold text-gray-700">${dayjs(r.work_date).format('M/D')}</span>
-                <span class="text-gray-400">${esc(r.project_name)}</span>
+                <span class="font-bold text-neutral-700">${dayjs(r.work_date).format('M/D')}</span>
+                <span class="text-neutral-400">${esc(r.project_name)}</span>
                 ${r.incident_flag ? '<span class="badge badge-red">インシデント</span>' : ''}
                 ${r.complaint_flag ? '<span class="badge badge-purple">クレーム</span>' : ''}
               </div>
               <div class="flex flex-wrap gap-1">
                 ${staffReportNumbersHtml(r, reportFieldsOf({ templates: data.report_templates, past_fields: data.report_past_fields }, r))}
               </div>
-              ${r.values.free ? `<p class="text-xs text-gray-500 mt-1 whitespace-pre-wrap">${esc(r.values.free)}</p>` : ''}
-            </div>`).join('') || '<p class="text-sm text-gray-400">日報履歴はありません</p>'}
+              ${r.values.free ? `<p class="text-xs text-neutral-500 mt-1 whitespace-pre-wrap">${esc(r.values.free)}</p>` : ''}
+            </div>`).join('') || '<p class="text-sm text-neutral-400">日報履歴はありません</p>'}
         </div>
       </section>
     </div>
@@ -1920,7 +1920,7 @@ async function renderStaffDetail(sid, opts = {}) {
     <div id="staff-reference-pay-panel" class="mt-4"></div>
 
     <section class="card p-4 mt-4">
-      <h3 class="text-sm font-bold text-gray-700 mb-3"><i class="fas fa-clock text-gray-400 mr-1"></i>勤怠報告履歴（直近）</h3>
+      <h3 class="text-sm font-bold text-neutral-700 mb-3"><i class="fas fa-clock text-neutral-400 mr-1"></i>勤怠報告履歴（直近）</h3>
       <div class="overflow-x-auto">
         <table class="tbl">
           <thead><tr><th>稼働日</th><th>種別</th><th>報告時刻</th><th>状態</th><th>位置情報</th></tr></thead>
@@ -1936,7 +1936,7 @@ async function renderStaffDetail(sid, opts = {}) {
               <td>${esc(RL[a.report_type] || a.report_type)}</td>
               <td>${dayjs(a.reported_at).format('HH:mm')}</td>
               <td class="whitespace-nowrap">${st}</td>
-              <td class="text-xs text-gray-400">${a.latitude ? Number(a.latitude).toFixed(4) + ', ' + Number(a.longitude).toFixed(4) : '-'}${dist}</td>
+              <td class="text-xs text-neutral-400">${a.latitude ? Number(a.latitude).toFixed(4) + ', ' + Number(a.longitude).toFixed(4) : '-'}${dist}</td>
             </tr>`}).join('')}
           </tbody>
         </table>
@@ -1960,7 +1960,7 @@ async function renderStaffDetail(sid, opts = {}) {
         labels: ['勤怠安定性', '報告正確性', '実績', 'クライアント評価', '成長意欲', '継続見込み'],
         datasets: [{
           data: [evalRadar.attendance_score, evalRadar.report_score, evalRadar.performance_score, evalRadar.client_score, evalRadar.growth_score, evalRadar.retention_score],
-          backgroundColor: 'rgba(37,99,235,.15)', borderColor: '#2563eb', pointBackgroundColor: '#2563eb'
+          backgroundColor: tokenColor('primary', .15, 'rgba(37,99,235,.15)'), borderColor: tokenColor('primary', 1, '#2563eb'), pointBackgroundColor: tokenColor('primary', 1, '#2563eb')
         }]
       },
       options: { scales: { r: { min: 0, max: 5, ticks: { stepSize: 1 } } }, plugins: { legend: { display: false } } }
@@ -1974,18 +1974,18 @@ let STAFF_EVALS = []
 const evalAvg = e => Math.round(EVAL_ITEMS.reduce((s, [k]) => s + Number(e[k] || 0), 0) / EVAL_ITEMS.length * 10) / 10
 function evaluationHistoryHtml(sid, list) {
   if (!list || !list.length) return ''
-  return `<div class="mt-3 pt-3 border-t border-gray-100">
-    <p class="text-xs font-bold text-gray-500 mb-1">推移（直近${list.length}件）</p>
+  return `<div class="mt-3 pt-3 border-t border-neutral-100">
+    <p class="text-xs font-bold text-neutral-500 mb-1">推移（直近${list.length}件）</p>
     <table class="w-full text-xs">${list.map(e => `
-      <tr class="border-b border-gray-50">
+      <tr class="border-b border-neutral-50">
         <td class="py-1">${esc(e.evaluation_period || '-')}</td>
         <td class="py-1 font-bold">${evalAvg(e).toFixed(1)}</td>
-        <td class="py-1 text-gray-400 truncate max-w-[80px]" title="${esc(e.evaluator_name || '')}">${esc(e.evaluator_name || '')}</td>
+        <td class="py-1 text-neutral-400 truncate max-w-[80px]" title="${esc(e.evaluator_name || '')}">${esc(e.evaluator_name || '')}</td>
         <td class="py-1 text-right whitespace-nowrap">
-          <button class="text-blue-600 hover:underline" data-action="showEvaluationModal" data-id="${Number(sid)}" data-eid="${Number(e.evaluation_id)}">編集</button>
-          <button class="text-red-500 hover:underline ml-1" data-action="deleteEvaluation" data-id="${Number(sid)}" data-eid="${Number(e.evaluation_id)}" data-period="${esc(e.evaluation_period || '')}">削除</button></td>
+          <button class="text-primary-600 hover:underline" data-action="showEvaluationModal" data-id="${Number(sid)}" data-eid="${Number(e.evaluation_id)}">編集</button>
+          <button class="text-danger-500 hover:underline ml-1" data-action="deleteEvaluation" data-id="${Number(sid)}" data-eid="${Number(e.evaluation_id)}" data-period="${esc(e.evaluation_period || '')}">削除</button></td>
       </tr>`).join('')}</table>
-    <p class="text-[11px] text-gray-400 mt-1">総合評価は最新の期間の6項目の平均です</p>
+    <p class="text-2xs text-neutral-400 mt-1">総合評価は最新の期間の6項目の平均です</p>
   </div>`
 }
 delegate('showEvaluationModal', el => {
@@ -1995,12 +1995,12 @@ delegate('showEvaluationModal', el => {
   modal(`
     <h3 class="font-bold text-lg mb-3">${cur ? '評価の編集' : '評価を登録'}</h3>
     <div class="space-y-3">
-      <div><label class="text-sm text-gray-600 block mb-1">評価の期間（年月） *</label><input type="month" id="ev-period" class="inp" value="${esc(period)}" ${cur ? 'readonly' : ''}></div>
+      <div><label class="text-sm text-neutral-600 block mb-1">評価の期間（年月） *</label><input type="month" id="ev-period" class="inp" value="${esc(period)}" ${cur ? 'readonly' : ''}></div>
       <div class="grid grid-cols-2 gap-2">${EVAL_ITEMS.map(([k, label]) => `
-        <label class="text-sm text-gray-600">${label}
+        <label class="text-sm text-neutral-600">${label}
           <select id="ev-${k}" class="inp">${[5, 4, 3, 2, 1].map(n => `<option value="${n}" ${Number(cur ? cur[k] : 3) === n ? 'selected' : ''}>${n}</option>`).join('')}</select></label>`).join('')}</div>
-      <p class="text-[11px] text-gray-400">5: とても良い 〜 1: 課題が大きい。同じ期間の評価は上書きします</p>
-      <div><label class="text-sm text-gray-600 block mb-1">コメント</label><textarea id="ev-comment" rows="3" class="inp" maxlength="1000">${esc(cur ? cur.comment || '' : '')}</textarea></div>
+      <p class="text-2xs text-neutral-400">5: とても良い 〜 1: 課題が大きい。同じ期間の評価は上書きします</p>
+      <div><label class="text-sm text-neutral-600 block mb-1">コメント</label><textarea id="ev-comment" rows="3" class="inp" maxlength="1000">${esc(cur ? cur.comment || '' : '')}</textarea></div>
       <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="saveEvaluation" data-id="${sid}" data-edit="${cur ? '1' : ''}">保存する</button></div>
     </div>`)
 })
@@ -2189,15 +2189,15 @@ window.saveStaffBasicInfo = async function (sid) {
 }
 
 // ============ 汎用ファイル管理（スタッフのファイル・入社時書類・契約書で共通利用） ============
-const DOC_ICON = { pdf: 'fa-file-pdf text-red-500', doc: 'fa-file-word text-blue-500', docx: 'fa-file-word text-blue-500',
-  xls: 'fa-file-excel text-emerald-600', xlsx: 'fa-file-excel text-emerald-600', csv: 'fa-file-csv text-emerald-600',
-  ppt: 'fa-file-powerpoint text-orange-500', pptx: 'fa-file-powerpoint text-orange-500', txt: 'fa-file-lines text-gray-500',
-  odt: 'fa-file-word text-blue-500', ods: 'fa-file-excel text-emerald-600', odp: 'fa-file-powerpoint text-orange-500',
-  jpg: 'fa-file-image text-purple-500', jpeg: 'fa-file-image text-purple-500', png: 'fa-file-image text-purple-500',
-  gif: 'fa-file-image text-purple-500', webp: 'fa-file-image text-purple-500' }
+const DOC_ICON = { pdf: 'fa-file-pdf text-danger-500', doc: 'fa-file-word text-primary-500', docx: 'fa-file-word text-primary-500',
+  xls: 'fa-file-excel text-success-600', xlsx: 'fa-file-excel text-success-600', csv: 'fa-file-csv text-success-600',
+  ppt: 'fa-file-powerpoint text-notice-500', pptx: 'fa-file-powerpoint text-notice-500', txt: 'fa-file-lines text-neutral-500',
+  odt: 'fa-file-word text-primary-500', ods: 'fa-file-excel text-success-600', odp: 'fa-file-powerpoint text-notice-500',
+  jpg: 'fa-file-image text-accent-500', jpeg: 'fa-file-image text-accent-500', png: 'fa-file-image text-accent-500',
+  gif: 'fa-file-image text-accent-500', webp: 'fa-file-image text-accent-500' }
 function docIconClass(filename) {
   const ext = (filename.split('.').pop() || '').toLowerCase()
-  return DOC_ICON[ext] || 'fa-file text-gray-400'
+  return DOC_ICON[ext] || 'fa-file text-neutral-400'
 }
 function formatFileSize(bytes) {
   if (bytes < 1024) return bytes + ' B'
@@ -2230,17 +2230,17 @@ function docExpiryBadge(validUntil, kind) {
 }
 function documentListHtml(docs, kind, id) {
   const cfg = DOC_ENTITY[kind]
-  if (!docs || docs.length === 0) return `<p class="text-sm text-gray-400">${cfg.emptyText}</p>`
+  if (!docs || docs.length === 0) return `<p class="text-sm text-neutral-400">${cfg.emptyText}</p>`
   return `<div class="space-y-1.5">${docs.map(d => {
     const unconfirmed = kind === 'staff' && d.submitted_by_staff && !d.confirmed_at
     const badges = (d.doc_type ? `<span class="badge badge-blue">${esc(DOC_TYPE_LABEL[d.doc_type] || d.doc_type)}</span>` : '') + docExpiryBadge(d.valid_until, kind)
       + (kind === 'staff' && d.submitted_by_staff ? '<span class="badge badge-purple">本人提出</span>' : '') + (unconfirmed ? '<span class="badge badge-yellow">未確認</span>' : '')
     return `
-    <div class="flex items-center gap-2 p-2 rounded-lg ${unconfirmed ? 'bg-amber-50' : 'bg-gray-50'} flex-wrap">
+    <div class="flex items-center gap-2 p-2 rounded-lg ${unconfirmed ? 'bg-warning-50' : 'bg-neutral-50'} flex-wrap">
       <i class="fas ${docIconClass(d.original_file_name)}"></i>
       <div class="flex-1 min-w-0">
-        <p class="text-sm text-gray-800 truncate">${esc(d.original_file_name)}</p>
-        <p class="text-xs text-gray-400">${dayjs(d.uploaded_at).format('YYYY/M/D HH:mm')} ・ ${formatFileSize(d.file_size)}</p>
+        <p class="text-sm text-neutral-800 truncate">${esc(d.original_file_name)}</p>
+        <p class="text-xs text-neutral-400">${dayjs(d.uploaded_at).format('YYYY/M/D HH:mm')} ・ ${formatFileSize(d.file_size)}</p>
         ${badges ? `<div class="flex flex-wrap gap-1 mt-0.5">${badges}</div>` : ''}
       </div>
       ${unconfirmed ? `<button class="btn btn-outline text-xs" data-action="confirmDocument" data-kind="${esc(kind)}" data-id="${esc(id)}" data-doc-id="${d.document_id}"><i class="fas fa-check"></i>確認済みにする</button>` : ''}
@@ -2255,24 +2255,24 @@ window.openDocumentUpload = function (kind, id) {
   const cfg = DOC_ENTITY[kind]
   modal(`
     <div class="flex items-center justify-between mb-3">
-      <h3 class="font-bold text-gray-800"><i class="fas fa-file-lines text-blue-600 mr-1"></i>${cfg.title}</h3>
-      <button class="text-gray-400" onclick="closeModal()"><i class="fas fa-xmark"></i></button>
+      <h3 class="font-bold text-neutral-800"><i class="fas fa-file-lines text-primary-600 mr-1"></i>${cfg.title}</h3>
+      <button class="text-neutral-400" onclick="closeModal()"><i class="fas fa-xmark"></i></button>
     </div>
     <div class="grid grid-cols-2 gap-2 mb-3">
-      <div><label class="text-xs text-gray-500 block mb-1">書類の種類</label><select id="doc-type" class="inp text-sm">${docTypeOptions(kind, '')}</select></div>
-      <div><label class="text-xs text-gray-500 block mb-1">${kind === 'client' ? '契約終了日' : '有効期限'}（任意）</label><input type="date" id="doc-valid" class="inp text-sm"></div>
-      <p class="col-span-2 text-[11px] text-gray-400">同時に選んだファイルすべてに付きます。期限が${DOC_EXPIRY_WARN_DAYS}日以内・期限切れの書類は「スタッフの申請」の画面に出ます。</p>
+      <div><label class="text-xs text-neutral-500 block mb-1">書類の種類</label><select id="doc-type" class="inp text-sm">${docTypeOptions(kind, '')}</select></div>
+      <div><label class="text-xs text-neutral-500 block mb-1">${kind === 'client' ? '契約終了日' : '有効期限'}（任意）</label><input type="date" id="doc-valid" class="inp text-sm"></div>
+      <p class="col-span-2 text-2xs text-neutral-400">同時に選んだファイルすべてに付きます。期限が${DOC_EXPIRY_WARN_DAYS}日以内・期限切れの書類は「スタッフの申請」の画面に出ます。</p>
     </div>
-    <div id="doc-dropzone" class="border-2 border-dashed border-gray-300 rounded-xl p-6 text-center text-gray-500 cursor-pointer"
+    <div id="doc-dropzone" class="border-2 border-dashed border-neutral-300 rounded-xl p-6 text-center text-neutral-500 cursor-pointer"
          ondragover="event.preventDefault(); this.classList.add('border-blue-400','bg-blue-50')"
          ondragleave="this.classList.remove('border-blue-400','bg-blue-50')"
          ondrop="onDocDrop(event, '${kind}', ${id})"
          onclick="document.getElementById('doc-file-input').click()">
       <i class="fas fa-paperclip text-2xl mb-2"></i>
       <p class="text-sm">ファイルをここにドラッグ＆ドロップ</p>
-      <p class="text-xs text-gray-400 my-1">または</p>
+      <p class="text-xs text-neutral-400 my-1">または</p>
       <span class="btn btn-outline text-xs inline-flex"><i class="fas fa-folder-open"></i>ファイルを選択</span>
-      <p class="text-xs text-gray-400 mt-2">PDF/Word/Excel/PowerPoint/CSV/テキスト/画像・1ファイル20MBまで・複数選択可</p>
+      <p class="text-xs text-neutral-400 mt-2">PDF/Word/Excel/PowerPoint/CSV/テキスト/画像・1ファイル20MBまで・複数選択可</p>
     </div>
     <input type="file" id="doc-file-input" class="hidden" multiple onchange="onDocFilesSelected(this.files, '${kind}', ${id})">
     <div id="doc-upload-progress" class="mt-3 space-y-1.5"></div>
@@ -2301,15 +2301,15 @@ window.onDocFilesSelected = async function (fileList, kind, id) {
   try {
     const { data } = await axios.post(cfg.collectionUrl(id), form)
     progress.innerHTML = data.results.map(r => r.ok
-      ? `<div class="text-xs text-emerald-600"><i class="fas fa-check"></i> ${esc(r.filename)} アップロード完了</div>`
-      : `<div class="text-xs text-red-600"><i class="fas fa-xmark"></i> ${esc(r.filename)}：${esc(r.error)}</div>`
+      ? `<div class="text-xs text-success-600"><i class="fas fa-check"></i> ${esc(r.filename)} アップロード完了</div>`
+      : `<div class="text-xs text-danger-600"><i class="fas fa-xmark"></i> ${esc(r.filename)}：${esc(r.error)}</div>`
     ).join('')
     const successCount = data.results.filter(r => r.ok).length
     if (successCount > 0) toast(`${successCount}件のファイルをアップロードしました`)
     const { data: docData } = await axios.get(cfg.collectionUrl(id))
     document.getElementById(cfg.containerId).innerHTML = documentListHtml(docData.documents, kind, id)
   } catch (e) {
-    progress.innerHTML = `<div class="text-xs text-red-600">${esc((e && e.response && e.response.data && e.response.data.error) || 'ファイルのアップロードに失敗しました。')}</div>`
+    progress.innerHTML = `<div class="text-xs text-danger-600">${esc((e && e.response && e.response.data && e.response.data.error) || 'ファイルのアップロードに失敗しました。')}</div>`
   }
 }
 
@@ -2341,10 +2341,10 @@ delegate('editDocumentMeta', el => {
   const { kind, id, docId } = el.dataset
   modal(`
     <h3 class="font-bold text-lg mb-1">書類の種類・${kind === 'client' ? '契約終了日' : '有効期限'}</h3>
-    <p class="text-xs text-gray-500 mb-3 truncate">${esc(el.dataset.name || '')}</p>
+    <p class="text-xs text-neutral-500 mb-3 truncate">${esc(el.dataset.name || '')}</p>
     <div class="space-y-3">
-      <div><label class="text-sm text-gray-600 block mb-1">書類の種類</label><select id="dm-type" class="inp">${docTypeOptions(kind, el.dataset.type || '')}</select></div>
-      <div><label class="text-sm text-gray-600 block mb-1">${kind === 'client' ? '契約終了日' : '有効期限'}（空欄で期限なし）</label><input type="date" id="dm-valid" class="inp" value="${esc(el.dataset.valid || '')}"></div>
+      <div><label class="text-sm text-neutral-600 block mb-1">書類の種類</label><select id="dm-type" class="inp">${docTypeOptions(kind, el.dataset.type || '')}</select></div>
+      <div><label class="text-sm text-neutral-600 block mb-1">${kind === 'client' ? '契約終了日' : '有効期限'}（空欄で期限なし）</label><input type="date" id="dm-valid" class="inp" value="${esc(el.dataset.valid || '')}"></div>
       <div class="flex gap-2 justify-end"><button class="btn btn-outline" onclick="closeModal()">キャンセル</button>
         <button class="btn btn-primary" data-action="saveDocumentMeta" data-kind="${esc(kind)}" data-id="${esc(id || '')}" data-doc-id="${esc(docId)}">保存</button></div>
     </div>`)
@@ -2396,15 +2396,15 @@ async function renderStaffRequests() {
   const tabs = [['profile', '登録情報の変更', sum.profile_pending], ['docs', '提出書類・期限', (sum.documents_unconfirmed || 0) + (sum.documents_expiring || 0)]]
   if (sum.can_manage_leave) tabs.push(['leave', '休暇', sum.leave_pending])
   $app.innerHTML = `
-    <div class="mb-4"><h2 class="text-xl font-bold text-gray-900">スタッフの申請</h2>
-      <p class="text-xs text-gray-500 mt-1">スタッフがアプリから出した登録情報の変更・書類・休暇の申請を確認します。承認・見送りの結果は本人のアプリの通知に届きます。</p></div>
+    <div class="mb-4"><h2 class="text-xl font-bold text-neutral-900">スタッフの申請</h2>
+      <p class="text-xs text-neutral-500 mt-1">スタッフがアプリから出した登録情報の変更・書類・休暇の申請を確認します。承認・見送りの結果は本人のアプリの通知に届きます。</p></div>
     <div class="flex gap-2 mb-4 flex-wrap">${tabs.map(([k, l, n]) => `<a href="#staff-requests/${k}" class="btn ${k === tab ? 'btn-primary' : 'btn-outline'} text-xs">${l}${n ? ` <span class="badge badge-red">${Number(n)}</span>` : ''}</a>`).join('')}</div>
-    <div id="sr-body"><p class="text-sm text-gray-400">読み込み中...</p></div>`
+    <div id="sr-body"><p class="text-sm text-neutral-400">読み込み中...</p></div>`
   try {
     if (tab === 'docs') await srDocs()
     else if (tab === 'leave' && sum.can_manage_leave) await srLeave()
     else await srProfile()
-  } catch (e) { document.getElementById('sr-body').innerHTML = `<p class="text-sm text-red-600">${esc(showApiError(e, '読み込めませんでした'))}</p>` }
+  } catch (e) { document.getElementById('sr-body').innerHTML = `<p class="text-sm text-danger-600">${esc(showApiError(e, '読み込めませんでした'))}</p>` }
 }
 
 // ---------- 登録情報の変更 ----------
@@ -2417,30 +2417,30 @@ async function srProfile() {
     ? '承認すると、この時点でメールアドレスが切り替わります（メールを送れない設定のため、確認用のメールは送りません）'
     : '承認すると確認用のメールを送り、本人が開いたときに切り替わります'
   document.getElementById('sr-body').innerHTML = `
-    <label class="text-xs text-gray-500 inline-flex items-center gap-1 mb-3"><input type="checkbox" data-action="srProfileAll" ${SR_STATE.profileAll ? 'checked' : ''}>処理済みも表示</label>
+    <label class="text-xs text-neutral-500 inline-flex items-center gap-1 mb-3"><input type="checkbox" data-action="srProfileAll" ${SR_STATE.profileAll ? 'checked' : ''}>処理済みも表示</label>
     ${data.requests.length ? data.requests.map(r => `
       <section class="card p-4 mb-3">
         <div class="flex items-center gap-2 flex-wrap mb-2">
-          <a href="#staff/${Number(r.staff_id)}" class="font-bold text-blue-700">${esc(r.staff_name)}</a>${srStatusBadge(r.status)}
-          <span class="text-xs text-gray-400">申請 ${esc(r.created_at || '')}</span>
+          <a href="#staff/${Number(r.staff_id)}" class="font-bold text-primary-700">${esc(r.staff_name)}</a>${srStatusBadge(r.status)}
+          <span class="text-xs text-neutral-400">申請 ${esc(r.created_at || '')}</span>
           ${r.via_company_name ? `<span class="badge badge-gray">${esc(r.via_company_name)} の画面から申請</span>` : ''}
         </div>
         <div class="overflow-x-auto"><table class="w-full text-sm">
-          <thead><tr class="text-xs text-gray-400"><th class="text-left py-1 pr-2">項目</th><th class="text-left pr-2">今の登録</th><th class="text-left">変更後</th></tr></thead>
+          <thead><tr class="text-xs text-neutral-400"><th class="text-left py-1 pr-2">項目</th><th class="text-left pr-2">今の登録</th><th class="text-left">変更後</th></tr></thead>
           <tbody>${Object.keys(r.changes).map(k => {
             const changedSince = r.status === 'pending' && String(r.before[k] ?? '') !== String(r.current[k] ?? '')
-            return `<tr class="border-t border-gray-100 align-top"><td class="py-1 pr-2 text-gray-500 whitespace-nowrap">${esc(L[k] || k)}</td>
+            return `<tr class="border-t border-neutral-100 align-top"><td class="py-1 pr-2 text-neutral-500 whitespace-nowrap">${esc(L[k] || k)}</td>
               <td class="pr-2 whitespace-pre-wrap break-words">${esc(show(r.current[k]))}${changedSince ? ' <span class="badge badge-yellow">申請の後に変更あり</span>' : ''}</td>
-              <td class="font-bold whitespace-pre-wrap break-words">${esc(show(r.changes[k]))}${k === 'login_email' && r.status === 'pending' ? `<span class="block text-[11px] font-normal text-gray-400">${esc(emailNote)}</span>` : ''}</td></tr>`
+              <td class="font-bold whitespace-pre-wrap break-words">${esc(show(r.changes[k]))}${k === 'login_email' && r.status === 'pending' ? `<span class="block text-2xs font-normal text-neutral-400">${esc(emailNote)}</span>` : ''}</td></tr>`
           }).join('')}</tbody></table></div>
-        ${r.note ? `<p class="text-xs text-gray-600 mt-2 whitespace-pre-wrap">補足: ${esc(r.note)}</p>` : ''}
+        ${r.note ? `<p class="text-xs text-neutral-600 mt-2 whitespace-pre-wrap">補足: ${esc(r.note)}</p>` : ''}
         ${r.status === 'pending' ? `
           <div class="flex gap-2 mt-3 flex-wrap">
             <input id="sr-pc-${Number(r.request_id)}" class="inp text-xs flex-1 min-w-[12rem]" maxlength="500" placeholder="コメント（見送るときは理由を入力。本人に伝わります）">
             <button class="btn btn-primary text-xs" data-action="srProfileApprove" data-id="${Number(r.request_id)}"><i class="fas fa-check"></i>承認して反映</button>
             <button class="btn btn-outline text-xs" data-action="srProfileReject" data-id="${Number(r.request_id)}">見送る</button>
-          </div>` : r.review_comment ? `<p class="text-xs text-gray-500 mt-2">コメント: ${esc(r.review_comment)}${r.reviewed_by_name ? `（${esc(r.reviewed_by_name)}）` : ''}</p>` : ''}
-      </section>`).join('') : '<p class="text-sm text-gray-400">承認待ちの申請はありません</p>'}`
+          </div>` : r.review_comment ? `<p class="text-xs text-neutral-500 mt-2">コメント: ${esc(r.review_comment)}${r.reviewed_by_name ? `（${esc(r.reviewed_by_name)}）` : ''}</p>` : ''}
+      </section>`).join('') : '<p class="text-sm text-neutral-400">承認待ちの申請はありません</p>'}`
 }
 delegate('srProfileAll', el => { SR_STATE.profileAll = el.checked; srProfile().catch(e => showApiError(e, '読み込めませんでした')) })
 delegate('srProfileApprove', el => withSubmitLock(el, async () => {
@@ -2477,28 +2477,28 @@ async function srDocs() {
   const metaBtn = (kind, d) => `<button class="btn btn-outline text-xs" title="種類・有効期限" data-action="editDocumentMeta" data-kind="${kind}" data-doc-id="${Number(d.document_id)}" data-type="${esc(d.doc_type || '')}" data-valid="${esc(d.valid_until || '')}" data-name="${esc(d.original_file_name)}"><i class="fas fa-tag"></i></button>`
   document.getElementById('sr-body').innerHTML = `
     <section class="card p-4 mb-4">
-      <h3 class="text-sm font-bold text-gray-700 mb-2"><i class="fas fa-mobile-screen text-blue-500 mr-1"></i>本人が提出した未確認の書類（${data.unconfirmed.length}件）</h3>
+      <h3 class="text-sm font-bold text-neutral-700 mb-2"><i class="fas fa-mobile-screen text-primary-500 mr-1"></i>本人が提出した未確認の書類（${data.unconfirmed.length}件）</h3>
       ${data.unconfirmed.length ? `<div class="space-y-1.5">${data.unconfirmed.map(d => `
-        <div class="flex items-center gap-2 p-2 rounded-lg bg-amber-50 flex-wrap">
+        <div class="flex items-center gap-2 p-2 rounded-lg bg-warning-50 flex-wrap">
           <div class="flex-1 min-w-0">
-            <p class="text-sm"><a href="#staff/${Number(d.staff_id)}" class="font-bold text-blue-700">${esc(d.staff_name)}</a> <span class="text-gray-700">${esc(d.original_file_name)}</span></p>
-            <div class="flex flex-wrap gap-1 mt-0.5">${typeBadge(d.doc_type)}${docExpiryBadge(d.valid_until, 'staff')}<span class="text-xs text-gray-400">${esc(dayjs(d.uploaded_at).format('YYYY/M/D HH:mm'))}・${formatFileSize(d.file_size)}</span></div>
+            <p class="text-sm"><a href="#staff/${Number(d.staff_id)}" class="font-bold text-primary-700">${esc(d.staff_name)}</a> <span class="text-neutral-700">${esc(d.original_file_name)}</span></p>
+            <div class="flex flex-wrap gap-1 mt-0.5">${typeBadge(d.doc_type)}${docExpiryBadge(d.valid_until, 'staff')}<span class="text-xs text-neutral-400">${esc(dayjs(d.uploaded_at).format('YYYY/M/D HH:mm'))}・${formatFileSize(d.file_size)}</span></div>
           </div>
           <a class="btn btn-outline text-xs" href="${SR_DOC_KIND.staff.dl(Number(d.document_id))}" target="_blank" rel="noopener"><i class="fas fa-download"></i>開く</a>
           ${metaBtn('staff', d)}
           <button class="btn btn-primary text-xs" data-action="confirmDocument" data-kind="staff" data-doc-id="${Number(d.document_id)}"><i class="fas fa-check"></i>確認済みにする</button>
-        </div>`).join('')}</div>` : '<p class="text-sm text-gray-400">未確認の書類はありません</p>'}
+        </div>`).join('')}</div>` : '<p class="text-sm text-neutral-400">未確認の書類はありません</p>'}
     </section>
     <section class="card p-4">
-      <h3 class="text-sm font-bold text-gray-700 mb-1"><i class="fas fa-hourglass-half text-amber-500 mr-1"></i>期限切れ・${data.warn_days}日以内に期限が来る書類（${data.expiring.length}件）</h3>
-      <p class="text-xs text-gray-400 mb-2">在籍中のスタッフの書類・クライアントの契約書${ME && ME.can_manage_hr ? '・入社時書類' : ''}が対象です。新しい書類を受け取ったら、古い書類の期限を消すか削除してください。</p>
+      <h3 class="text-sm font-bold text-neutral-700 mb-1"><i class="fas fa-hourglass-half text-warning-500 mr-1"></i>期限切れ・${data.warn_days}日以内に期限が来る書類（${data.expiring.length}件）</h3>
+      <p class="text-xs text-neutral-400 mb-2">在籍中のスタッフの書類・クライアントの契約書${ME && ME.can_manage_hr ? '・入社時書類' : ''}が対象です。新しい書類を受け取ったら、古い書類の期限を消すか削除してください。</p>
       ${data.expiring.length ? `<div class="overflow-x-auto"><table class="w-full text-sm"><tbody>${data.expiring.map(d => {
         const k = SR_DOC_KIND[d.kind] || SR_DOC_KIND.staff
-        return `<tr class="border-t border-gray-100"><td class="py-1.5 pr-2 whitespace-nowrap">${docExpiryBadge(d.valid_until, d.kind)}</td>
-          <td class="pr-2"><span class="text-xs text-gray-400">${esc(k.label)}</span> <a href="${k.link(Number(d.owner_id))}" class="text-blue-700">${esc(d.owner_name || '')}</a></td>
-          <td class="pr-2">${typeBadge(d.doc_type)} <span class="text-gray-700">${esc(d.original_file_name)}</span></td>
+        return `<tr class="border-t border-neutral-100"><td class="py-1.5 pr-2 whitespace-nowrap">${docExpiryBadge(d.valid_until, d.kind)}</td>
+          <td class="pr-2"><span class="text-xs text-neutral-400">${esc(k.label)}</span> <a href="${k.link(Number(d.owner_id))}" class="text-primary-700">${esc(d.owner_name || '')}</a></td>
+          <td class="pr-2">${typeBadge(d.doc_type)} <span class="text-neutral-700">${esc(d.original_file_name)}</span></td>
           <td class="whitespace-nowrap text-right"><a class="btn btn-outline text-xs" href="${k.dl(Number(d.document_id))}" target="_blank" rel="noopener"><i class="fas fa-download"></i></a> ${metaBtn(d.kind, d)}</td></tr>`
-      }).join('')}</tbody></table></div>` : '<p class="text-sm text-gray-400">期限の近い書類はありません</p>'}
+      }).join('')}</tbody></table></div>` : '<p class="text-sm text-neutral-400">期限の近い書類はありません</p>'}
     </section>`
 }
 
@@ -2507,19 +2507,19 @@ const SR_LEAVE_TYPE = { paid: '有給', other: 'その他の休暇' }
 const SR_LEAVE_UNIT = { full: '全日', am: '午前半休', pm: '午後半休' }
 // ctx: 'list'（スタッフの申請の画面）/ 'employee'（社員の詳細）。readOnly は雇用終了した社員の閲覧
 function leaveRowsHtml(rows, ctx, sid, readOnly) {
-  if (!rows.length) return '<p class="text-sm text-gray-400">休暇の申請はありません</p>'
+  if (!rows.length) return '<p class="text-sm text-neutral-400">休暇の申請はありません</p>'
   return `<div class="space-y-2">${rows.map(l => `
-    <div class="p-2 rounded-lg ${l.status === 'pending' ? 'bg-amber-50' : 'bg-gray-50'} text-sm">
+    <div class="p-2 rounded-lg ${l.status === 'pending' ? 'bg-warning-50' : 'bg-neutral-50'} text-sm">
       <div class="flex items-center gap-2 flex-wrap">
-        ${ctx === 'list' ? `<a href="#employees/${Number(l.staff_id)}" class="font-bold text-blue-700">${esc(l.staff_name)}</a>` : ''}
+        ${ctx === 'list' ? `<a href="#employees/${Number(l.staff_id)}" class="font-bold text-primary-700">${esc(l.staff_name)}</a>` : ''}
         <span class="font-bold">${esc(dayjs(l.leave_date).format('YYYY/M/D'))}（${['日', '月', '火', '水', '木', '金', '土'][dayjs(l.leave_date).day()]}）</span>
         <span class="badge ${l.leave_type === 'paid' ? 'badge-blue' : 'badge-gray'}">${esc(SR_LEAVE_TYPE[l.leave_type] || l.leave_type)}・${esc(SR_LEAVE_UNIT[l.leave_unit] || l.leave_unit)}</span>
         ${srStatusBadge(l.status)}
-        ${ctx === 'list' && l.leave_type === 'paid' ? `<span class="text-xs text-gray-500">有給残 ${l.paid_leave_remaining == null ? '未入力' : esc(l.paid_leave_remaining) + '日'}</span>` : ''}
+        ${ctx === 'list' && l.leave_type === 'paid' ? `<span class="text-xs text-neutral-500">有給残 ${l.paid_leave_remaining == null ? '未入力' : esc(l.paid_leave_remaining) + '日'}</span>` : ''}
         ${l.shift_count && l.status !== 'rejected' && l.status !== 'cancelled' ? `<a href="#shifts" class="badge badge-red">この日にシフト ${Number(l.shift_count)}件（欠勤の処理・代わりの手配をしてください）</a>` : ''}
       </div>
-      ${l.reason ? `<p class="text-xs text-gray-600 mt-1 whitespace-pre-wrap">理由: ${esc(l.reason)}</p>` : ''}
-      ${l.review_comment ? `<p class="text-xs text-gray-500 mt-1">コメント: ${esc(l.review_comment)}${l.reviewed_by_name ? `（${esc(l.reviewed_by_name)}）` : ''}</p>` : ''}
+      ${l.reason ? `<p class="text-xs text-neutral-600 mt-1 whitespace-pre-wrap">理由: ${esc(l.reason)}</p>` : ''}
+      ${l.review_comment ? `<p class="text-xs text-neutral-500 mt-1">コメント: ${esc(l.review_comment)}${l.reviewed_by_name ? `（${esc(l.reviewed_by_name)}）` : ''}</p>` : ''}
       ${readOnly ? '' : l.status === 'pending' ? `
         <div class="flex gap-2 mt-2 flex-wrap">
           <input id="lv-c-${Number(l.leave_id)}" class="inp text-xs flex-1 min-w-[10rem]" maxlength="500" placeholder="コメント（見送るときは理由。本人に伝わります）">
@@ -2532,8 +2532,8 @@ function leaveRowsHtml(rows, ctx, sid, readOnly) {
 async function srLeave() {
   const { data } = await axios.get('/api/admin/staff-requests/leave' + (SR_STATE.leaveAll ? '?status=all' : ''))
   document.getElementById('sr-body').innerHTML = `
-    <label class="text-xs text-gray-500 inline-flex items-center gap-1 mb-3"><input type="checkbox" data-action="srLeaveAll" ${SR_STATE.leaveAll ? 'checked' : ''}>処理済みも表示</label>
-    <p class="text-xs text-gray-400 mb-2">有給を承認すると、従業員管理の有給残数から引きます。その日のシフトは自動では変わらないので、欠勤の処理・代わりの手配はシフト管理で行ってください。</p>
+    <label class="text-xs text-neutral-500 inline-flex items-center gap-1 mb-3"><input type="checkbox" data-action="srLeaveAll" ${SR_STATE.leaveAll ? 'checked' : ''}>処理済みも表示</label>
+    <p class="text-xs text-neutral-400 mb-2">有給を承認すると、従業員管理の有給残数から引きます。その日のシフトは自動では変わらないので、欠勤の処理・代わりの手配はシフト管理で行ってください。</p>
     ${leaveRowsHtml(data.requests, 'list', 0, false)}`
 }
 delegate('srLeaveAll', el => { SR_STATE.leaveAll = el.checked; srLeave().catch(e => showApiError(e, '読み込めませんでした')) })
@@ -2542,8 +2542,8 @@ async function loadEmployeeLeave(sid, readOnly) {
   const box = document.getElementById('employee-leave'); if (!box) return
   try {
     const { data } = await axios.get(`/api/admin/staff-requests/leave?status=all&staff_id=${Number(sid)}`)
-    box.innerHTML = `<h4 class="text-xs font-bold text-gray-500 mb-2"><i class="fas fa-umbrella-beach text-blue-500 mr-1"></i>休暇の申請（本人のアプリから）</h4>${leaveRowsHtml(data.requests.slice(0, 20), 'employee', sid, readOnly)}`
-  } catch (e) { box.innerHTML = '<p class="text-xs text-gray-400">休暇の申請を読み込めませんでした</p>' }
+    box.innerHTML = `<h4 class="text-xs font-bold text-neutral-500 mb-2"><i class="fas fa-umbrella-beach text-primary-500 mr-1"></i>休暇の申請（本人のアプリから）</h4>${leaveRowsHtml(data.requests.slice(0, 20), 'employee', sid, readOnly)}`
+  } catch (e) { box.innerHTML = '<p class="text-xs text-neutral-400">休暇の申請を読み込めませんでした</p>' }
 }
 delegate('leaveDecide', el => {
   const { op, id, ctx, sid } = el.dataset
@@ -2573,29 +2573,29 @@ window.showSkillSheet = async function (sid) {
   const saved = data.skill_sheet_comment !== undefined
   modal(`
     <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
-      <h3 class="font-bold text-lg"><i class="fas fa-file-lines text-blue-600 mr-1"></i>スキルシート</h3>
+      <h3 class="font-bold text-lg"><i class="fas fa-file-lines text-primary-600 mr-1"></i>スキルシート</h3>
       <button class="btn btn-outline text-xs" onclick="window.print()"><i class="fas fa-print"></i>印刷</button>
     </div>
-    <div class="border border-gray-200 rounded-xl p-4 text-sm space-y-3">
-      <div class="border-b pb-2"><p class="text-lg font-bold">${esc(p.name)}</p><p class="text-xs text-gray-500">${esc(p.age_group || '')} ｜ 稼働可能エリア: ${esc(p.work_area || '-')}</p></div>
-      <div><p class="text-xs font-bold text-gray-400 mb-1">経歴</p>${careerTableReadonly(p)}</div>
-      ${p.pr_points ? `<div><p class="text-xs font-bold text-gray-400 mb-1">経験・スキル・人柄・PRポイント等</p><p class="text-xs whitespace-pre-wrap">${esc(p.pr_points)}</p></div>` : ''}
-      <div><p class="text-xs font-bold text-gray-400 mb-1">経験案件</p>
+    <div class="border border-neutral-200 rounded-xl p-4 text-sm space-y-3">
+      <div class="border-b pb-2"><p class="text-lg font-bold">${esc(p.name)}</p><p class="text-xs text-neutral-500">${esc(p.age_group || '')} ｜ 稼働可能エリア: ${esc(p.work_area || '-')}</p></div>
+      <div><p class="text-xs font-bold text-neutral-400 mb-1">経歴</p>${careerTableReadonly(p)}</div>
+      ${p.pr_points ? `<div><p class="text-xs font-bold text-neutral-400 mb-1">経験・スキル・人柄・PRポイント等</p><p class="text-xs whitespace-pre-wrap">${esc(p.pr_points)}</p></div>` : ''}
+      <div><p class="text-xs font-bold text-neutral-400 mb-1">経験案件</p>
         <div class="flex flex-wrap gap-1">${data.experienced_projects.map(pr => `<span class="badge badge-blue">${esc(pr.project_name)}</span>`).join('') || '-'}</div></div>
-      <div><p class="text-xs font-bold text-gray-400 mb-1">保有スキル</p>
+      <div><p class="text-xs font-bold text-neutral-400 mb-1">保有スキル</p>
         <div class="flex flex-wrap gap-1">${(p.skills || '').split(',').filter(Boolean).map(s => `<span class="badge badge-purple">${esc(s)}</span>`).join('') || '-'}</div></div>
-      <div><p class="text-xs font-bold text-gray-400 mb-1">通算実績（${perf.total_days || 0}稼働日）</p>
+      <div><p class="text-xs font-bold text-neutral-400 mb-1">通算実績（${perf.total_days || 0}稼働日）</p>
         <div class="grid grid-cols-3 sm:grid-cols-5 gap-2 text-center">
           ${perfColumns(data.performance_fields).cols.map(f =>
-            `<div class="bg-gray-50 rounded-lg py-2"><p class="font-bold text-blue-600">${perfValue(perf, f.key)}</p><p class="text-xs text-gray-500">${esc(f.key === 'hikari' && !(data.performance_fields || []).length ? '光回線' : f.label)}</p></div>`).join('')}
+            `<div class="bg-neutral-50 rounded-lg py-2"><p class="font-bold text-primary-600">${perfValue(perf, f.key)}</p><p class="text-xs text-neutral-500">${esc(f.key === 'hikari' && !(data.performance_fields || []).length ? '光回線' : f.label)}</p></div>`).join('')}
         </div></div>
-      ${ev ? `<div><p class="text-xs font-bold text-gray-400 mb-1">評価（${esc(ev.evaluation_period)}）</p>
+      ${ev ? `<div><p class="text-xs font-bold text-neutral-400 mb-1">評価（${esc(ev.evaluation_period)}）</p>
         <p class="text-xs">勤怠 ${ev.attendance_score}/5 ・報告 ${ev.report_score}/5 ・実績 ${ev.performance_score}/5 ・クライアント ${ev.client_score}/5</p></div>` : ''}
-      <div id="ss-comment-box"><p class="text-xs font-bold text-gray-400 mb-1">推薦コメント</p>
+      <div id="ss-comment-box"><p class="text-xs font-bold text-neutral-400 mb-1">推薦コメント</p>
         <textarea id="ss-comment" rows="3" maxlength="1000" class="inp text-xs ss-no-print" placeholder="推薦コメントを入力してから印刷してください（任意）"></textarea>
         <div class="flex items-center gap-2 mt-1 ss-no-print">
           ${saved ? `<button type="button" class="btn btn-outline text-xs" data-action="saveSkillSheetComment" data-id="${Number(sid)}"><i class="fas fa-floppy-disk"></i>コメントを保存</button>` : ''}
-          <p class="text-[11px] text-gray-400 flex-1" id="ss-comment-note">${saved ? 'スキルシート用のコメントです（管理者メモとは別。1000文字まで。空欄なら印刷に出しません）' : '入力した内容は、この端末にだけ下書きとして残ります（空欄なら印刷に出しません）'}</p>
+          <p class="text-2xs text-neutral-400 flex-1" id="ss-comment-note">${saved ? 'スキルシート用のコメントです（管理者メモとは別。1000文字まで。空欄なら印刷に出しません）' : '入力した内容は、この端末にだけ下書きとして残ります（空欄なら印刷に出しません）'}</p>
         </div>
         <p id="ss-comment-print" class="ss-print-only text-xs whitespace-pre-wrap"></p></div>
     </div>
@@ -2612,7 +2612,7 @@ window.showSkillSheet = async function (sid) {
   let draft = null
   try { draft = localStorage.getItem(key) } catch { }
   ta.value = draft != null ? draft : (saved ? String(data.skill_sheet_comment || '') : '')
-  if (saved && draft != null && draft !== String(data.skill_sheet_comment || '')) document.getElementById('ss-comment-note').insertAdjacentHTML('afterbegin', '<span class="text-amber-700">保存していない下書きを表示しています。</span>')
+  if (saved && draft != null && draft !== String(data.skill_sheet_comment || '')) document.getElementById('ss-comment-note').insertAdjacentHTML('afterbegin', '<span class="text-warning-700">保存していない下書きを表示しています。</span>')
   sync()
   ta.addEventListener('input', () => {
     sync()
@@ -2632,16 +2632,16 @@ window.showFollowModal = function (sid, name) {
   modal(`
     <h3 class="font-bold text-lg mb-4">フォロー記録 — ${esc(name)}</h3>
     <div class="space-y-3">
-      <div><label class="text-sm text-gray-600 block mb-1">対応種別</label>
+      <div><label class="text-sm text-neutral-600 block mb-1">対応種別</label>
         <select id="fl-type" class="inp">${Object.entries(FOLLOW_LABELS).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></div>
-      <div><label class="text-sm text-gray-600 block mb-1">内容</label><textarea id="fl-content" rows="3" class="inp" maxlength="2000"></textarea></div>
+      <div><label class="text-sm text-neutral-600 block mb-1">内容</label><textarea id="fl-content" rows="3" class="inp" maxlength="2000"></textarea></div>
       <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
-        <div class="sm:col-span-2"><label class="text-sm text-gray-600 block mb-1">次回対応予定</label><input id="fl-next" class="inp" maxlength="200" placeholder="例: 来週電話で体調を確認"></div>
-        <div><label class="text-sm text-gray-600 block mb-1">次回対応日</label><input id="fl-next-date" type="date" class="inp"></div>
+        <div class="sm:col-span-2"><label class="text-sm text-neutral-600 block mb-1">次回対応予定</label><input id="fl-next" class="inp" maxlength="200" placeholder="例: 来週電話で体調を確認"></div>
+        <div><label class="text-sm text-neutral-600 block mb-1">次回対応日</label><input id="fl-next-date" type="date" class="inp"></div>
       </div>
-      <div><label class="text-sm text-gray-600 block mb-1">対応状況</label>
+      <div><label class="text-sm text-neutral-600 block mb-1">対応状況</label>
         <select id="fl-status" class="inp"><option value="done">完了（次の対応なし）</option><option value="open">対応中（次の対応あり）</option></select>
-        <p class="text-[11px] text-gray-400 mt-1">対応中で次回対応日を入れると、その日からダッシュボードの ToDo に出ます</p></div>
+        <p class="text-2xs text-neutral-400 mt-1">対応中で次回対応日を入れると、その日からダッシュボードの ToDo に出ます</p></div>
       <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="addFollowLog" data-id="${Number(sid)}">記録する</button></div>
     </div>`)
   // 次回対応を入れたら対応中にする（自分で状態を選んだ後は変えない。#385）
@@ -2701,13 +2701,13 @@ const PROJ_SORT = {
 async function renderProjects() {
   loading()
   PROJ_LIST.month = PROJ_LIST.month || dayjs().format('YYYY-MM')
-  try { PROJ_LIST.data = (await axios.get('/api/admin/projects', { params: { month: PROJ_LIST.month } })).data } catch (e) { $app.innerHTML = `<p class="text-red-600">${esc(showApiError(e, '案件を読み込めませんでした'))}</p>`; return }
+  try { PROJ_LIST.data = (await axios.get('/api/admin/projects', { params: { month: PROJ_LIST.month } })).data } catch (e) { $app.innerHTML = `<p class="text-danger-600">${esc(showApiError(e, '案件を読み込めませんでした'))}</p>`; return }
   const L = PROJ_LIST; const projects = L.data.projects
   const clients = [...new Map(projects.filter(p => p.client_id).map(p => [Number(p.client_id), p.client_name])).entries()].sort((a, b) => String(a[1]).localeCompare(String(b[1]), 'ja'))
-  const th = (k, label) => `<th class="cursor-pointer select-none whitespace-nowrap" data-action="sortProjects" data-key="${k}" title="クリックで並べ替え">${label}${L.sort === k ? `<i class="fas fa-caret-${L.dir > 0 ? 'up' : 'down'} ml-1 text-blue-600"></i>` : ''}</th>`
+  const th = (k, label) => `<th class="cursor-pointer select-none whitespace-nowrap" data-action="sortProjects" data-key="${k}" title="クリックで並べ替え">${label}${L.sort === k ? `<i class="fas fa-caret-${L.dir > 0 ? 'up' : 'down'} ml-1 text-primary-600"></i>` : ''}</th>`
   $app.innerHTML = `
     <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
-      <h2 class="text-xl font-bold text-gray-900">案件管理 <span class="text-sm font-normal text-gray-400" id="proj-count"></span></h2>
+      <h2 class="text-xl font-bold text-neutral-900">案件管理 <span class="text-sm font-normal text-neutral-400" id="proj-count"></span></h2>
       <div class="flex gap-2 items-center flex-wrap">
         ${monthNavHtml('projectsMonth', L.month)}
         <button class="btn btn-outline" data-action="showLatenessSetting" title="入店・勤務開始を何分まで遅刻にしないか（会社全体の設定）"><i class="fas fa-stopwatch"></i>遅刻の猶予</button>
@@ -2720,8 +2720,8 @@ async function renderProjects() {
       <select id="proj-client" class="inp text-sm w-auto"><option value="">クライアント: すべて</option><option value="none" ${L.client === 'none' ? 'selected' : ''}>（クライアントなし）</option>
         ${clients.map(([id, name]) => `<option value="${id}" ${String(L.client) === String(id) ? 'selected' : ''}>${esc(name)}</option>`).join('')}</select>
       <select id="proj-status" class="inp text-sm w-auto">${[['', '状態: すべて'], ['active', '稼働中のみ'], ['ended', '終了のみ']].map(([k, v]) => `<option value="${k}" ${L.status === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
-      <label class="text-xs text-gray-600 flex items-center gap-1"><input type="checkbox" id="proj-worked" ${L.worked ? 'checked' : ''}>この月に稼働あり</label>
-      <label class="text-xs text-gray-600 flex items-center gap-1"><input type="checkbox" id="proj-incident" ${L.incident ? 'checked' : ''}>インシデントあり</label>
+      <label class="text-xs text-neutral-600 flex items-center gap-1"><input type="checkbox" id="proj-worked" ${L.worked ? 'checked' : ''}>この月に稼働あり</label>
+      <label class="text-xs text-neutral-600 flex items-center gap-1"><input type="checkbox" id="proj-incident" ${L.incident ? 'checked' : ''}>インシデントあり</label>
     </div>
     <div class="card overflow-x-auto">
       <table class="tbl">
@@ -2729,7 +2729,7 @@ async function renderProjects() {
         <tbody id="proj-rows"></tbody>
       </table>
     </div>
-    <p class="text-xs text-gray-400 mt-2">稼働・成約・インシデントは ${esc(monthLabel(L.month))} の集計です。</p>`
+    <p class="text-xs text-neutral-400 mt-2">稼働・成約・インシデントは ${esc(monthLabel(L.month))} の集計です。</p>`
   let timer = null
   document.getElementById('proj-q').addEventListener('input', ev => { clearTimeout(timer); timer = setTimeout(() => { L.q = ev.target.value; drawProjectRows() }, 200) })
   for (const [id, k] of [['proj-client', 'client'], ['proj-status', 'status']]) document.getElementById(id).addEventListener('change', ev => { L[k] = ev.target.value; drawProjectRows() })
@@ -2754,16 +2754,16 @@ function drawProjectRows() {
   document.getElementById('proj-count').textContent = list.length === all.length ? `${all.length}件` : `${list.length}件（全${all.length}件）`
   document.getElementById('proj-rows').innerHTML = list.map(p => `
             <tr class="cursor-pointer" data-action="openProject" data-id="${Number(p.project_id)}">
-              <td class="font-medium text-blue-700">${esc(p.project_name)}</td>
+              <td class="font-medium text-primary-700">${esc(p.project_name)}</td>
               <td class="text-xs">${esc(p.client_name || '-')}</td>
               <td><span class="badge badge-gray">${esc(PTYPE_LABELS[p.project_type] || p.project_type)}</span></td>
               <td class="text-xs">${esc(p.location || '-')}</td>
               <td class="whitespace-nowrap">${esc(projectPriceText(p))}</td>
               <td class="whitespace-nowrap">${Number(p.month_shifts || 0)}件 (${Number(p.staff_count || 0)}名)</td>
               <td class="font-bold">${seiyakuCell(p.month_seiyaku, '日報テンプレートに「成約」の項目がありません')}</td>
-              <td>${p.incidents ? `<span class="badge badge-red">${Number(p.incidents)}件</span>` : '<span class="text-gray-300">0</span>'}</td>
+              <td>${p.incidents ? `<span class="badge badge-red">${Number(p.incidents)}件</span>` : '<span class="text-neutral-300">0</span>'}</td>
               <td>${p.status === 'active' ? '<span class="badge badge-green">稼働中</span>' : '<span class="badge badge-gray">終了</span>'}</td>
-            </tr>`).join('') || '<tr><td colspan="9" class="text-center text-gray-400 py-6">条件に合う案件はありません</td></tr>'
+            </tr>`).join('') || '<tr><td colspan="9" class="text-center text-neutral-400 py-6">条件に合う案件はありません</td></tr>'
 }
 delegate('openProject', el => { location.hash = 'projects/' + Number(el.dataset.id) })
 delegate('openEmployee', el => { location.hash = 'employees/' + Number(el.dataset.id) })
@@ -2775,7 +2775,7 @@ delegate('sortProjects', el => {
   drawProjectRows()
   document.querySelectorAll('[data-action="sortProjects"]').forEach(h => {
     const ic = h.querySelector('i'); if (ic) ic.remove()
-    if (h.dataset.key === PROJ_LIST.sort) h.insertAdjacentHTML('beforeend', `<i class="fas fa-caret-${PROJ_LIST.dir > 0 ? 'up' : 'down'} ml-1 text-blue-600"></i>`)
+    if (h.dataset.key === PROJ_LIST.sort) h.insertAdjacentHTML('beforeend', `<i class="fas fa-caret-${PROJ_LIST.dir > 0 ? 'up' : 'down'} ml-1 text-primary-600"></i>`)
   })
 })
 
@@ -2791,21 +2791,21 @@ delegate('showLatenessSetting', async () => {
     overrides = overrides.filter(p => p.late_grace_minutes != null && p.late_grace_minutes !== '')
   } catch (e) { showApiError(e, '設定を読み込めませんでした'); return }
   modal(`
-    <h3 class="font-bold text-lg mb-2"><i class="fas fa-stopwatch text-blue-600 mr-1"></i>遅刻の猶予</h3>
-    <p class="text-xs text-gray-500 mb-3">入店・勤務開始の報告が、シフトの開始時刻から何分以内なら遅刻にしないかを決めます（会社全体）。変更は、これから記録する報告に効きます（記録済みの報告は判定し直しません）。</p>
-    <label class="text-sm text-gray-600 block mb-1">猶予（分）</label>
+    <h3 class="font-bold text-lg mb-2"><i class="fas fa-stopwatch text-primary-600 mr-1"></i>遅刻の猶予</h3>
+    <p class="text-xs text-neutral-500 mb-3">入店・勤務開始の報告が、シフトの開始時刻から何分以内なら遅刻にしないかを決めます（会社全体）。変更は、これから記録する報告に効きます（記録済みの報告は判定し直しません）。</p>
+    <label class="text-sm text-neutral-600 block mb-1">猶予（分）</label>
     <input id="late-grace" type="number" min="0" max="${Number(s.max_grace_minutes) || 0}" step="1" class="inp" value="${Number(s.grace_minutes) || 0}" ${s.can_edit === false ? 'disabled' : ''}>
-    <p class="text-[11px] text-gray-400 mt-1">0〜${Number(s.max_grace_minutes) || 0}分。0 にすると、開始時刻を1分でも過ぎたら遅刻になります</p>
-    <div class="mt-4 pt-3 border-t border-gray-100">
-      <p class="text-sm font-bold text-gray-700 mb-1">案件ごとの猶予</p>
-      <p class="text-[11px] text-gray-400 mb-2">案件詳細の「遅刻の猶予」で、案件ごとに会社の設定と違う値にできます。次の案件は会社の設定ではなく、案件の値を使います</p>
-      ${overrides.length ? `<ul class="text-sm divide-y divide-gray-100 max-h-48 overflow-y-auto">${overrides.map(p => `<li class="flex items-center gap-2 py-1.5">
-          <a href="#projects/${Number(p.project_id)}" class="text-blue-600 hover:underline flex-1 truncate" data-action="closeLatenessToProject">${esc(p.project_name || '')}</a>
+    <p class="text-2xs text-neutral-400 mt-1">0〜${Number(s.max_grace_minutes) || 0}分。0 にすると、開始時刻を1分でも過ぎたら遅刻になります</p>
+    <div class="mt-4 pt-3 border-t border-neutral-100">
+      <p class="text-sm font-bold text-neutral-700 mb-1">案件ごとの猶予</p>
+      <p class="text-2xs text-neutral-400 mb-2">案件詳細の「遅刻の猶予」で、案件ごとに会社の設定と違う値にできます。次の案件は会社の設定ではなく、案件の値を使います</p>
+      ${overrides.length ? `<ul class="text-sm divide-y divide-neutral-100 max-h-48 overflow-y-auto">${overrides.map(p => `<li class="flex items-center gap-2 py-1.5">
+          <a href="#projects/${Number(p.project_id)}" class="text-primary-600 hover:underline flex-1 truncate" data-action="closeLatenessToProject">${esc(p.project_name || '')}</a>
           ${p.status && p.status !== 'active' ? '<span class="badge badge-gray">終了</span>' : ''}
           <span class="font-bold whitespace-nowrap">${Number(p.late_grace_minutes)}分</span></li>`).join('')}</ul>`
-        : '<p class="text-xs text-gray-400">案件ごとに変えている案件はありません</p>'}
+        : '<p class="text-xs text-neutral-400">案件ごとに変えている案件はありません</p>'}
     </div>
-    ${s.can_edit === false ? `<p class="text-xs text-amber-700 bg-amber-50 rounded-lg p-2 mt-4">${esc(ATTENDANCE_SETTING_DENIED_TEXT)}</p>`
+    ${s.can_edit === false ? `<p class="text-xs text-warning-700 bg-warning-50 rounded-lg p-2 mt-4">${esc(ATTENDANCE_SETTING_DENIED_TEXT)}</p>`
       : `<div class="flex gap-2 mt-4">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="saveLatenessSetting">保存する</button></div>`}`)
 })
 delegate('closeLatenessToProject', () => closeModal())
@@ -2823,17 +2823,17 @@ delegate('showSiteContactSetting', async () => {
   let s
   try { s = (await axios.get('/api/admin/settings/site-contact')).data } catch (e) { showApiError(e, '設定を読み込めませんでした'); return }
   modal(`
-    <h3 class="font-bold text-lg mb-2"><i class="fas fa-phone text-blue-600 mr-1"></i>緊急連絡先・入店の位置</h3>
-    <p class="text-xs text-gray-500 mb-3">緊急連絡先は、スタッフアプリの「その他」と報告用URLに、タップで電話をかけられるボタンとして表示します。当日の欠勤・遅刻・体調不良・現場のトラブルの連絡先です。</p>
+    <h3 class="font-bold text-lg mb-2"><i class="fas fa-phone text-primary-600 mr-1"></i>緊急連絡先・入店の位置</h3>
+    <p class="text-xs text-neutral-500 mb-3">緊急連絡先は、スタッフアプリの「その他」と報告用URLに、タップで電話をかけられるボタンとして表示します。当日の欠勤・遅刻・体調不良・現場のトラブルの連絡先です。</p>
     <div class="space-y-3">
-      <div><label class="text-sm text-gray-600 block mb-1">緊急連絡先の電話番号</label>
+      <div><label class="text-sm text-neutral-600 block mb-1">緊急連絡先の電話番号</label>
         <input id="sc-phone" type="tel" class="inp" maxlength="20" placeholder="例: 03-1234-5678" value="${esc(s.emergency_phone || '')}">
-        <p class="text-[11px] text-gray-400 mt-1">空欄にすると表示しません</p></div>
-      <div><label class="text-sm text-gray-600 block mb-1">受付時間などの補足</label>
+        <p class="text-2xs text-neutral-400 mt-1">空欄にすると表示しません</p></div>
+      <div><label class="text-sm text-neutral-600 block mb-1">受付時間などの補足</label>
         <input id="sc-note" class="inp" maxlength="100" placeholder="例: 7:00〜22:00（時間外は相談・連絡へ）" value="${esc(s.emergency_note || '')}"></div>
-      <div><label class="text-sm text-gray-600 block mb-1">入店の位置が現場から離れているとみなす距離（m）</label>
+      <div><label class="text-sm text-neutral-600 block mb-1">入店の位置が現場から離れているとみなす距離（m）</label>
         <input id="sc-far" type="number" min="0" max="${Number(s.max_threshold_m) || 0}" step="50" class="inp" value="${Number(s.far_threshold_m) || 0}">
-        <p class="text-[11px] text-gray-400 mt-1">0（判定しない）か ${Number(s.min_threshold_m) || 0}〜${Number(s.max_threshold_m) || 0}m。入店の位置と開催場所の位置（案件の詳細の「開催場所」で登録）を比べ、超えたらシフト操作の画面に「位置ずれ」と出します。スマホの位置は数十〜数百m ずれることがあります</p></div>
+        <p class="text-2xs text-neutral-400 mt-1">0（判定しない）か ${Number(s.min_threshold_m) || 0}〜${Number(s.max_threshold_m) || 0}m。入店の位置と開催場所の位置（案件の詳細の「開催場所」で登録）を比べ、超えたらシフト操作の画面に「位置ずれ」と出します。スマホの位置は数十〜数百m ずれることがあります</p></div>
     </div>
     <div class="flex gap-2 mt-4">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="saveSiteContactSetting">保存する</button></div>`)
 })
@@ -2857,29 +2857,29 @@ window.showAddProject = async function () {
   modal(`
     <h3 class="font-bold text-lg mb-4">案件登録</h3>
     <div class="space-y-3">
-      <div><label class="text-sm text-gray-600 block mb-1">案件名 *</label><input id="np-name" class="inp"></div>
+      <div><label class="text-sm text-neutral-600 block mb-1">案件名 *</label><input id="np-name" class="inp"></div>
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <div><label class="text-sm text-gray-600 block mb-1">クライアント</label>
+        <div><label class="text-sm text-neutral-600 block mb-1">クライアント</label>
           <select id="np-client" class="inp"><option value="">（クライアントなし）</option>${cl.clients.map(c => `<option value="${Number(c.client_id)}">${esc(c.client_name)}</option>`).join('')}</select></div>
-        <div><label class="text-sm text-gray-600 block mb-1">業務種別</label>
+        <div><label class="text-sm text-neutral-600 block mb-1">業務種別</label>
           <select id="np-type" class="inp">${Object.entries(PTYPE_LABELS).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></div>
       </div>
-      <div><label class="text-sm text-gray-600 block mb-1">稼働場所</label><input id="np-loc" class="inp"></div>
+      <div><label class="text-sm text-neutral-600 block mb-1">稼働場所</label><input id="np-loc" class="inp"></div>
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <div><label class="text-sm text-gray-600 block mb-1">請求単価（円）</label>
+        <div><label class="text-sm text-neutral-600 block mb-1">請求単価（円）</label>
           <div class="flex gap-2"><select id="np-price-unit" class="inp w-32 shrink-0"><option value="daily">日額</option><option value="hourly">時給</option><option value="monthly">月額（固定）</option></select>
             <input id="np-price" type="number" min="0" class="inp" value="16000" inputmode="numeric"></div>
-          <p id="np-price-monthly-note" class="text-[11px] text-blue-700 mt-1 hidden">月額（固定）は、その月にシフトが1件以上あれば月に1回だけ請求します（シフトの数・時間には左右されません）。シフトごとの請求単価は 0円 になります</p>
-          <p class="text-[11px] text-gray-400 mt-1">支払単価・交通費・スタッフ別の単価は、登録後に精算画面の「単価の設定」で設定します</p></div>
-        <div><label class="text-sm text-gray-600 block mb-1">日報テンプレート</label>
+          <p id="np-price-monthly-note" class="text-2xs text-primary-700 mt-1 hidden">月額（固定）は、その月にシフトが1件以上あれば月に1回だけ請求します（シフトの数・時間には左右されません）。シフトごとの請求単価は 0円 になります</p>
+          <p class="text-2xs text-neutral-400 mt-1">支払単価・交通費・スタッフ別の単価は、登録後に精算画面の「単価の設定」で設定します</p></div>
+        <div><label class="text-sm text-neutral-600 block mb-1">日報テンプレート</label>
           <select id="np-tpl" class="inp">${tp.templates.map(t => `<option value="${Number(t.template_id)}" ${t.template_id === defaultTpl ? 'selected' : ''}>${esc(t.template_name)}</option>`).join('')}</select>
-          ${tp.templates.length ? '' : '<p class="text-xs text-red-600 mt-1">本部の日報テンプレートが未登録です。本部に登録を依頼してください</p>'}</div>
+          ${tp.templates.length ? '' : '<p class="text-xs text-danger-600 mt-1">本部の日報テンプレートが未登録です。本部に登録を依頼してください</p>'}</div>
       </div>
-      <div><label class="text-sm text-gray-600 block mb-1">必要スキル</label><input id="np-skills" class="inp" maxlength="500" placeholder="カンマ・読点区切り（例: MNP、光回線、クロージング）">
-        <p class="text-[11px] text-gray-400 mt-1">シフトボードの候補一覧で、スタッフのスキルと照らし合わせて『スキル n/m』を出します</p></div>
-      <div><label class="text-sm text-gray-600 block mb-1">求められる内容</label><textarea id="np-req" rows="2" class="inp" maxlength="2000"></textarea></div>
-      <div><label class="text-sm text-gray-600 block mb-1">案件マニュアル・注意事項</label><textarea id="np-manual" rows="3" class="inp" maxlength="5000" placeholder="集合場所・服装・持ち物・現場のルールなど"></textarea></div>
-      <div><label class="text-sm text-gray-600 block mb-1">備考（管理画面のみ）</label><textarea id="np-remarks" rows="2" class="inp" maxlength="2000"></textarea></div>
+      <div><label class="text-sm text-neutral-600 block mb-1">必要スキル</label><input id="np-skills" class="inp" maxlength="500" placeholder="カンマ・読点区切り（例: MNP、光回線、クロージング）">
+        <p class="text-2xs text-neutral-400 mt-1">シフトボードの候補一覧で、スタッフのスキルと照らし合わせて『スキル n/m』を出します</p></div>
+      <div><label class="text-sm text-neutral-600 block mb-1">求められる内容</label><textarea id="np-req" rows="2" class="inp" maxlength="2000"></textarea></div>
+      <div><label class="text-sm text-neutral-600 block mb-1">案件マニュアル・注意事項</label><textarea id="np-manual" rows="3" class="inp" maxlength="5000" placeholder="集合場所・服装・持ち物・現場のルールなど"></textarea></div>
+      <div><label class="text-sm text-neutral-600 block mb-1">備考（管理画面のみ）</label><textarea id="np-remarks" rows="2" class="inp" maxlength="2000"></textarea></div>
       <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="addProject">登録する</button></div>
     </div>`)
   // 月額（固定）を選んだときだけ説明を出す（#9702）
@@ -2944,7 +2944,7 @@ function perfColumns(fields, showAll) {
   return { cols, more: all.length - cols.length, hidden: all.slice(cols.length), total: all.length }
 }
 const perfValue = (row, key) => Number(row && row.values && key in row.values ? row.values[key] : row ? row[key] : 0) || 0
-const perfMoreNote = (more) => more ? `<p class="text-[11px] text-gray-400 mt-1">日報の項目は先頭の${PERF_COL_MAX}件だけを出しています（ほか${more}件）。すべての項目は<a href="#analytics" class="text-blue-600 hover:underline">実績分析</a>で案件を選ぶと見られます</p>` : ''
+const perfMoreNote = (more) => more ? `<p class="text-2xs text-neutral-400 mt-1">日報の項目は先頭の${PERF_COL_MAX}件だけを出しています（ほか${more}件）。すべての項目は<a href="#analytics" class="text-primary-600 hover:underline">実績分析</a>で案件を選ぶと見られます</p>` : ''
 document.addEventListener('change', ev => {
   const sel = ev.target && ev.target.closest ? ev.target.closest('select[data-rank-min]') : null
   if (!sel) return
@@ -2964,8 +2964,8 @@ async function renderProjectDetail(pid) {
     <div class="flex items-center gap-3 mb-5 flex-wrap">
       <a href="#projects" class="btn btn-outline"><i class="fas fa-arrow-left"></i></a>
       <div class="flex-1">
-        <h2 class="text-xl font-bold text-gray-900">${esc(p.project_name)}</h2>
-        <p class="text-sm text-gray-500">${p.client_id ? `<a href="#clients/${Number(p.client_id)}" class="hover:underline">${esc(p.client_name || '')}</a>` : ''} ｜ ${PTYPE_LABELS[p.project_type] || ''} ｜ ${esc(p.location || '')}</p>
+        <h2 class="text-xl font-bold text-neutral-900">${esc(p.project_name)}</h2>
+        <p class="text-sm text-neutral-500">${p.client_id ? `<a href="#clients/${Number(p.client_id)}" class="hover:underline">${esc(p.client_name || '')}</a>` : ''} ｜ ${PTYPE_LABELS[p.project_type] || ''} ｜ ${esc(p.location || '')}</p>
       </div>
       ${monthNavHtml('projectDetailMonth', month)}
       <span class="badge ${p.status === 'active' ? 'badge-green' : 'badge-gray'}">${p.status === 'active' ? '稼働中' : '終了'}</span>
@@ -2974,44 +2974,44 @@ async function renderProjectDetail(pid) {
         ? `<button class="btn btn-outline" data-action="setProjectStatus" data-id="${Number(p.project_id)}" data-status="closed" data-name="${esc(p.project_name)}"><i class="fas fa-flag-checkered"></i>案件を終了する</button>`
         : `<button class="btn btn-outline" data-action="setProjectStatus" data-id="${Number(p.project_id)}" data-status="active" data-name="${esc(p.project_name)}"><i class="fas fa-rotate-left"></i>稼働中に戻す</button>`}
     </div>
-    ${p.status === 'active' ? '' : `<div class="card p-3 mb-4 bg-gray-50 text-sm text-gray-600"><i class="fas fa-circle-info mr-1"></i>この案件は終了しています${p.closed_at ? `（${esc(dayjs(p.closed_at).format('YYYY/M/D'))}）` : ''}。シフト登録・シフトボードの選択肢に出ず、新しいシフトは登録できません。</div>`}
+    ${p.status === 'active' ? '' : `<div class="card p-3 mb-4 bg-neutral-50 text-sm text-neutral-600"><i class="fas fa-circle-info mr-1"></i>この案件は終了しています${p.closed_at ? `（${esc(dayjs(p.closed_at).format('YYYY/M/D'))}）` : ''}。シフト登録・シフトボードの選択肢に出ず、新しいシフトは登録できません。</div>`}
 
     <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
-      <div class="card p-4" id="project-bill-price"><p class="text-xs text-gray-500">請求単価</p>${p.monthly_amount == null
-        ? `<p class="text-xl font-bold">${yen(p.unit_price)}<span class="text-xs font-normal text-gray-400">${priceUnitLabel(p.unit_price_type)}</span></p>`
-        : `<p class="text-xl font-bold">${yen(p.monthly_amount)}<span class="text-xs font-normal text-gray-400">/月（固定）</span></p>
-          ${Number(p.unit_price || 0) ? `<p class="text-xs text-gray-500">シフトの単価 ${yen(p.unit_price)}${priceUnitLabel(p.unit_price_type)} と別に請求</p>` : ''}`}
-        ${Number(p.monthly_staff_rules || 0) ? `<p class="text-[11px] text-gray-400">スタッフ別の月額 ${Number(p.monthly_staff_rules)}件</p>` : ''}</div>
-      <div class="card p-4"><p class="text-xs text-gray-500">${esc(ml)}の稼働</p><p class="text-xl font-bold">${Number(data.month_summary.n || 0)}<span class="text-xs font-normal text-gray-400">件</span></p></div>
-      <div class="card p-4"><p class="text-xs text-gray-500">${esc(ml)}の売上（概算）</p><p class="text-xl font-bold">${yen(data.month_summary.revenue)}</p>
-        ${Number(data.month_summary.monthly_bill || 0) ? `<p class="text-[11px] text-gray-400">うち月額 ${yen(data.month_summary.monthly_bill)}</p>` : ''}</div>
-      <div class="card p-4"><p class="text-xs text-gray-500">日報テンプレート</p><p class="text-sm font-bold mt-1">${esc(p.template_name || '-')}</p>
-        <a href="${esc(reportsLink({ project: p.project_id, ...range }))}" class="text-xs text-blue-600 hover:underline">${esc(ml)}の日報を見る</a>
-        <a href="#projects/templates" class="text-xs text-blue-600 hover:underline ml-2">テンプレートの管理</a></div>
+      <div class="card p-4" id="project-bill-price"><p class="text-xs text-neutral-500">請求単価</p>${p.monthly_amount == null
+        ? `<p class="text-xl font-bold">${yen(p.unit_price)}<span class="text-xs font-normal text-neutral-400">${priceUnitLabel(p.unit_price_type)}</span></p>`
+        : `<p class="text-xl font-bold">${yen(p.monthly_amount)}<span class="text-xs font-normal text-neutral-400">/月（固定）</span></p>
+          ${Number(p.unit_price || 0) ? `<p class="text-xs text-neutral-500">シフトの単価 ${yen(p.unit_price)}${priceUnitLabel(p.unit_price_type)} と別に請求</p>` : ''}`}
+        ${Number(p.monthly_staff_rules || 0) ? `<p class="text-2xs text-neutral-400">スタッフ別の月額 ${Number(p.monthly_staff_rules)}件</p>` : ''}</div>
+      <div class="card p-4"><p class="text-xs text-neutral-500">${esc(ml)}の稼働</p><p class="text-xl font-bold">${Number(data.month_summary.n || 0)}<span class="text-xs font-normal text-neutral-400">件</span></p></div>
+      <div class="card p-4"><p class="text-xs text-neutral-500">${esc(ml)}の売上（概算）</p><p class="text-xl font-bold">${yen(data.month_summary.revenue)}</p>
+        ${Number(data.month_summary.monthly_bill || 0) ? `<p class="text-2xs text-neutral-400">うち月額 ${yen(data.month_summary.monthly_bill)}</p>` : ''}</div>
+      <div class="card p-4"><p class="text-xs text-neutral-500">日報テンプレート</p><p class="text-sm font-bold mt-1">${esc(p.template_name || '-')}</p>
+        <a href="${esc(reportsLink({ project: p.project_id, ...range }))}" class="text-xs text-primary-600 hover:underline">${esc(ml)}の日報を見る</a>
+        <a href="#projects/templates" class="text-xs text-primary-600 hover:underline ml-2">テンプレートの管理</a></div>
     </div>
 
     <div class="grid lg:grid-cols-2 gap-4 mb-4">
       <section class="card p-4">
         <div class="flex items-center gap-2 mb-3 flex-wrap">
-          <h3 class="text-sm font-bold text-gray-700">スタッフ別実績（${esc(ml)}）</h3>
+          <h3 class="text-sm font-bold text-neutral-700">スタッフ別実績（${esc(ml)}）</h3>
           <span class="ml-auto">${rankControlsHtml('rankProject', projectPerfColumns(data).hasRate)}</span>
         </div>
         <div class="overflow-x-auto" id="project-staff-perf"></div>
       </section>
       <section class="card p-4">
-        <h3 class="text-sm font-bold text-gray-700 mb-3 flex items-center"><i class="fas fa-bolt text-red-500 mr-1"></i>インシデント・クレーム<span class="text-xs font-normal text-gray-400 ml-1">（直近10件）</span>
-          <a href="${esc(reportsLink({ project: p.project_id, flagged: 1 }))}" class="ml-auto text-xs font-normal text-blue-600 hover:underline">日報一覧で見る</a></h3>
+        <h3 class="text-sm font-bold text-neutral-700 mb-3 flex items-center"><i class="fas fa-bolt text-danger-500 mr-1"></i>インシデント・クレーム<span class="text-xs font-normal text-neutral-400 ml-1">（直近10件）</span>
+          <a href="${esc(reportsLink({ project: p.project_id, flagged: 1 }))}" class="ml-auto text-xs font-normal text-primary-600 hover:underline">日報一覧で見る</a></h3>
         <div class="space-y-2 max-h-64 overflow-y-auto">
           ${projectIncidentsSorted(data.incidents).map(i => `
-            <a href="${esc(reportsLink({ project: p.project_id, from: i.work_date, to: i.work_date }))}" class="block p-2.5 rounded-lg ${i.incident_status === 'done' ? 'bg-gray-50' : 'bg-red-50'} text-xs hover:bg-red-100" title="この日の日報を開く">
+            <a href="${esc(reportsLink({ project: p.project_id, from: i.work_date, to: i.work_date }))}" class="block p-2.5 rounded-lg ${i.incident_status === 'done' ? 'bg-neutral-50' : 'bg-danger-50'} text-xs hover:bg-danger-100" title="この日の日報を開く">
               <div class="flex gap-2 mb-1">
                 ${i.incident_flag ? '<span class="badge badge-red">インシデント</span>' : ''}
                 ${i.complaint_flag ? '<span class="badge badge-purple">クレーム</span>' : ''}
                 ${i.incident_status !== undefined ? `<span class="badge ${INCIDENT_STATUS_BADGE[i.incident_status || 'open'] || 'badge-gray'}">${esc(INCIDENT_STATUS_LABEL[i.incident_status || 'open'] || i.incident_status)}</span>` : ''}
-                <span class="text-gray-500">${esc(dayjs(i.work_date).format('YYYY/M/D'))} ${esc(i.staff_name)}</span>
+                <span class="text-neutral-500">${esc(dayjs(i.work_date).format('YYYY/M/D'))} ${esc(i.staff_name)}</span>
               </div>
-              <p class="text-gray-700 whitespace-pre-wrap">${esc((i.values && i.values.free) || '')}</p>
-            </a>`).join('') || '<p class="text-sm text-gray-400">インシデントはありません</p>'}
+              <p class="text-neutral-700 whitespace-pre-wrap">${esc((i.values && i.values.free) || '')}</p>
+            </a>`).join('') || '<p class="text-sm text-neutral-400">インシデントはありません</p>'}
         </div>
       </section>
     </div>
@@ -3019,24 +3019,24 @@ async function renderProjectDetail(pid) {
     <div class="grid lg:grid-cols-2 gap-4">
       <section class="card p-4" id="project-texts">
         ${PROJECT_TEXT_FIELDS.map(([k, label], i) => `
-        <h3 class="text-sm font-bold text-gray-700 ${i ? 'mt-4 ' : ''}mb-2 flex items-center">${esc(label)}
-          <button type="button" class="ml-auto text-xs font-normal text-blue-600 hover:underline" data-action="editProjectText" data-id="${Number(p.project_id)}" data-field="${k}"><i class="fas fa-pen mr-0.5"></i>編集</button></h3>
-        <p class="text-sm text-gray-600 whitespace-pre-wrap break-words" id="project-text-${k}">${esc(p[k] || '-')}</p>`).join('')}
-        <h3 class="text-sm font-bold text-gray-700 mt-4 mb-2 flex items-center">必要スキル
-          <button type="button" class="ml-auto text-xs font-normal text-blue-600 hover:underline" data-action="editProjectSkills" data-id="${Number(p.project_id)}" data-skills="${esc(p.required_skills || '')}"><i class="fas fa-pen mr-0.5"></i>編集</button></h3>
+        <h3 class="text-sm font-bold text-neutral-700 ${i ? 'mt-4 ' : ''}mb-2 flex items-center">${esc(label)}
+          <button type="button" class="ml-auto text-xs font-normal text-primary-600 hover:underline" data-action="editProjectText" data-id="${Number(p.project_id)}" data-field="${k}"><i class="fas fa-pen mr-0.5"></i>編集</button></h3>
+        <p class="text-sm text-neutral-600 whitespace-pre-wrap break-words" id="project-text-${k}">${esc(p[k] || '-')}</p>`).join('')}
+        <h3 class="text-sm font-bold text-neutral-700 mt-4 mb-2 flex items-center">必要スキル
+          <button type="button" class="ml-auto text-xs font-normal text-primary-600 hover:underline" data-action="editProjectSkills" data-id="${Number(p.project_id)}" data-skills="${esc(p.required_skills || '')}"><i class="fas fa-pen mr-0.5"></i>編集</button></h3>
         <div class="flex flex-wrap gap-1" id="project-skills">${projectSkillBadges(p.required_skills)}</div>
-        <p class="text-[11px] text-gray-400 mt-1">シフトボードの候補一覧で、スタッフのスキルと照らし合わせて『スキル n/m』を出します</p>
+        <p class="text-2xs text-neutral-400 mt-1">シフトボードの候補一覧で、スタッフのスキルと照らし合わせて『スキル n/m』を出します</p>
       </section>
       <section class="card p-4">
-        <h3 class="text-sm font-bold text-gray-700 mb-2">日報テンプレート項目</h3>
+        <h3 class="text-sm font-bold text-neutral-700 mb-2">日報テンプレート項目</h3>
         <div class="flex flex-wrap gap-1.5">
           ${(p.template_fields || []).map(f => `<span class="badge ${f.type === 'number' ? 'badge-blue' : 'badge-gray'}">${esc(f.label)}</span>`).join('')}
         </div>
-        ${(p.past_report_fields || []).length ? `<p class="text-xs text-gray-500 mt-3 mb-1">以前のテンプレートの項目（今までの日報の値は、日報の一覧・実績・CSV にこの表示名で出ます）</p>
+        ${(p.past_report_fields || []).length ? `<p class="text-xs text-neutral-500 mt-3 mb-1">以前のテンプレートの項目（今までの日報の値は、日報の一覧・実績・CSV にこの表示名で出ます）</p>
         <div class="flex flex-wrap gap-1.5">${p.past_report_fields.map(f => `<span class="badge badge-gray">${esc(f.label)}</span>`).join('')}</div>` : ''}
-        <p class="text-xs text-gray-400 mt-3">スタッフへの実績表示: ${p.show_performance ? '表示する' : '表示しない'}</p>
-        <div class="mt-4 pt-3 border-t border-gray-100">
-          <p class="text-xs text-gray-500 mb-1"><i class="fas fa-camera text-blue-600 mr-1"></i>入店/退店報告の写真添付</p>
+        <p class="text-xs text-neutral-400 mt-3">スタッフへの実績表示: ${p.show_performance ? '表示する' : '表示しない'}</p>
+        <div class="mt-4 pt-3 border-t border-neutral-100">
+          <p class="text-xs text-neutral-500 mb-1"><i class="fas fa-camera text-primary-600 mr-1"></i>入店/退店報告の写真添付</p>
           <select class="inp text-sm" data-project-photo="${Number(p.project_id)}">
             <option value="inherit" ${p.photo_required_override == null ? 'selected' : ''}>会社設定に従う（現在: ${data.company_photo_default ? '必須' : '不要'}）</option>
             <option value="on" ${p.photo_required_override === 1 ? 'selected' : ''}>この案件は必須にする</option>
@@ -3067,9 +3067,9 @@ delegate('editProjectText', el => {
   const [k, label, max, note] = f
   modal(`
     <h3 class="font-bold text-lg mb-1">${esc(label)}</h3>
-    <p class="text-xs text-gray-500 mb-3">${esc(note)}。空欄にすると消えます</p>
+    <p class="text-xs text-neutral-500 mb-3">${esc(note)}。空欄にすると消えます</p>
     <textarea id="pj-text" rows="${k === 'manual_text' ? 10 : 6}" class="inp" maxlength="${max}">${esc(PROJECT_DETAIL.data.project[k] || '')}</textarea>
-    <p class="text-[11px] text-gray-400 mt-1">${max}文字まで</p>
+    <p class="text-2xs text-neutral-400 mt-1">${max}文字まで</p>
     <div class="flex gap-2 mt-3">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="saveProjectText" data-id="${Number(el.dataset.id)}" data-field="${k}">保存する</button></div>`)
 })
 delegate('saveProjectText', el => withSubmitLock(el, async () => {
@@ -3103,18 +3103,18 @@ const LATE_GRACE_MAX_DEFAULT = 120
 const ATTENDANCE_SETTING_DENIED_TEXT = '勤怠の設定を変えられるのは会社管理者と現場管理者だけです'
 function projectLatenessHtml(p) {
   const own = p.late_grace_minutes != null && p.late_grace_minutes !== ''
-  return `<div class="mt-4 pt-3 border-t border-gray-100" id="project-late-box">
-          <p class="text-xs text-gray-500 mb-1"><i class="fas fa-stopwatch text-blue-600 mr-1"></i>遅刻の猶予（入店・勤務開始）</p>
+  return `<div class="mt-4 pt-3 border-t border-neutral-100" id="project-late-box">
+          <p class="text-xs text-neutral-500 mb-1"><i class="fas fa-stopwatch text-primary-600 mr-1"></i>遅刻の猶予（入店・勤務開始）</p>
           <div class="flex gap-2 items-center flex-wrap">
             <select class="inp text-sm w-auto" id="proj-late-mode" aria-label="遅刻の猶予の決め方">
               <option value="inherit" ${own ? '' : 'selected'} id="proj-late-inherit">会社の設定に従う</option>
               <option value="custom" ${own ? 'selected' : ''}>この案件だけ変える</option>
             </select>
             <input id="proj-late-grace" type="number" min="0" max="${LATE_GRACE_MAX_DEFAULT}" step="1" class="inp text-sm w-24" value="${own ? Number(p.late_grace_minutes) : ''}" ${own ? '' : 'disabled'} aria-label="この案件の猶予（分）">
-            <span class="text-xs text-gray-500">分</span>
+            <span class="text-xs text-neutral-500">分</span>
             <button type="button" class="btn btn-outline text-xs" data-action="saveProjectLateness" data-id="${Number(p.project_id)}">保存</button>
           </div>
-          <p class="text-[11px] text-gray-400 mt-1">シフトの開始時刻から何分以内の入店・勤務開始を遅刻にしないか。変更は、これから記録する報告に効きます（記録済みの報告は判定し直しません）</p>
+          <p class="text-2xs text-neutral-400 mt-1">シフトの開始時刻から何分以内の入店・勤務開始を遅刻にしないか。変更は、これから記録する報告に効きます（記録済みの報告は判定し直しません）</p>
         </div>`
 }
 // 会社の猶予（と上限）を読んで、「会社の設定に従う（現在: n分）」と入力の上限に出す。
@@ -3129,7 +3129,7 @@ async function fillProjectLatenessCompany() {
   if (s.can_edit === false) {
     document.querySelectorAll('#proj-late-mode, #proj-late-grace, [data-action="saveProjectLateness"], select[data-project-photo]').forEach(el => { el.disabled = true })
     const box = document.getElementById('project-late-box')
-    if (box) box.insertAdjacentHTML('beforeend', `<p class="text-[11px] text-amber-700 mt-1">${esc(ATTENDANCE_SETTING_DENIED_TEXT)}</p>`)
+    if (box) box.insertAdjacentHTML('beforeend', `<p class="text-2xs text-warning-700 mt-1">${esc(ATTENDANCE_SETTING_DENIED_TEXT)}</p>`)
   }
 }
 delegate('saveProjectLateness', el => withSubmitLock(el, async () => {
@@ -3178,31 +3178,31 @@ delegate('editProject', el => withSubmitLock(el, async () => {
   modal(`
     <h3 class="font-bold text-lg mb-4">案件の編集</h3>
     <div class="space-y-3">
-      <div><label class="text-sm text-gray-600 block mb-1">案件名 *</label><input id="ep-name" class="inp" maxlength="100" value="${esc(p.project_name)}"></div>
+      <div><label class="text-sm text-neutral-600 block mb-1">案件名 *</label><input id="ep-name" class="inp" maxlength="100" value="${esc(p.project_name)}"></div>
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <div><label class="text-sm text-gray-600 block mb-1">クライアント</label>
+        <div><label class="text-sm text-neutral-600 block mb-1">クライアント</label>
           <select id="ep-client" class="inp"><option value="">（クライアントなし）</option>${cl.clients.map(c => `<option value="${Number(c.client_id)}" ${Number(c.client_id) === Number(p.client_id) ? 'selected' : ''}>${esc(c.client_name)}</option>`).join('')}</select></div>
-        <div><label class="text-sm text-gray-600 block mb-1">業務種別</label>
+        <div><label class="text-sm text-neutral-600 block mb-1">業務種別</label>
           <select id="ep-type" class="inp">${Object.entries(PTYPE_LABELS).map(([k, v]) => `<option value="${k}" ${p.project_type === k ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
       </div>
-      <div><label class="text-sm text-gray-600 block mb-1">稼働場所</label><input id="ep-loc" class="inp" maxlength="200" value="${esc(p.location || '')}"></div>
-      <div><label class="text-sm text-gray-600 block mb-1">日報テンプレート</label>
+      <div><label class="text-sm text-neutral-600 block mb-1">稼働場所</label><input id="ep-loc" class="inp" maxlength="200" value="${esc(p.location || '')}"></div>
+      <div><label class="text-sm text-neutral-600 block mb-1">日報テンプレート</label>
         <select id="ep-tpl" class="inp">${tpls.map(t => `<option value="${Number(t.template_id)}" ${Number(t.template_id) === Number(p.report_template_id) ? 'selected' : ''}>${esc(t.template_name)}${t.editable ? '（自社）' : ''}${t.status === 'stopped' ? '（配信停止）' : ''}</option>`).join('')}</select>
-        <p class="text-[11px] text-gray-400 mt-1">テンプレートを変えても、今までの日報の項目は元の表示名のまま日報の一覧・実績・CSV に出ます</p></div>
-      <div><label class="text-sm text-gray-600 block mb-1">必要スキル</label><input id="ep-skills" class="inp" maxlength="500" value="${esc(p.required_skills || '')}" placeholder="カンマ・読点区切り（例: MNP、光回線、クロージング）"></div>
-      <div><label class="text-sm text-gray-600 block mb-1">求められる内容</label><textarea id="ep-req" rows="2" class="inp" maxlength="2000">${esc(p.requirements || '')}</textarea></div>
-      <div><label class="text-sm text-gray-600 block mb-1">案件マニュアル・注意事項</label><textarea id="ep-manual" rows="4" class="inp" maxlength="5000">${esc(p.manual_text || '')}</textarea></div>
-      <div><label class="text-sm text-gray-600 block mb-1">備考（管理画面のみ）</label><textarea id="ep-remarks" rows="2" class="inp" maxlength="2000">${esc(p.remarks || '')}</textarea></div>
+        <p class="text-2xs text-neutral-400 mt-1">テンプレートを変えても、今までの日報の項目は元の表示名のまま日報の一覧・実績・CSV に出ます</p></div>
+      <div><label class="text-sm text-neutral-600 block mb-1">必要スキル</label><input id="ep-skills" class="inp" maxlength="500" value="${esc(p.required_skills || '')}" placeholder="カンマ・読点区切り（例: MNP、光回線、クロージング）"></div>
+      <div><label class="text-sm text-neutral-600 block mb-1">求められる内容</label><textarea id="ep-req" rows="2" class="inp" maxlength="2000">${esc(p.requirements || '')}</textarea></div>
+      <div><label class="text-sm text-neutral-600 block mb-1">案件マニュアル・注意事項</label><textarea id="ep-manual" rows="4" class="inp" maxlength="5000">${esc(p.manual_text || '')}</textarea></div>
+      <div><label class="text-sm text-neutral-600 block mb-1">備考（管理画面のみ）</label><textarea id="ep-remarks" rows="2" class="inp" maxlength="2000">${esc(p.remarks || '')}</textarea></div>
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <div><label class="text-sm text-gray-600 block mb-1">現場責任者の名前（任意）</label><input id="ep-sc-name" class="inp" maxlength="40" value="${esc(p.site_contact_name || '')}"></div>
-        <div><label class="text-sm text-gray-600 block mb-1">現場責任者の電話番号（任意）</label><input id="ep-sc-phone" type="tel" class="inp" maxlength="20" placeholder="例: 090-1234-5678" value="${esc(p.site_contact_phone || '')}"></div>
+        <div><label class="text-sm text-neutral-600 block mb-1">現場責任者の名前（任意）</label><input id="ep-sc-name" class="inp" maxlength="40" value="${esc(p.site_contact_name || '')}"></div>
+        <div><label class="text-sm text-neutral-600 block mb-1">現場責任者の電話番号（任意）</label><input id="ep-sc-phone" type="tel" class="inp" maxlength="20" placeholder="例: 090-1234-5678" value="${esc(p.site_contact_phone || '')}"></div>
       </div>
-      <p class="text-[11px] text-gray-400 -mt-2">スタッフアプリ・報告用URLの当日のシフトに、タップで電話をかけられる連絡先として出します（空欄なら会社の緊急連絡先だけ）</p>
-      <div><label class="text-sm text-gray-600 block mb-1">メモ（管理者のみ）</label><textarea id="ep-memo" rows="2" class="inp" maxlength="2000">${esc(p.memo || '')}</textarea></div>
-      <label class="text-sm text-gray-600 flex items-center gap-2"><input type="checkbox" id="ep-perf" ${p.show_performance ? 'checked' : ''}>スタッフに実績を表示する</label>
+      <p class="text-2xs text-neutral-400 -mt-2">スタッフアプリ・報告用URLの当日のシフトに、タップで電話をかけられる連絡先として出します（空欄なら会社の緊急連絡先だけ）</p>
+      <div><label class="text-sm text-neutral-600 block mb-1">メモ（管理者のみ）</label><textarea id="ep-memo" rows="2" class="inp" maxlength="2000">${esc(p.memo || '')}</textarea></div>
+      <label class="text-sm text-neutral-600 flex items-center gap-2"><input type="checkbox" id="ep-perf" ${p.show_performance ? 'checked' : ''}>スタッフに実績を表示する</label>
       <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="saveProject" data-id="${pid}">保存する</button></div>
-      <p class="text-right"><button type="button" class="text-xs text-red-600 hover:underline" data-action="deleteProject" data-id="${pid}" data-name="${esc(p.project_name)}"><i class="fas fa-trash mr-0.5"></i>この案件を削除する</button></p>
-      <p class="text-[11px] text-gray-400 text-right -mt-2">二重登録などで作った、シフト・日報が1件もない案件だけ削除できます。使った案件は「案件を終了する」にしてください</p>
+      <p class="text-right"><button type="button" class="text-xs text-danger-600 hover:underline" data-action="deleteProject" data-id="${pid}" data-name="${esc(p.project_name)}"><i class="fas fa-trash mr-0.5"></i>この案件を削除する</button></p>
+      <p class="text-2xs text-neutral-400 text-right -mt-2">二重登録などで作った、シフト・日報が1件もない案件だけ削除できます。使った案件は「案件を終了する」にしてください</p>
     </div>`)
 }))
 // 空の案件・クライアントの削除（#359）。API は DELETE /admin/projects/:id・/admin/clients/:id。
@@ -3255,16 +3255,16 @@ let ADMIN_TPLS = []
 let TPL_EDIT = null
 async function renderAdminTemplates() {
   loading()
-  try { ADMIN_TPLS = (await axios.get('/api/admin/templates')).data.templates } catch (e) { $app.innerHTML = `<p class="text-red-600">${esc(showApiError(e, 'テンプレートを読み込めませんでした'))}</p>`; return }
+  try { ADMIN_TPLS = (await axios.get('/api/admin/templates')).data.templates } catch (e) { $app.innerHTML = `<p class="text-danger-600">${esc(showApiError(e, 'テンプレートを読み込めませんでした'))}</p>`; return }
   const card = t => `
     <section class="card p-4 ${t.status === 'stopped' ? 'opacity-70' : ''}">
       <div class="flex items-center gap-2 mb-2 flex-wrap">
-        <h3 class="font-bold text-gray-800">${esc(t.template_name)}</h3>
+        <h3 class="font-bold text-neutral-800">${esc(t.template_name)}</h3>
         <span class="badge ${t.editable ? 'badge-purple' : 'badge-blue'}">${t.editable ? '自社' : '本部配信'}</span>
         ${t.status === 'stopped' ? '<span class="badge badge-gray">配信停止</span>' : ''}
-        <span class="text-xs text-gray-400 ml-auto">使用中の案件 ${Number(t.project_count || 0)}件</span>
+        <span class="text-xs text-neutral-400 ml-auto">使用中の案件 ${Number(t.project_count || 0)}件</span>
       </div>
-      <div class="flex flex-wrap gap-1.5 mb-3">${(t.fields || []).map(f => `<span class="badge ${f.type === 'number' ? 'badge-blue' : 'badge-gray'}" title="${esc(f.key)}">${esc(f.label)}${f.required ? ' *' : ''}</span>`).join('') || '<span class="text-xs text-gray-400">項目がありません</span>'}</div>
+      <div class="flex flex-wrap gap-1.5 mb-3">${(t.fields || []).map(f => `<span class="badge ${f.type === 'number' ? 'badge-blue' : 'badge-gray'}" title="${esc(f.key)}">${esc(f.label)}${f.required ? ' *' : ''}</span>`).join('') || '<span class="text-xs text-neutral-400">項目がありません</span>'}</div>
       <div class="flex gap-2 flex-wrap">
         ${t.editable ? `<button class="btn btn-outline text-xs" data-action="editAdminTemplate" data-id="${Number(t.template_id)}"><i class="fas fa-pen"></i>編集</button>
           <button class="btn btn-outline text-xs" data-action="toggleAdminTemplateStatus" data-id="${Number(t.template_id)}" data-status="${t.status === 'stopped' ? 'active' : 'stopped'}">${t.status === 'stopped' ? '使用を再開' : '配信停止'}</button>` : ''}
@@ -3275,14 +3275,14 @@ async function renderAdminTemplates() {
   $app.innerHTML = `
     <div class="flex items-center gap-3 mb-4 flex-wrap">
       <a href="#projects" class="btn btn-outline"><i class="fas fa-arrow-left"></i></a>
-      <h2 class="text-xl font-bold text-gray-900 flex-1">日報テンプレート</h2>
+      <h2 class="text-xl font-bold text-neutral-900 flex-1">日報テンプレート</h2>
       <button class="btn btn-primary" data-action="newAdminTemplate"><i class="fas fa-plus"></i>テンプレートを作成</button>
     </div>
-    <p class="text-sm text-gray-500 mb-4">案件ごとにスタッフが日報で入力する項目です。案件の登録・編集で選びます。配信停止にしたテンプレートは新しい案件では選べません（使っている案件はそのまま使えます）。</p>
-    <h3 class="text-sm font-bold text-gray-700 mb-2">自社のテンプレート</h3>
-    <div class="grid md:grid-cols-2 min-[1800px]:grid-cols-3 gap-4 mb-6">${own.map(card).join('') || '<p class="text-sm text-gray-400">自社のテンプレートはまだありません。「テンプレートを作成」か、本部のテンプレートの「複製して作成」から作れます</p>'}</div>
-    <h3 class="text-sm font-bold text-gray-700 mb-2">本部配信のテンプレート</h3>
-    <div class="grid md:grid-cols-2 min-[1800px]:grid-cols-3 gap-4">${hq.map(card).join('') || '<p class="text-sm text-gray-400">本部のテンプレートはありません</p>'}</div>`
+    <p class="text-sm text-neutral-500 mb-4">案件ごとにスタッフが日報で入力する項目です。案件の登録・編集で選びます。配信停止にしたテンプレートは新しい案件では選べません（使っている案件はそのまま使えます）。</p>
+    <h3 class="text-sm font-bold text-neutral-700 mb-2">自社のテンプレート</h3>
+    <div class="grid md:grid-cols-2 min-[1800px]:grid-cols-3 gap-4 mb-6">${own.map(card).join('') || '<p class="text-sm text-neutral-400">自社のテンプレートはまだありません。「テンプレートを作成」か、本部のテンプレートの「複製して作成」から作れます</p>'}</div>
+    <h3 class="text-sm font-bold text-neutral-700 mb-2">本部配信のテンプレート</h3>
+    <div class="grid md:grid-cols-2 min-[1800px]:grid-cols-3 gap-4">${hq.map(card).join('') || '<p class="text-sm text-neutral-400">本部のテンプレートはありません</p>'}</div>`
 }
 const tplById = id => ADMIN_TPLS.find(t => Number(t.template_id) === Number(id))
 delegate('newAdminTemplate', () => openTemplateEditor(null, { name: '', fields: [{ key: 'item1', label: '', type: 'number' }, { key: 'free', label: '自由記述', type: 'textarea' }] }))
@@ -3306,20 +3306,20 @@ function openTemplateEditor(t, init) {
     <h3 class="font-bold text-lg mb-3">${t ? 'テンプレートの編集' : 'テンプレートの作成'}</h3>
     <div class="lg:grid lg:grid-cols-[minmax(0,1fr)_376px] lg:gap-5 lg:items-start">
     <div class="space-y-3">
-      <div><label class="text-sm text-gray-600 block mb-1">テンプレート名 *</label><input id="tpl-name" class="inp" maxlength="60" value="${esc(init.name || '')}"></div>
-      ${locked.size ? '<p class="text-xs text-amber-700 bg-amber-50 rounded p-2">このテンプレートには日報があります。値が入った日報がある項目は、削除・数値とテキストの切り替えができません（保存のときに確かめます）。表示名・順序・必須の変更と、項目の追加はいつでもできます。</p>' : ''}
+      <div><label class="text-sm text-neutral-600 block mb-1">テンプレート名 *</label><input id="tpl-name" class="inp" maxlength="60" value="${esc(init.name || '')}"></div>
+      ${locked.size ? '<p class="text-xs text-warning-700 bg-warning-50 rounded p-2">このテンプレートには日報があります。値が入った日報がある項目は、削除・数値とテキストの切り替えができません（保存のときに確かめます）。表示名・順序・必須の変更と、項目の追加はいつでもできます。</p>' : ''}
       <div>
-        <div class="text-[11px] text-gray-400 grid grid-cols-12 gap-1 mb-1"><span class="col-span-3">キー（半角英数字）</span><span class="col-span-4">表示名</span><span class="col-span-3">入力欄</span><span class="col-span-2"></span></div>
+        <div class="text-2xs text-neutral-400 grid grid-cols-12 gap-1 mb-1"><span class="col-span-3">キー（半角英数字）</span><span class="col-span-4">表示名</span><span class="col-span-3">入力欄</span><span class="col-span-2"></span></div>
         <div id="tpl-rows" class="space-y-1.5"></div>
         <button type="button" class="btn btn-outline text-xs mt-2" data-action="tplAddRow"><i class="fas fa-plus"></i>項目を追加</button>
-        <p class="text-[11px] text-gray-400 mt-1">キーは日報の値の保存に使います。日報が出た後は変えられません。数値の項目は、日報一覧・分析の件数の集計に使います</p>
+        <p class="text-2xs text-neutral-400 mt-1">キーは日報の値の保存に使います。日報が出た後は変えられません。数値の項目は、日報一覧・分析の件数の集計に使います</p>
       </div>
     </div>
     <div class="mt-5 lg:mt-0 lg:sticky lg:top-0" id="tpl-preview-pane">
-      <p class="text-sm font-bold text-gray-700 mb-0.5"><i class="fas fa-mobile-screen-button text-blue-500 mr-1"></i>スタッフのスマホでの見え方</p>
-      <p class="text-[11px] text-gray-400 mb-2">項目を足す・消す・並べ替えると、すぐに反映されます。ここで入力しても保存・提出はされません</p>
-      <div class="mx-auto w-[376px] max-w-full rounded-[2rem] border-[8px] border-gray-800 bg-gray-50 overflow-hidden shadow-lg">
-        <div class="bg-white border-b border-gray-100 px-4 py-2.5"><p class="font-bold text-gray-800 text-sm flex items-center gap-2"><i class="fas fa-tower-cell text-blue-600"></i>日報</p></div>
+      <p class="text-sm font-bold text-neutral-700 mb-0.5"><i class="fas fa-mobile-screen-button text-primary-500 mr-1"></i>スタッフのスマホでの見え方</p>
+      <p class="text-2xs text-neutral-400 mb-2">項目を足す・消す・並べ替えると、すぐに反映されます。ここで入力しても保存・提出はされません</p>
+      <div class="mx-auto w-[376px] max-w-full rounded-[2rem] border-[8px] border-neutral-800 bg-neutral-50 overflow-hidden shadow-lg">
+        <div class="bg-surface border-b border-neutral-100 px-4 py-2.5"><p class="font-bold text-neutral-800 text-sm flex items-center gap-2"><i class="fas fa-tower-cell text-primary-600"></i>日報</p></div>
         <div id="tpl-preview" class="px-4 py-4 h-[600px] max-h-[60vh] overflow-y-auto"></div>
       </div>
     </div>
@@ -3349,11 +3349,11 @@ function drawTplPreview() {
   const fields = tplFieldsFromRows(TPL_EDIT.rows)
   host.innerHTML = `
     <section class="card p-4 mb-4">
-      <h2 class="font-bold text-gray-800">案件名</h2>
-      <p class="text-xs text-gray-400">${esc(dayjs().format('M/D(dd)'))} 10:00〜19:00 の日報${name ? '｜' + esc(name) : ''}</p>
+      <h2 class="font-bold text-neutral-800">案件名</h2>
+      <p class="text-xs text-neutral-400">${esc(dayjs().format('M/D(dd)'))} 10:00〜19:00 の日報${name ? '｜' + esc(name) : ''}</p>
     </section>
     ${fields.length ? `<form id="tpl-preview-form" class="space-y-4 pb-8" novalidate>${reportFormBodyHtml(fields, k => typed[k], flags)}</form>`
-      : '<p class="text-xs text-gray-400 text-center py-6">項目を追加すると、ここにスタッフの入力欄が出ます</p>'}`
+      : '<p class="text-xs text-neutral-400 text-center py-6">項目を追加すると、ここにスタッフの入力欄が出ます</p>'}`
   const form = document.getElementById('tpl-preview-form')
   if (!form) return
   reportFormBind(form)
@@ -3369,14 +3369,14 @@ function drawTplRows() {
       <input class="inp text-xs font-mono col-span-3" data-tpl-field="key" data-i="${i}" value="${esc(f.key || '')}" maxlength="40" ${lk ? 'readonly title="日報があるテンプレートの既存の項目のキーは変えられません"' : ''}>
       <input class="inp text-xs col-span-4" data-tpl-field="label" data-i="${i}" value="${esc(f.label || '')}" maxlength="40" placeholder="表示名">
       <select class="inp text-xs col-span-3" data-tpl-field="type" data-i="${i}">${types.map(([k, v]) => `<option value="${k}" ${f.type === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
-      <span class="col-span-2 flex items-center gap-0.5 text-[11px] text-gray-500">
+      <span class="col-span-2 flex items-center gap-0.5 text-2xs text-neutral-500">
         <label class="flex items-center gap-0.5" title="必須"><input type="checkbox" data-tpl-field="required" data-i="${i}" ${f.required ? 'checked' : ''}>必須</label>
-        <button type="button" class="px-1 text-gray-500 disabled:opacity-30" data-action="tplMoveRow" data-i="${i}" data-dir="-1" ${i === 0 ? 'disabled' : ''} title="上へ"><i class="fas fa-arrow-up"></i></button>
-        <button type="button" class="px-1 text-gray-500 disabled:opacity-30" data-action="tplMoveRow" data-i="${i}" data-dir="1" ${i === n - 1 ? 'disabled' : ''} title="下へ"><i class="fas fa-arrow-down"></i></button>
-        <button type="button" class="px-1 text-red-500 disabled:opacity-30" data-action="tplRemoveRow" data-i="${i}" title="削除"><i class="fas fa-xmark"></i></button>
+        <button type="button" class="px-1 text-neutral-500 disabled:opacity-30" data-action="tplMoveRow" data-i="${i}" data-dir="-1" ${i === 0 ? 'disabled' : ''} title="上へ"><i class="fas fa-arrow-up"></i></button>
+        <button type="button" class="px-1 text-neutral-500 disabled:opacity-30" data-action="tplMoveRow" data-i="${i}" data-dir="1" ${i === n - 1 ? 'disabled' : ''} title="下へ"><i class="fas fa-arrow-down"></i></button>
+        <button type="button" class="px-1 text-danger-500 disabled:opacity-30" data-action="tplRemoveRow" data-i="${i}" title="削除"><i class="fas fa-xmark"></i></button>
       </span>
     </div>`
-  }).join('') || '<p class="text-xs text-red-600">項目を1つ以上追加してください</p>'
+  }).join('') || '<p class="text-xs text-danger-600">項目を1つ以上追加してください</p>'
   drawTplPreview()
 }
 // 入力のたびに TPL_EDIT に写す（並べ替え・削除で描き直しても入力が消えないように）
@@ -3422,7 +3422,7 @@ delegate('saveAdminTemplate', el => withSubmitLock(el, async () => {
 }))
 
 function projectSkillBadges(v) {
-  return String(v || '').split(/[,、，]/).map(s => s.trim()).filter(Boolean).map(s => `<span class="badge badge-blue">${esc(s)}</span>`).join('') || '<span class="text-sm text-gray-400">-</span>'
+  return String(v || '').split(/[,、，]/).map(s => s.trim()).filter(Boolean).map(s => `<span class="badge badge-blue">${esc(s)}</span>`).join('') || '<span class="text-sm text-neutral-400">-</span>'
 }
 // 案件詳細のスタッフ別実績。成約/日・成約率も出し、並べ方を切り替えられる（#489）
 // 案件詳細のスタッフ別実績の列。並べ替えの基準は成約（テンプレートに無ければ先頭の数値項目）。成約率は成約と商談の両方があるときだけ出す。
@@ -3438,10 +3438,10 @@ function projectPerfColumns(data) {
 }
 function projectPerfMoreHtml(c) {
   if (c.total <= PERF_COL_MAX) return ''
-  if (PROJECT_PERF_ALL) return `<p class="text-[11px] text-gray-500 mt-1">日報の項目をすべて（${c.total}件）出しています。
-    <button type="button" class="text-blue-600 hover:underline" data-action="toggleProjectPerfCols">先頭の${PERF_COL_MAX}件だけにする</button></p>`
-  return `<p class="text-[11px] text-amber-700 bg-amber-50 rounded px-2 py-1 mt-1"><i class="fas fa-eye-slash mr-0.5"></i>表に出していない項目が${c.more}件あります（${esc(c.hidden.map(f => f.label).join('、'))}）。
-    <button type="button" class="text-blue-600 hover:underline font-bold" data-action="toggleProjectPerfCols">すべての項目を表示</button></p>`
+  if (PROJECT_PERF_ALL) return `<p class="text-2xs text-neutral-500 mt-1">日報の項目をすべて（${c.total}件）出しています。
+    <button type="button" class="text-primary-600 hover:underline" data-action="toggleProjectPerfCols">先頭の${PERF_COL_MAX}件だけにする</button></p>`
+  return `<p class="text-2xs text-warning-700 bg-warning-50 rounded px-2 py-1 mt-1"><i class="fas fa-eye-slash mr-0.5"></i>表に出していない項目が${c.more}件あります（${esc(c.hidden.map(f => f.label).join('、'))}）。
+    <button type="button" class="text-primary-600 hover:underline font-bold" data-action="toggleProjectPerfCols">すべての項目を表示</button></p>`
 }
 // 実績分析を、この案件・この月で開く（#9512）
 delegate('openProjectAnalytics', el => {
@@ -3458,14 +3458,14 @@ function drawProjectStaffPerf() {
   host.innerHTML = `<div class="overflow-x-auto"><table class="tbl">
     <thead><tr><th>スタッフ</th><th>日数</th>${cols.map(f => `<th class="whitespace-nowrap">${esc(f.label)}${pastFieldMark(f)}</th>`).join('')}<th class="whitespace-nowrap">${esc(main.label)}/日</th>${hasRate ? '<th>成約率</th>' : ''}</tr></thead>
     <tbody>${rows.map(s => `
-      <tr><td class="whitespace-nowrap"><a href="#staff/${Number(s.staff_id)}" class="text-blue-600 hover:underline">${esc(s.name)}</a>
-        <a href="${esc(reportsLink({ project: data.project.project_id, staff: s.staff_id, ...range }))}" class="text-[11px] text-gray-400 hover:underline ml-1" title="この人の日報を見る"><i class="fas fa-file-lines"></i></a></td>
+      <tr><td class="whitespace-nowrap"><a href="#staff/${Number(s.staff_id)}" class="text-primary-600 hover:underline">${esc(s.name)}</a>
+        <a href="${esc(reportsLink({ project: data.project.project_id, staff: s.staff_id, ...range }))}" class="text-2xs text-neutral-400 hover:underline ml-1" title="この人の日報を見る"><i class="fas fa-file-lines"></i></a></td>
       <td>${s.days}</td>${cols.map(f => `<td class="${f.key === main.key ? 'font-bold' : ''}">${perfValue(s, f.key)}</td>`).join('')}
-      <td>${perDay(s.val, s.days)}</td>${hasRate ? `<td>${ratePct(s.num, s.den)}</td>` : ''}</tr>`).join('') || `<tr><td colspan="${cols.length + 3 + (hasRate ? 1 : 0)}" class="text-center text-gray-400 py-3">データなし</td></tr>`}
+      <td>${perDay(s.val, s.days)}</td>${hasRate ? `<td>${ratePct(s.num, s.den)}</td>` : ''}</tr>`).join('') || `<tr><td colspan="${cols.length + 3 + (hasRate ? 1 : 0)}" class="text-center text-neutral-400 py-3">データなし</td></tr>`}
     </tbody></table></div>
     ${projectPerfMoreHtml(pc)}
-    <p class="text-[11px] text-gray-400 mt-1">日数は日報の数。${hasRate ? '成約率は成約÷商談（商談の入力がない人は -）' : `並べ替えは「${esc(main.label)}」で行います`}。
-      <button type="button" class="text-blue-600 hover:underline" data-action="openProjectAnalytics" data-id="${Number(data.project.project_id)}" data-month="${esc(data.month)}">実績分析で日別・CSV を見る</button></p>`
+    <p class="text-2xs text-neutral-400 mt-1">日数は日報の数。${hasRate ? '成約率は成約÷商談（商談の入力がない人は -）' : `並べ替えは「${esc(main.label)}」で行います`}。
+      <button type="button" class="text-primary-600 hover:underline" data-action="openProjectAnalytics" data-id="${Number(data.project.project_id)}" data-month="${esc(data.month)}">実績分析で日別・CSV を見る</button></p>`
 }
 delegate('rankProject', el => { RANK_STATE.mode = el.dataset.mode; renderProjectDetailRankButtons(); drawProjectStaffPerf() })
 function renderProjectDetailRankButtons() {
@@ -3475,7 +3475,7 @@ delegate('projectDetailMonth', el => { PROJ_LIST.month = el.dataset.month; if (P
 delegate('editProjectSkills', el => {
   modal(`
     <h3 class="font-bold text-lg mb-2">必要スキル</h3>
-    <p class="text-xs text-gray-500 mb-3">カンマ・読点で区切って入力します。空欄にすると消えます。</p>
+    <p class="text-xs text-neutral-500 mb-3">カンマ・読点で区切って入力します。空欄にすると消えます。</p>
     <input id="pj-skills" class="inp" maxlength="500" value="${esc(el.dataset.skills || '')}" placeholder="例: MNP、光回線、クロージング">
     <div class="flex gap-2 mt-4">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="saveProjectSkills" data-id="${Number(el.dataset.id)}">保存する</button></div>`)
 })
@@ -3509,20 +3509,20 @@ const assigneeAccountLabel = a => `${a.name}（${a.user_code}・${ADMIN_ROLE_LAB
 function assigneesViewHtml(list, legacyText) {
   list = list || []
   const one = a => a.active ? esc(assigneeName(a))
-    : `<span class="line-through text-gray-400">${esc(assigneeName(a))}</span> <span class="badge badge-gray" title="アカウントを止めた・消したため、担当から外れています">担当から外れています</span>`
+    : `<span class="line-through text-neutral-400">${esc(assigneeName(a))}</span> <span class="badge badge-gray" title="アカウントを止めた・消したため、担当から外れています">担当から外れています</span>`
   const main = list.filter(a => a.is_primary), subs = list.filter(a => !a.is_primary)
-  return `<span class="block"><span class="text-[11px] text-gray-400 mr-1">主</span>${main.length ? main.map(one).join('') : '<span class="text-gray-400">未設定</span>'}</span>
-    <span class="block"><span class="text-[11px] text-gray-400 mr-1">副</span>${subs.length ? subs.map(one).join('、') : '<span class="text-gray-400">-</span>'}</span>
-    ${legacyText ? `<span class="block text-[11px] text-gray-400">旧: ${esc(legacyText)}</span>` : ''}`
+  return `<span class="block"><span class="text-2xs text-neutral-400 mr-1">主</span>${main.length ? main.map(one).join('') : '<span class="text-neutral-400">未設定</span>'}</span>
+    <span class="block"><span class="text-2xs text-neutral-400 mr-1">副</span>${subs.length ? subs.map(one).join('、') : '<span class="text-neutral-400">-</span>'}</span>
+    ${legacyText ? `<span class="block text-2xs text-neutral-400">旧: ${esc(legacyText)}</span>` : ''}`
 }
 // 一覧の短い表示（主担当の名前と、副担当の人数）
 function assigneeShortHtml(list, legacyText) {
   list = list || []
   const main = list.find(a => a.is_primary), subs = list.filter(a => !a.is_primary && a.active).length
-  if (!list.length) return legacyText ? `<span class="text-gray-400">旧: ${esc(legacyText)}</span>` : '<span class="text-gray-300">未設定</span>'
-  const mainHtml = !main ? '<span class="text-gray-400">主担当なし</span>'
-    : main.active ? esc(assigneeName(main)) : `<span class="line-through text-gray-400">${esc(assigneeName(main))}</span><span class="text-[11px] text-amber-700">（担当から外れています）</span>`
-  return mainHtml + (subs ? `<span class="text-gray-400"> ほか${subs}名</span>` : '')
+  if (!list.length) return legacyText ? `<span class="text-neutral-400">旧: ${esc(legacyText)}</span>` : '<span class="text-neutral-300">未設定</span>'
+  const mainHtml = !main ? '<span class="text-neutral-400">主担当なし</span>'
+    : main.active ? esc(assigneeName(main)) : `<span class="line-through text-neutral-400">${esc(assigneeName(main))}</span><span class="text-2xs text-warning-700">（担当から外れています）</span>`
+  return mainHtml + (subs ? `<span class="text-neutral-400"> ほか${subs}名</span>` : '')
 }
 // 編集欄（prefix で入力欄の id を分ける）。名前・ID で絞り込める
 function assigneesEditorHtml(prefix, list) {
@@ -3534,13 +3534,13 @@ function assigneesEditorHtml(prefix, list) {
   const search = a => escAttr(`${a.name} ${a.user_code}`.toLowerCase())
   return `<div class="space-y-1.5 min-w-0" id="${prefix}-asg">
       <input class="inp text-xs" data-assignee-filter="${prefix}" placeholder="名前・IDで絞り込み" autocomplete="off" aria-label="社内担当者を名前・IDで絞り込み">
-      <div><label for="${prefix}-asg-main" class="text-[11px] text-gray-500 block">主担当（1人）</label>
+      <div><label for="${prefix}-asg-main" class="text-2xs text-neutral-500 block">主担当（1人）</label>
         <select id="${prefix}-asg-main" class="inp text-xs"><option value="">（未設定）</option>${opts.map(a => `<option value="${Number(a.user_id)}" data-search="${search(a)}" ${main && main.user_id === a.user_id ? 'selected' : ''}>${esc(assigneeAccountLabel(a))}</option>`).join('')}</select></div>
-      <div><p class="text-[11px] text-gray-500">副担当（何人でも）</p>
-        <div class="max-h-36 overflow-y-auto border border-gray-200 rounded-lg p-1.5 space-y-0.5" id="${prefix}-asg-subs">
-          ${opts.map(a => `<label class="flex items-center gap-1.5 text-xs" data-search="${search(a)}"><input type="checkbox" value="${Number(a.user_id)}" ${subIds.has(a.user_id) ? 'checked' : ''}>${esc(assigneeAccountLabel(a))}</label>`).join('') || '<p class="text-xs text-gray-400">選べるアカウントがありません</p>'}
+      <div><p class="text-2xs text-neutral-500">副担当（何人でも）</p>
+        <div class="max-h-36 overflow-y-auto border border-neutral-200 rounded-lg p-1.5 space-y-0.5" id="${prefix}-asg-subs">
+          ${opts.map(a => `<label class="flex items-center gap-1.5 text-xs" data-search="${search(a)}"><input type="checkbox" value="${Number(a.user_id)}" ${subIds.has(a.user_id) ? 'checked' : ''}>${esc(assigneeAccountLabel(a))}</label>`).join('') || '<p class="text-xs text-neutral-400">選べるアカウントがありません</p>'}
         </div></div>
-      ${gone.length ? `<p class="text-[11px] text-amber-700">止めた・消したアカウント（${gone.map(a => esc(assigneeName(a))).join('、')}）は担当から外れています。保存すると担当の一覧からも消えます</p>` : ''}
+      ${gone.length ? `<p class="text-2xs text-warning-700">止めた・消したアカウント（${gone.map(a => esc(assigneeName(a))).join('、')}）は担当から外れています。保存すると担当の一覧からも消えます</p>` : ''}
     </div>`
 }
 // 編集欄の値（欄がなければ undefined で、送らない＝今の担当のまま）
@@ -3581,18 +3581,18 @@ function matchesAssigneeFilter(list, f) {
 const CLIENT_LIST = { q: '', sort: 'client_id', docexp: false, assignee: '', data: null }
 async function renderClients() {
   loading()
-  try { [CLIENT_LIST.data] = await Promise.all([axios.get('/api/admin/clients').then(r => r.data), loadAssigneeOptions(true)]) } catch (e) { $app.innerHTML = `<p class="text-red-600">${esc(showApiError(e, 'クライアントを読み込めませんでした'))}</p>`; return }
+  try { [CLIENT_LIST.data] = await Promise.all([axios.get('/api/admin/clients').then(r => r.data), loadAssigneeOptions(true)]) } catch (e) { $app.innerHTML = `<p class="text-danger-600">${esc(showApiError(e, 'クライアントを読み込めませんでした'))}</p>`; return }
   const L = CLIENT_LIST
   $app.innerHTML = `
     <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
-      <h2 class="text-xl font-bold text-gray-900">クライアント管理 <span class="text-sm font-normal text-gray-400" id="client-count"></span></h2>
+      <h2 class="text-xl font-bold text-neutral-900">クライアント管理 <span class="text-sm font-normal text-neutral-400" id="client-count"></span></h2>
       <button class="btn btn-primary" onclick="showAddClient()"><i class="fas fa-plus"></i>クライアント登録</button>
     </div>
     <div class="card p-3 mb-4 flex gap-2 flex-wrap items-center">
       <input id="client-q" class="inp text-sm flex-1 min-w-[200px]" placeholder="クライアント名・フリガナ・代表者・担当者・社内担当者・住所・稼働案件で検索" value="${esc(L.q)}">
       <select id="client-assignee" class="inp text-sm w-auto" aria-label="社内担当者で絞り込み">${assigneeFilterOptions(L.data.clients, L.assignee)}</select>
       <select id="client-sort" class="inp text-sm w-auto">${[['client_id', '登録順'], ['name', '名前順'], ['active', '稼働案件の多い順'], ['rating', '評価の高い順']].map(([k, v]) => `<option value="${k}" ${L.sort === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
-      <label class="text-xs text-gray-600 flex items-center gap-1" title="契約書の契約終了日が30日以内・過ぎたクライアントだけを表示します"><input type="checkbox" id="client-docexp" ${L.docexp ? 'checked' : ''}>契約書の期限が近い・切れた</label>
+      <label class="text-xs text-neutral-600 flex items-center gap-1" title="契約書の契約終了日が30日以内・過ぎたクライアントだけを表示します"><input type="checkbox" id="client-docexp" ${L.docexp ? 'checked' : ''}>契約書の期限が近い・切れた</label>
     </div>
     <div class="grid md:grid-cols-2 xl:grid-cols-3 min-[1800px]:grid-cols-4 gap-4" id="client-cards"></div>`
   let timer = null
@@ -3618,22 +3618,22 @@ function drawClientCards() {
   document.getElementById('client-cards').innerHTML = list.map(c => `
         <section class="card p-4">
           <div class="flex items-start justify-between mb-2">
-            <h3 class="font-bold text-gray-800">${c.client_name_kana ? `<span class="block text-[11px] font-normal text-gray-400">${esc(c.client_name_kana)}</span>` : ''}<a href="#clients/${Number(c.client_id)}" class="hover:underline">${esc(c.client_name)}</a></h3>
+            <h3 class="font-bold text-neutral-800">${c.client_name_kana ? `<span class="block text-2xs font-normal text-neutral-400">${esc(c.client_name_kana)}</span>` : ''}<a href="#clients/${Number(c.client_id)}" class="hover:underline">${esc(c.client_name)}</a></h3>
           </div>
-          <dl class="text-xs text-gray-600 space-y-1.5">
-            <div class="flex"><dt class="w-20 text-gray-400">代表者氏名</dt><dd>${esc(c.representative_name || '-')}</dd></div>
-            <div class="flex"><dt class="w-20 text-gray-400">種別</dt><dd>${esc(clientKindLabel(c.client_kind))}</dd></div>
-            ${c.address || c.postal_code || c.website_url ? `<div class="flex"><dt class="w-20 text-gray-400 shrink-0">住所</dt><dd class="min-w-0"><span class="block truncate max-w-[220px]" title="${esc(postalAddress(c.postal_code, c.address))}">${esc(postalAddress(c.postal_code, c.address) || '-')}</span>${c.website_url ? `<span class="block text-gray-400 truncate max-w-[220px]">${esc(urlHost(c.website_url))}</span>` : ''}</dd></div>` : ''}
-            <div class="flex"><dt class="w-20 text-gray-400">請求条件</dt><dd>${esc(c.billing_rule || '-')}</dd></div>
-            <div class="flex"><dt class="w-20 text-gray-400">評価</dt><dd>${ratingStars(c.client_rating)}</dd></div>
-            <div class="flex"><dt class="w-20 text-gray-400 shrink-0">社内担当者</dt><dd class="min-w-0">${assigneeShortHtml(c.assignees)}</dd></div>
-            <div class="flex"><dt class="w-20 text-gray-400 shrink-0">稼働案件</dt><dd>${Number(c.active_project_count || 0)}件${c.project_count > c.active_project_count ? `<span class="text-gray-400">（終了 ${Number(c.project_count) - Number(c.active_project_count || 0)}件）</span>` : ''}
-              ${c.active_projects ? `<span class="block text-gray-500 truncate max-w-[220px]">${esc(c.active_projects)}</span>` : ''}</dd></div>
+          <dl class="text-xs text-neutral-600 space-y-1.5">
+            <div class="flex"><dt class="w-20 text-neutral-400">代表者氏名</dt><dd>${esc(c.representative_name || '-')}</dd></div>
+            <div class="flex"><dt class="w-20 text-neutral-400">種別</dt><dd>${esc(clientKindLabel(c.client_kind))}</dd></div>
+            ${c.address || c.postal_code || c.website_url ? `<div class="flex"><dt class="w-20 text-neutral-400 shrink-0">住所</dt><dd class="min-w-0"><span class="block truncate max-w-[220px]" title="${esc(postalAddress(c.postal_code, c.address))}">${esc(postalAddress(c.postal_code, c.address) || '-')}</span>${c.website_url ? `<span class="block text-neutral-400 truncate max-w-[220px]">${esc(urlHost(c.website_url))}</span>` : ''}</dd></div>` : ''}
+            <div class="flex"><dt class="w-20 text-neutral-400">請求条件</dt><dd>${esc(c.billing_rule || '-')}</dd></div>
+            <div class="flex"><dt class="w-20 text-neutral-400">評価</dt><dd>${ratingStars(c.client_rating)}</dd></div>
+            <div class="flex"><dt class="w-20 text-neutral-400 shrink-0">社内担当者</dt><dd class="min-w-0">${assigneeShortHtml(c.assignees)}</dd></div>
+            <div class="flex"><dt class="w-20 text-neutral-400 shrink-0">稼働案件</dt><dd>${Number(c.active_project_count || 0)}件${c.project_count > c.active_project_count ? `<span class="text-neutral-400">（終了 ${Number(c.project_count) - Number(c.active_project_count || 0)}件）</span>` : ''}
+              ${c.active_projects ? `<span class="block text-neutral-500 truncate max-w-[220px]">${esc(c.active_projects)}</span>` : ''}</dd></div>
           </dl>
-          ${Number(c.doc_expiring) > 0 ? `<p class="text-xs text-amber-700 mt-2 client-docexp"><i class="fas fa-file-circle-exclamation mr-1"></i>契約書の期限が近い・切れたものが${Number(c.doc_expiring)}件あります（詳細の「契約書」で確かめてください）</p>` : ''}
-          ${c.ng_staff_ids ? '<p class="text-xs text-red-600 mt-2"><i class="fas fa-ban mr-1"></i>NGスタッフ登録あり</p>' : ''}
-          ${c.memo ? `<p class="text-xs bg-gray-50 rounded-lg px-2.5 py-1.5 mt-2 text-gray-500 whitespace-pre-wrap">${esc(c.memo)}</p>` : ''}
-        </section>`).join('') || '<p class="text-sm text-gray-400">条件に合うクライアントはありません</p>'
+          ${Number(c.doc_expiring) > 0 ? `<p class="text-xs text-warning-700 mt-2 client-docexp"><i class="fas fa-file-circle-exclamation mr-1"></i>契約書の期限が近い・切れたものが${Number(c.doc_expiring)}件あります（詳細の「契約書」で確かめてください）</p>` : ''}
+          ${c.ng_staff_ids ? '<p class="text-xs text-danger-600 mt-2"><i class="fas fa-ban mr-1"></i>NGスタッフ登録あり</p>' : ''}
+          ${c.memo ? `<p class="text-xs bg-neutral-50 rounded-lg px-2.5 py-1.5 mt-2 text-neutral-500 whitespace-pre-wrap">${esc(c.memo)}</p>` : ''}
+        </section>`).join('') || '<p class="text-sm text-neutral-400">条件に合うクライアントはありません</p>'
 }
 
 // クライアント（発注元企業）詳細画面。会社情報 + 取引の実績 + 契約書ファイル管理を表示する
@@ -3648,35 +3648,35 @@ function urlHost(u) { try { return new URL(u).host } catch { return String(u || 
 function websiteLinkHtml(u) {
   if (!u) return '-'
   if (!/^https?:\/\//i.test(String(u))) return esc(u)
-  return `<a href="${esc(u)}" target="_blank" rel="noopener noreferrer" class="text-blue-600 hover:underline break-all"><i class="fas fa-arrow-up-right-from-square text-[10px] mr-1"></i>${esc(u)}</a>`
+  return `<a href="${esc(u)}" target="_blank" rel="noopener noreferrer" class="text-primary-600 hover:underline break-all"><i class="fas fa-arrow-up-right-from-square text-3xs mr-1"></i>${esc(u)}</a>`
 }
 const clientKindOptions = cur => `<option value="">（未設定）</option>${Object.entries(CLIENT_KIND_LABEL).map(([k, l]) => `<option value="${k}" ${cur === k ? 'selected' : ''}>${l}</option>`).join('')}`
 function clientBasicHtml(c, editing) {
   const cid = Number(c.client_id)
   if (!editing) return `
-        <h3 class="text-sm font-bold text-gray-700 mb-3 flex items-center">会社基本情報
+        <h3 class="text-sm font-bold text-neutral-700 mb-3 flex items-center">会社基本情報
           <button type="button" class="ml-auto btn btn-outline text-xs" data-action="editClientBasic"><i class="fas fa-pen"></i>編集</button></h3>
         <dl class="text-sm space-y-2">
-          <div class="flex"><dt class="w-24 text-gray-400 shrink-0">代表者氏名</dt><dd>${esc(c.representative_name || '-')}</dd></div>
+          <div class="flex"><dt class="w-24 text-neutral-400 shrink-0">代表者氏名</dt><dd>${esc(c.representative_name || '-')}</dd></div>
           ${clientOrgHtml(c, false)}
-          <div class="flex"><dt class="w-24 text-gray-400 shrink-0">連絡先</dt><dd class="text-xs">${esc(c.phone || '-')}<br>${esc(c.email || '')}</dd></div>
-          <div class="flex"><dt class="w-24 text-gray-400 shrink-0">住所</dt><dd class="whitespace-pre-wrap">${esc(postalAddress(c.postal_code, c.address) || '-')}</dd></div>
-          <div class="flex"><dt class="w-24 text-gray-400 shrink-0">ホームページ</dt><dd class="min-w-0">${websiteLinkHtml(c.website_url)}</dd></div>
-          <div class="flex"><dt class="w-24 text-gray-400 shrink-0">種別</dt><dd>${esc(clientKindLabel(c.client_kind))}</dd></div>
-          <div class="flex"><dt class="w-24 text-gray-400 shrink-0">請求条件</dt><dd class="whitespace-pre-wrap">${esc(c.billing_rule || '-')}</dd></div>
-          <div class="flex"><dt class="w-24 text-gray-400 shrink-0">評価</dt><dd>${ratingStars(c.client_rating)}</dd></div>
-          <div class="flex"><dt class="w-24 text-gray-400 shrink-0">社内担当者</dt><dd class="min-w-0">${assigneesViewHtml(c.assignees)}</dd></div>
-          <div><dt class="text-gray-400 mb-1">備考</dt><dd class="text-xs text-gray-600 whitespace-pre-wrap">${esc(c.memo || '-')}</dd></div>
+          <div class="flex"><dt class="w-24 text-neutral-400 shrink-0">連絡先</dt><dd class="text-xs">${esc(c.phone || '-')}<br>${esc(c.email || '')}</dd></div>
+          <div class="flex"><dt class="w-24 text-neutral-400 shrink-0">住所</dt><dd class="whitespace-pre-wrap">${esc(postalAddress(c.postal_code, c.address) || '-')}</dd></div>
+          <div class="flex"><dt class="w-24 text-neutral-400 shrink-0">ホームページ</dt><dd class="min-w-0">${websiteLinkHtml(c.website_url)}</dd></div>
+          <div class="flex"><dt class="w-24 text-neutral-400 shrink-0">種別</dt><dd>${esc(clientKindLabel(c.client_kind))}</dd></div>
+          <div class="flex"><dt class="w-24 text-neutral-400 shrink-0">請求条件</dt><dd class="whitespace-pre-wrap">${esc(c.billing_rule || '-')}</dd></div>
+          <div class="flex"><dt class="w-24 text-neutral-400 shrink-0">評価</dt><dd>${ratingStars(c.client_rating)}</dd></div>
+          <div class="flex"><dt class="w-24 text-neutral-400 shrink-0">社内担当者</dt><dd class="min-w-0">${assigneesViewHtml(c.assignees)}</dd></div>
+          <div><dt class="text-neutral-400 mb-1">備考</dt><dd class="text-xs text-neutral-600 whitespace-pre-wrap">${esc(c.memo || '-')}</dd></div>
         </dl>
-        <div class="mt-3 pt-3 border-t border-gray-100">
-          <p class="text-xs text-gray-500 mb-1"><i class="fas fa-receipt text-gray-400 mr-1"></i>インボイス情報</p>
+        <div class="mt-3 pt-3 border-t border-neutral-100">
+          <p class="text-xs text-neutral-500 mb-1"><i class="fas fa-receipt text-neutral-400 mr-1"></i>インボイス情報</p>
           <dl class="text-xs space-y-1.5">
-            <div class="flex"><dt class="w-28 text-gray-400 shrink-0">インボイス番号</dt><dd>${esc(c.invoice_number || '-')}</dd></div>
+            <div class="flex"><dt class="w-28 text-neutral-400 shrink-0">インボイス番号</dt><dd>${esc(c.invoice_number || '-')}</dd></div>
           </dl>
         </div>`
-  const inp = (id, label, v, extra = '') => `<div class="flex items-center gap-2"><label for="${id}" class="w-28 text-xs text-gray-400 shrink-0">${label}</label><input id="${id}" class="inp text-xs flex-1" value="${esc(v || '')}" ${extra}></div>`
+  const inp = (id, label, v, extra = '') => `<div class="flex items-center gap-2"><label for="${id}" class="w-28 text-xs text-neutral-400 shrink-0">${label}</label><input id="${id}" class="inp text-xs flex-1" value="${esc(v || '')}" ${extra}></div>`
   return `
-        <h3 class="text-sm font-bold text-gray-700 mb-3">会社基本情報の編集</h3>
+        <h3 class="text-sm font-bold text-neutral-700 mb-3">会社基本情報の編集</h3>
         <div class="space-y-2">
           ${inp('cl-name', 'クライアント名 *', c.client_name, 'maxlength="200"')}
           ${inp('cl-name-kana', 'フリガナ', c.client_name_kana, 'maxlength="100" placeholder="カブシキガイシャ…（ひらがなでも可）"')}
@@ -3687,29 +3687,29 @@ function clientBasicHtml(c, editing) {
           ${inp('cl-postal', '郵便番号', c.postal_code, 'inputmode="numeric" maxlength="10" placeholder="123-4567" data-halfwidth="1"')}
           ${inp('cl-address', '住所', c.address)}
           ${inp('cl-url', 'ホームページ', c.website_url, 'type="url" maxlength="500" placeholder="https://example.co.jp"')}
-          <div class="flex items-center gap-2"><label for="cl-kind" class="w-28 text-xs text-gray-400 shrink-0">種別</label>
+          <div class="flex items-center gap-2"><label for="cl-kind" class="w-28 text-xs text-neutral-400 shrink-0">種別</label>
             <select id="cl-kind" class="inp text-xs flex-1">${clientKindOptions(c.client_kind)}</select></div>
           ${inp('cl-billing', '請求条件', c.billing_rule, 'placeholder="月末締め・翌月末払い"')}
-          <div class="flex items-center gap-2"><label for="cl-rating" class="w-28 text-xs text-gray-400 shrink-0">評価</label>
+          <div class="flex items-center gap-2"><label for="cl-rating" class="w-28 text-xs text-neutral-400 shrink-0">評価</label>
             <select id="cl-rating" class="inp text-xs flex-1">${[5, 4, 3, 2, 1].map(n => `<option value="${n}" ${Math.round(Number(c.client_rating) || 3) === n ? 'selected' : ''}>${ratingStars(n)}</option>`).join('')}</select></div>
-          <div class="flex items-start gap-2"><span class="w-28 text-xs text-gray-400 shrink-0 pt-1">社内担当者</span><div class="flex-1 min-w-0">${assigneesEditorHtml('cl', c.assignees)}</div></div>
-          <div><label for="cl-memo" class="text-xs text-gray-400 block mb-1">備考</label><textarea id="cl-memo" rows="3" class="inp text-xs">${esc(c.memo || '')}</textarea></div>
-          <p class="text-xs text-gray-500 pt-2 border-t border-gray-100"><i class="fas fa-receipt text-gray-400 mr-1"></i>インボイス情報</p>
+          <div class="flex items-start gap-2"><span class="w-28 text-xs text-neutral-400 shrink-0 pt-1">社内担当者</span><div class="flex-1 min-w-0">${assigneesEditorHtml('cl', c.assignees)}</div></div>
+          <div><label for="cl-memo" class="text-xs text-neutral-400 block mb-1">備考</label><textarea id="cl-memo" rows="3" class="inp text-xs">${esc(c.memo || '')}</textarea></div>
+          <p class="text-xs text-neutral-500 pt-2 border-t border-neutral-100"><i class="fas fa-receipt text-neutral-400 mr-1"></i>インボイス情報</p>
           ${inp('cl-invoice', 'インボイス番号', c.invoice_number, 'placeholder="T1234567890123"')}
-          <p id="cl-basic-error" class="hidden text-xs text-red-600"></p>
+          <p id="cl-basic-error" class="hidden text-xs text-danger-600"></p>
           <div class="flex gap-2">
             <button type="button" class="btn btn-outline text-xs flex-1" data-action="cancelClientBasic">取り消す</button>
             <button type="button" class="btn btn-primary text-xs flex-1" data-action="saveClientBasic" data-id="${cid}">保存</button>
           </div>
-          <p class="text-right pt-2 border-t border-gray-100"><button type="button" class="text-xs text-red-600 hover:underline" data-action="deleteClient" data-id="${cid}" data-name="${esc(c.client_name)}"><i class="fas fa-trash mr-0.5"></i>このクライアントを削除する</button></p>
-          <p class="text-[11px] text-gray-400 text-right">二重登録などで作った、案件が1件もないクライアントだけ削除できます</p>
+          <p class="text-right pt-2 border-t border-neutral-100"><button type="button" class="text-xs text-danger-600 hover:underline" data-action="deleteClient" data-id="${cid}" data-name="${esc(c.client_name)}"><i class="fas fa-trash mr-0.5"></i>このクライアントを削除する</button></p>
+          <p class="text-2xs text-neutral-400 text-right">二重登録などで作った、案件が1件もないクライアントだけ削除できます</p>
         </div>`
 }
 // 支店・部門（#9103 #9303）。独立したカードにせず、会社基本情報の中の項目として表示・編集する（保存も会社基本情報と一緒）
 function clientOrgHtml(c, editing) {
-  if (!editing) return `<div class="flex"><dt class="w-24 text-gray-400 shrink-0">支店</dt><dd class="break-all">${esc(c.branch_name || '-')}</dd></div>
-          <div class="flex"><dt class="w-24 text-gray-400 shrink-0">部門</dt><dd class="break-all">${esc(c.department_name || '-')}</dd></div>`
-  const inp = (id, label, v) => `<div class="flex items-center gap-2"><label for="${id}" class="w-28 text-xs text-gray-400 shrink-0">${label}</label><input id="${id}" class="inp text-xs flex-1" maxlength="100" value="${esc(v || '')}"></div>`
+  if (!editing) return `<div class="flex"><dt class="w-24 text-neutral-400 shrink-0">支店</dt><dd class="break-all">${esc(c.branch_name || '-')}</dd></div>
+          <div class="flex"><dt class="w-24 text-neutral-400 shrink-0">部門</dt><dd class="break-all">${esc(c.department_name || '-')}</dd></div>`
+  const inp = (id, label, v) => `<div class="flex items-center gap-2"><label for="${id}" class="w-28 text-xs text-neutral-400 shrink-0">${label}</label><input id="${id}" class="inp text-xs flex-1" maxlength="100" value="${esc(v || '')}"></div>`
   return `${inp('cl-branch', '支店', c.branch_name)}
           ${inp('cl-department', '部門', c.department_name)}`
 }
@@ -3719,37 +3719,37 @@ function clientDealsHtml(data) {
   const projects = data.projects || []
   const active = projects.filter(p => p.status === 'active'), ended = projects.filter(p => p.status !== 'active')
   const row = p => `<tr>
-      <td><a href="#projects/${Number(p.project_id)}" class="text-blue-600 hover:underline">${esc(p.project_name)}</a>${p.location ? `<span class="block text-[11px] text-gray-400">${esc(p.location)}</span>` : ''}</td>
+      <td><a href="#projects/${Number(p.project_id)}" class="text-primary-600 hover:underline">${esc(p.project_name)}</a>${p.location ? `<span class="block text-2xs text-neutral-400">${esc(p.location)}</span>` : ''}</td>
       <td>${p.status === 'active' ? '<span class="badge badge-green">稼働中</span>' : '<span class="badge badge-gray">終了</span>'}</td>
       <td class="whitespace-nowrap">${Number(p.shifts)}件（${Number(p.staff_count)}名）</td>
       <td class="whitespace-nowrap">${yen(p.bill_total)}</td>
-      <td>${p.reports ? `<a href="${esc(reportsLink({ project: p.project_id, ...range }))}" class="text-blue-600 hover:underline">${Number(p.reports)}</a>` : '0'}</td>
-      <td>${p.incidents ? `<a href="${esc(reportsLink({ project: p.project_id, ...range, flagged: 1 }))}" class="badge badge-red">${Number(p.incidents)}件</a>` : '<span class="text-gray-300">0</span>'}</td></tr>`
+      <td>${p.reports ? `<a href="${esc(reportsLink({ project: p.project_id, ...range }))}" class="text-primary-600 hover:underline">${Number(p.reports)}</a>` : '0'}</td>
+      <td>${p.incidents ? `<a href="${esc(reportsLink({ project: p.project_id, ...range, flagged: 1 }))}" class="badge badge-red">${Number(p.incidents)}件</a>` : '<span class="text-neutral-300">0</span>'}</td></tr>`
   const head = '<thead><tr><th>案件</th><th>状態</th><th>稼働</th><th>売上（概算）</th><th>日報</th><th>インシデント</th></tr></thead>'
   const sum = projects.reduce((a, p) => ({ shifts: a.shifts + Number(p.shifts), bill: a.bill + Number(p.bill_total), incidents: a.incidents + Number(p.incidents) }), { shifts: 0, bill: 0, incidents: 0 })
   const maxBill = Math.max(1, ...(data.trend || []).map(t => Number(t.bill_total)))
   return `
       <div class="flex items-center gap-2 mb-3 flex-wrap">
-        <h3 class="text-sm font-bold text-gray-700"><i class="fas fa-chart-column text-blue-500 mr-1"></i>取引の実績</h3>
+        <h3 class="text-sm font-bold text-neutral-700"><i class="fas fa-chart-column text-primary-500 mr-1"></i>取引の実績</h3>
         <span class="ml-auto">${monthNavHtml('clientDetailMonth', data.month)}</span>
       </div>
       <div class="grid grid-cols-3 gap-3 mb-3 text-center">
-        <div class="bg-gray-50 rounded-lg py-2"><p class="font-bold text-blue-600">${sum.shifts}件</p><p class="text-xs text-gray-500">${esc(ml)}の稼働</p></div>
-        <div class="bg-gray-50 rounded-lg py-2"><p class="font-bold text-blue-600">${yen(sum.bill)}</p><p class="text-xs text-gray-500">${esc(ml)}の売上（概算）</p></div>
-        <div class="bg-gray-50 rounded-lg py-2"><p class="font-bold ${sum.incidents ? 'text-red-600' : 'text-blue-600'}">${sum.incidents}件</p><p class="text-xs text-gray-500">インシデント</p></div>
+        <div class="bg-neutral-50 rounded-lg py-2"><p class="font-bold text-primary-600">${sum.shifts}件</p><p class="text-xs text-neutral-500">${esc(ml)}の稼働</p></div>
+        <div class="bg-neutral-50 rounded-lg py-2"><p class="font-bold text-primary-600">${yen(sum.bill)}</p><p class="text-xs text-neutral-500">${esc(ml)}の売上（概算）</p></div>
+        <div class="bg-neutral-50 rounded-lg py-2"><p class="font-bold ${sum.incidents ? 'text-danger-600' : 'text-primary-600'}">${sum.incidents}件</p><p class="text-xs text-neutral-500">インシデント</p></div>
       </div>
-      <div class="overflow-x-auto"><table class="tbl">${head}<tbody>${active.map(row).join('') || '<tr><td colspan="6" class="text-center text-gray-400 py-3">稼働中の案件はありません</td></tr>'}</tbody></table></div>
-      ${ended.length ? `<details class="mt-2"><summary class="text-xs text-gray-500 cursor-pointer">終了した案件（${ended.length}件）</summary>
+      <div class="overflow-x-auto"><table class="tbl">${head}<tbody>${active.map(row).join('') || '<tr><td colspan="6" class="text-center text-neutral-400 py-3">稼働中の案件はありません</td></tr>'}</tbody></table></div>
+      ${ended.length ? `<details class="mt-2"><summary class="text-xs text-neutral-500 cursor-pointer">終了した案件（${ended.length}件）</summary>
         <div class="overflow-x-auto mt-1"><table class="tbl">${head}<tbody>${ended.map(row).join('')}</tbody></table></div></details>` : ''}
-      <p class="text-xs font-bold text-gray-500 mt-4 mb-1">月別の推移（${esc(monthLabel((data.trend || [])[0] ? data.trend[0].ym : data.month))}〜${esc(ml)}）</p>
+      <p class="text-xs font-bold text-neutral-500 mt-4 mb-1">月別の推移（${esc(monthLabel((data.trend || [])[0] ? data.trend[0].ym : data.month))}〜${esc(ml)}）</p>
       <div class="space-y-1">${(data.trend || []).map(t => `
         <div class="flex items-center gap-2 text-xs">
-          <span class="w-16 text-gray-500 shrink-0">${esc(dayjs(t.ym + '-01').format('YY年M月'))}</span>
-          <span class="flex-1 bg-gray-100 rounded h-3 overflow-hidden"><span class="block h-3 bg-blue-500" style="width:${Math.round((Number(t.bill_total) / maxBill) * 100)}%"></span></span>
+          <span class="w-16 text-neutral-500 shrink-0">${esc(dayjs(t.ym + '-01').format('YY年M月'))}</span>
+          <span class="flex-1 bg-neutral-100 rounded h-3 overflow-hidden"><span class="block h-3 bg-primary-500" style="width:${Math.round((Number(t.bill_total) / maxBill) * 100)}%"></span></span>
           <span class="w-28 text-right whitespace-nowrap">${yen(t.bill_total)}</span>
-          <span class="w-14 text-right text-gray-500">${Number(t.shifts)}件</span>
+          <span class="w-14 text-right text-neutral-500">${Number(t.shifts)}件</span>
         </div>`).join('')}</div>
-      <p class="text-[11px] text-gray-400 mt-2">売上は、今日までの確定・代打のシフトの請求額（単価・交通費・調整）の合計です。精算の確定前の概算を含みます</p>`
+      <p class="text-2xs text-neutral-400 mt-2">売上は、今日までの確定・代打のシフトの請求額（単価・交通費・調整）の合計です。精算の確定前の概算を含みます</p>`
 }
 async function renderClientDetail(cid) {
   loading()
@@ -3765,8 +3765,8 @@ async function renderClientDetail(cid) {
     <div class="flex items-center gap-3 mb-5 flex-wrap">
       <a href="#clients" class="btn btn-outline"><i class="fas fa-arrow-left"></i></a>
       <div class="flex-1">
-        ${c.client_name_kana ? `<p class="text-xs text-gray-400">${esc(c.client_name_kana)}</p>` : ''}
-        <h2 class="text-xl font-bold text-gray-900">${esc(c.client_name)}</h2>
+        ${c.client_name_kana ? `<p class="text-xs text-neutral-400">${esc(c.client_name_kana)}</p>` : ''}
+        <h2 class="text-xl font-bold text-neutral-900">${esc(c.client_name)}</h2>
         <div class="flex gap-2 mt-1">
           ${c.ng_staff_ids ? '<span class="badge badge-red"><i class="fas fa-ban mr-1"></i>NGスタッフ登録あり</span>' : ''}
         </div>
@@ -3780,7 +3780,7 @@ async function renderClientDetail(cid) {
 
       <section class="card p-4">
         <div class="flex items-center justify-between mb-3">
-          <h3 class="text-sm font-bold text-gray-700"><i class="fas fa-address-book text-blue-500 mr-1"></i>顧客担当者</h3>
+          <h3 class="text-sm font-bold text-neutral-700"><i class="fas fa-address-book text-primary-500 mr-1"></i>顧客担当者</h3>
           <button class="btn btn-outline text-xs" onclick="showClientContactForm(${Number(cid)})"><i class="fas fa-plus"></i>担当者を追加</button>
         </div>
         <div id="client-contacts-list">${clientContactsHtml(contacts, cid)}</div>
@@ -3790,7 +3790,7 @@ async function renderClientDetail(cid) {
 
       <section class="card p-4 lg:col-span-2">
         <div class="flex items-center justify-between mb-3">
-          <h3 class="text-sm font-bold text-gray-700"><i class="fas fa-file-signature text-blue-500 mr-1"></i>契約書</h3>
+          <h3 class="text-sm font-bold text-neutral-700"><i class="fas fa-file-signature text-primary-500 mr-1"></i>契約書</h3>
           <button class="btn btn-outline text-xs" onclick="openDocumentUpload('client', ${Number(cid)})"><i class="fas fa-upload"></i>契約書をアップロード</button>
         </div>
         <div id="client-documents-list">${documentListHtml(docData.documents, 'client', cid)}</div>
@@ -3827,17 +3827,17 @@ async function renderClientNgPanel(cid) {
   try {
     const [{ data: ng }, { data: st }] = await Promise.all([axios.get(`/api/admin/clients/${Number(cid)}/ng-staff`), axios.get('/api/admin/staff/options', { params: { include: 'all' } })])
     list = ng.staff; staff = st.staff
-  } catch (e) { host.innerHTML = '<section class="card p-4 text-sm text-red-600">NGスタッフを読み込めませんでした</section>'; return }
+  } catch (e) { host.innerHTML = '<section class="card p-4 text-sm text-danger-600">NGスタッフを読み込めませんでした</section>'; return }
   CLIENT_NG = { cid: Number(cid), list }
   const ngIds = new Set(list.map(s => s.staff_id))
   const EMP = { leave: '休職中', retired: '退職', preboarding: '入社予定' }
   host.innerHTML = `<section class="card p-4" id="client-ng-staff">
-    <h3 class="text-sm font-bold text-gray-700 mb-1"><i class="fas fa-ban text-red-500 mr-1"></i>NGスタッフ<span class="text-[11px] font-normal text-gray-400 ml-1">（シフトの候補・割り当て・応募の承認で警告します）</span></h3>
+    <h3 class="text-sm font-bold text-neutral-700 mb-1"><i class="fas fa-ban text-danger-500 mr-1"></i>NGスタッフ<span class="text-2xs font-normal text-neutral-400 ml-1">（シフトの候補・割り当て・応募の承認で警告します）</span></h3>
     <div class="overflow-x-auto mb-3"><table class="tbl"><thead><tr><th>スタッフ</th><th>理由</th><th>登録</th><th></th></tr></thead><tbody>
-      ${list.map(s => `<tr><td class="whitespace-nowrap"><a href="#staff/${Number(s.staff_id)}" class="font-bold text-blue-700 hover:underline">${esc(s.name)}</a>${EMP[s.employment_status] ? `<span class="badge badge-gray ml-1">${EMP[s.employment_status]}</span>` : ''}</td>
-        <td class="text-xs text-gray-600 whitespace-pre-wrap">${esc(s.reason || '-')}</td>
-        <td class="text-xs text-gray-400 whitespace-nowrap">${s.created_at ? esc(dayjs(s.created_at).format('YYYY/M/D')) : '-'}${s.created_by_name ? `<span class="block">${esc(s.created_by_name)}</span>` : ''}</td>
-        <td class="text-right"><button class="text-xs text-red-600 hover:underline" data-action="removeClientNg" data-id="${Number(s.staff_id)}" data-name="${esc(s.name)}">解除</button></td></tr>`).join('') || '<tr><td colspan="4" class="text-center text-gray-400">NGスタッフは登録されていません</td></tr>'}
+      ${list.map(s => `<tr><td class="whitespace-nowrap"><a href="#staff/${Number(s.staff_id)}" class="font-bold text-primary-700 hover:underline">${esc(s.name)}</a>${EMP[s.employment_status] ? `<span class="badge badge-gray ml-1">${EMP[s.employment_status]}</span>` : ''}</td>
+        <td class="text-xs text-neutral-600 whitespace-pre-wrap">${esc(s.reason || '-')}</td>
+        <td class="text-xs text-neutral-400 whitespace-nowrap">${s.created_at ? esc(dayjs(s.created_at).format('YYYY/M/D')) : '-'}${s.created_by_name ? `<span class="block">${esc(s.created_by_name)}</span>` : ''}</td>
+        <td class="text-right"><button class="text-xs text-danger-600 hover:underline" data-action="removeClientNg" data-id="${Number(s.staff_id)}" data-name="${esc(s.name)}">解除</button></td></tr>`).join('') || '<tr><td colspan="4" class="text-center text-neutral-400">NGスタッフは登録されていません</td></tr>'}
     </tbody></table></div>
     <div class="grid sm:grid-cols-12 gap-2 items-center">
       <input id="ng-filter" class="inp text-sm sm:col-span-3" placeholder="名前で絞り込み">
@@ -3875,15 +3875,15 @@ const CLIENT_CONTACTS = new Map()
 function clientContactsHtml(contacts, cid) {
   CLIENT_CONTACTS.clear()
   contacts.forEach(ct => CLIENT_CONTACTS.set(Number(ct.contact_id), ct))
-  if (contacts.length === 0) return '<p class="text-sm text-gray-400">顧客担当者が登録されていません</p>'
+  if (contacts.length === 0) return '<p class="text-sm text-neutral-400">顧客担当者が登録されていません</p>'
   return `<div class="space-y-2">${contacts.map(ct => `
-    <div class="p-2.5 rounded-lg bg-gray-50">
+    <div class="p-2.5 rounded-lg bg-neutral-50">
       <div class="flex items-start justify-between gap-2">
         <div class="text-sm min-w-0">
-          ${ct.contact_name_kana ? `<p class="text-[11px] text-gray-400">${esc(ct.contact_name_kana)}</p>` : ''}
-          <p class="font-medium text-gray-800">${esc(ct.contact_name)}${ct.title ? ` <span class="text-xs text-gray-400">（${esc(ct.title)}）</span>` : ''}</p>
-          <p class="text-xs text-gray-500">${[ct.branch_name, ct.department].filter(Boolean).map(esc).join(' / ') || '-'}</p>
-          <p class="text-xs text-gray-500">${esc(ct.phone || '-')}　${esc(ct.email || '')}</p>
+          ${ct.contact_name_kana ? `<p class="text-2xs text-neutral-400">${esc(ct.contact_name_kana)}</p>` : ''}
+          <p class="font-medium text-neutral-800">${esc(ct.contact_name)}${ct.title ? ` <span class="text-xs text-neutral-400">（${esc(ct.title)}）</span>` : ''}</p>
+          <p class="text-xs text-neutral-500">${[ct.branch_name, ct.department].filter(Boolean).map(esc).join(' / ') || '-'}</p>
+          <p class="text-xs text-neutral-500">${esc(ct.phone || '-')}　${esc(ct.email || '')}</p>
         </div>
         <div class="flex gap-1 shrink-0">
           <button class="btn btn-outline text-xs" data-action="editClientContact" data-cid="${esc(cid)}" data-id="${ct.contact_id}">編集</button>
@@ -3898,16 +3898,16 @@ window.showClientContactForm = function (cid, contact) {
   modal(`
     <h3 class="font-bold text-lg mb-4">${ct.contact_id ? '担当者を編集' : '担当者を追加'}</h3>
     <div class="space-y-3">
-      <div><label class="text-sm text-gray-600 block mb-1">顧客名（担当者氏名） *</label><input id="cc-name" class="inp" value="${esc(ct.contact_name || '')}"></div>
-      <div><label class="text-sm text-gray-600 block mb-1">フリガナ</label><input id="cc-name-kana" class="inp" maxlength="100" placeholder="ひらがなでも入力できます（カタカナで保存します）" value="${esc(ct.contact_name_kana || '')}"></div>
+      <div><label class="text-sm text-neutral-600 block mb-1">顧客名（担当者氏名） *</label><input id="cc-name" class="inp" value="${esc(ct.contact_name || '')}"></div>
+      <div><label class="text-sm text-neutral-600 block mb-1">フリガナ</label><input id="cc-name-kana" class="inp" maxlength="100" placeholder="ひらがなでも入力できます（カタカナで保存します）" value="${esc(ct.contact_name_kana || '')}"></div>
       <div class="grid grid-cols-2 gap-2">
-        <div><label class="text-sm text-gray-600 block mb-1">支店名</label><input id="cc-branch" class="inp" value="${esc(ct.branch_name || '')}"></div>
-        <div><label class="text-sm text-gray-600 block mb-1">部署名</label><input id="cc-department" class="inp" value="${esc(ct.department || '')}"></div>
+        <div><label class="text-sm text-neutral-600 block mb-1">支店名</label><input id="cc-branch" class="inp" value="${esc(ct.branch_name || '')}"></div>
+        <div><label class="text-sm text-neutral-600 block mb-1">部署名</label><input id="cc-department" class="inp" value="${esc(ct.department || '')}"></div>
       </div>
-      <div><label class="text-sm text-gray-600 block mb-1">担当者役職</label><input id="cc-title" class="inp" value="${esc(ct.title || '')}"></div>
-      <div><label class="text-sm text-gray-600 block mb-1">電話番号</label><input id="cc-phone" class="inp" value="${esc(ct.phone || '')}"></div>
-      <div><label class="text-sm text-gray-600 block mb-1">メールアドレス</label><input id="cc-email" type="email" class="inp" value="${esc(ct.email || '')}"></div>
-      <p id="cc-error" class="hidden text-sm text-red-600"></p>
+      <div><label class="text-sm text-neutral-600 block mb-1">担当者役職</label><input id="cc-title" class="inp" value="${esc(ct.title || '')}"></div>
+      <div><label class="text-sm text-neutral-600 block mb-1">電話番号</label><input id="cc-phone" class="inp" value="${esc(ct.phone || '')}"></div>
+      <div><label class="text-sm text-neutral-600 block mb-1">メールアドレス</label><input id="cc-email" type="email" class="inp" value="${esc(ct.email || '')}"></div>
+      <p id="cc-error" class="hidden text-sm text-danger-600"></p>
       <div class="flex gap-2 pt-2">
         <button class="btn btn-outline flex-1" onclick="closeModal()">キャンセル</button>
         <button class="btn btn-primary flex-1" onclick="saveClientContact(${cid}, ${ct.contact_id || 'null'})">保存</button>
@@ -3985,20 +3985,20 @@ const EMP_STATUS_LABEL = { working: '在職中', leave: '休職中', retired: '�
 // 契約終了日（30日以内は強調し、過ぎても在職中なら『終了日超過』）と、有給の付与日（前回の付与日と、1年後の次回の付与日）。#282
 const EMP_CONTRACT_WARN_DAYS = 30
 function empContractEndCell(e) {
-  if (!e.contract_end) return '<span class="text-gray-300">-</span>'
+  if (!e.contract_end) return '<span class="text-neutral-300">-</span>'
   const left = dayjs(e.contract_end).diff(dayjs().format('YYYY-MM-DD'), 'day')
   const retired = e.employment_status === 'retired'
-  const badge = retired ? '' : left < 0 ? ' <span class="badge badge-red text-[10px]">終了日超過</span>'
-    : left <= EMP_CONTRACT_WARN_DAYS ? ` <span class="badge badge-yellow text-[10px]">${left ? 'あと' + left + '日' : '今日まで'}</span>` : ''
-  return `<span class="${!retired && left <= EMP_CONTRACT_WARN_DAYS ? 'font-bold text-red-700' : ''}">${esc(e.contract_end)}</span>${badge}`
+  const badge = retired ? '' : left < 0 ? ' <span class="badge badge-red text-3xs">終了日超過</span>'
+    : left <= EMP_CONTRACT_WARN_DAYS ? ` <span class="badge badge-yellow text-3xs">${left ? 'あと' + left + '日' : '今日まで'}</span>` : ''
+  return `<span class="${!retired && left <= EMP_CONTRACT_WARN_DAYS ? 'font-bold text-danger-700' : ''}">${esc(e.contract_end)}</span>${badge}`
 }
 function empLeaveGrantCell(e) {
-  if (!e.paid_leave_granted_at) return '<span class="text-gray-300">-</span>'
+  if (!e.paid_leave_granted_at) return '<span class="text-neutral-300">-</span>'
   const today = dayjs().format('YYYY-MM-DD')
   const next = e.paid_leave_granted_at > today ? dayjs(e.paid_leave_granted_at) : dayjs(e.paid_leave_granted_at).add(1, 'year')
   const left = next.diff(today, 'day')
   const warn = e.employment_status !== 'retired' && left <= 14
-  return `${esc(e.paid_leave_granted_at)}<span class="block text-[11px] ${warn ? 'text-red-700 font-bold' : 'text-gray-400'}">次回 ${esc(next.format('YYYY-MM-DD'))}${warn ? (left < 0 ? '（過ぎています）' : `（あと${left}日）`) : ''}</span>`
+  return `${esc(e.paid_leave_granted_at)}<span class="block text-2xs ${warn ? 'text-danger-700 font-bold' : 'text-neutral-400'}">次回 ${esc(next.format('YYYY-MM-DD'))}${warn ? (left < 0 ? '（過ぎています）' : `（あと${left}日）`) : ''}</span>`
 }
 
 async function renderEmployees() {
@@ -4006,20 +4006,20 @@ async function renderEmployees() {
   const { data } = await axios.get('/api/admin/employees')
   $app.innerHTML = `
     <div class="flex items-center justify-between mb-5">
-      <h2 class="text-xl font-bold text-gray-900">従業員管理 <span class="text-sm font-normal text-gray-400">（社員名簿）</span></h2>
+      <h2 class="text-xl font-bold text-neutral-900">従業員管理 <span class="text-sm font-normal text-neutral-400">（社員名簿）</span></h2>
       <div class="flex items-center gap-3 flex-wrap">
-        <p class="text-sm text-gray-400"><i class="fas fa-lock mr-1"></i>自社雇用者のみ表示。雇用・給与・口座等は他社に一切共有されません</p>
+        <p class="text-sm text-neutral-400"><i class="fas fa-lock mr-1"></i>自社雇用者のみ表示。雇用・給与・口座等は他社に一切共有されません</p>
         <button class="btn btn-primary" onclick="showRosterForm('employee')"><i class="fas fa-user-plus"></i>従業員を登録</button>
       </div>
     </div>
     <section class="card p-3 mb-4 flex flex-wrap items-center gap-2 text-sm" id="emp-export">
-      <span class="text-xs font-bold text-gray-600"><i class="fas fa-file-csv text-blue-500 mr-1"></i>従業員名簿のCSV</span>
+      <span class="text-xs font-bold text-neutral-600"><i class="fas fa-file-csv text-primary-500 mr-1"></i>従業員名簿のCSV</span>
       <select id="emp-export-status" class="inp text-sm w-auto">
         <option value="">自社雇用のすべて</option>${Object.entries(EMP_STATUS_LABEL).map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}<option value="ended">雇用終了（他の区分へ移行・統合）</option>
       </select>
       ${ME && ME.role === 'company_admin' ? '<label class="flex items-center gap-1 text-xs"><input type="checkbox" id="emp-export-pay">口座・給与を含める（会社管理者のみ）</label>' : ''}
       <button class="btn btn-outline text-sm" data-action="exportEmployees"><i class="fas fa-download"></i>出力</button>
-      <span class="text-[11px] text-gray-400">社員番号・氏名・入社日・契約・住所・連絡先・保険番号を出します。出力した記録が残ります</span>
+      <span class="text-2xs text-neutral-400">社員番号・氏名・入社日・契約・住所・連絡先・保険番号を出します。出力した記録が残ります</span>
     </section>
     <section class="card p-4">
       <input id="emp-q" class="inp text-sm mb-3" placeholder="社員番号・氏名・フリガナ・所属・役職・拠点で検索">
@@ -4027,10 +4027,10 @@ async function renderEmployees() {
         <table class="tbl">
           <thead><tr><th>社員番号</th><th>氏名</th><th>フリガナ</th><th>在籍確認</th><th>所属</th><th>役職</th><th>拠点</th><th>契約形態</th><th>契約終了</th><th>有給付与日</th></tr></thead>
           <tbody>
-            ${data.employees.length === 0 ? '<tr><td colspan="10" class="text-center text-gray-400 py-6">自社社員が登録されていません</td></tr>' : data.employees.map(e => `
+            ${data.employees.length === 0 ? '<tr><td colspan="10" class="text-center text-neutral-400 py-6">自社社員が登録されていません</td></tr>' : data.employees.map(e => `
               <tr class="cursor-pointer" data-action="openEmployee" data-id="${Number(e.staff_id)}" data-search="${escAttr([e.employee_number, e.name, e.kana, e.department, e.job_title, e.base_location].filter(Boolean).join(' '))}">
                 <td>${esc(e.employee_number || '-')}</td>
-                <td class="text-blue-600 hover:underline">${esc(e.name)}</td>
+                <td class="text-primary-600 hover:underline">${esc(e.name)}</td>
                 <td>${esc(e.kana || '-')}</td>
                 <td><span class="badge ${e.employment_status === 'retired' ? 'badge-gray' : e.employment_status === 'leave' ? 'badge-yellow' : e.employment_status === 'preboarding' ? 'badge-purple' : 'badge-green'}">${EMP_STATUS_LABEL[e.employment_status] || '在職中'}</span></td>
                 <td>${esc(e.department || '-')}</td>
@@ -4045,11 +4045,11 @@ async function renderEmployees() {
       </div>
     </section>
     ${(data.ended || []).length ? `<section class="card p-4 mt-4" id="employees-ended">
-      <h3 class="text-sm font-bold text-gray-700 mb-1"><i class="fas fa-box-archive text-gray-400 mr-1"></i>雇用終了（他の区分へ移行・統合したスタッフ）</h3>
-      <p class="text-xs text-gray-400 mb-2">従業員管理のデータは閲覧のみで保持しています（7年保存）。スタッフとしての稼働はスタッフマスタで管理します</p>
+      <h3 class="text-sm font-bold text-neutral-700 mb-1"><i class="fas fa-box-archive text-neutral-400 mr-1"></i>雇用終了（他の区分へ移行・統合したスタッフ）</h3>
+      <p class="text-xs text-neutral-400 mb-2">従業員管理のデータは閲覧のみで保持しています（7年保存）。スタッフとしての稼働はスタッフマスタで管理します</p>
       <div class="overflow-x-auto"><table class="tbl"><thead><tr><th>社員番号</th><th>氏名</th><th>現在の区分</th><th>雇用終了日</th><th>理由</th></tr></thead><tbody>
-        ${data.ended.map(e => `<tr class="cursor-pointer" data-action="openEmployee" data-id="${Number(e.staff_id)}"><td>${esc(e.employee_number || '-')}</td><td class="text-blue-600">${esc(e.name)}</td>
-          <td>${e.merged_into_staff_id ? '<span class="badge badge-gray">統合済み</span>' : affTypeBadge(e.affiliation_type)}</td><td>${esc(e.employment_ended_at)}</td><td class="text-xs text-gray-500">${esc(e.ended_reason || '')}</td></tr>`).join('')}
+        ${data.ended.map(e => `<tr class="cursor-pointer" data-action="openEmployee" data-id="${Number(e.staff_id)}"><td>${esc(e.employee_number || '-')}</td><td class="text-primary-600">${esc(e.name)}</td>
+          <td>${e.merged_into_staff_id ? '<span class="badge badge-gray">統合済み</span>' : affTypeBadge(e.affiliation_type)}</td><td>${esc(e.employment_ended_at)}</td><td class="text-xs text-neutral-500">${esc(e.ended_reason || '')}</td></tr>`).join('')}
       </tbody></table></div>
     </section>` : ''}`
   document.getElementById('emp-q').addEventListener('input', ev => {
@@ -4077,13 +4077,13 @@ async function renderEmployeeDetail(sid) {
   ])
   const s = data.staff; const r = data.record || {}
   const field = (id, label, value, type = 'text') =>
-    `<div class="flex items-center gap-2"><dt class="w-32 text-gray-400 text-xs shrink-0">${label}</dt><dd class="flex-1"><input type="${type}" id="${id}" class="inp text-xs" value="${esc(value ?? '')}"></dd></div>`
+    `<div class="flex items-center gap-2"><dt class="w-32 text-neutral-400 text-xs shrink-0">${label}</dt><dd class="flex-1"><input type="${type}" id="${id}" class="inp text-xs" value="${esc(value ?? '')}"></dd></div>`
 
   $app.innerHTML = `
     <div class="flex items-center gap-3 mb-5 flex-wrap">
       <a href="#employees" class="btn btn-outline"><i class="fas fa-arrow-left"></i></a>
       <div class="flex-1">
-        <h2 class="text-xl font-bold text-gray-900">${esc(s.name)}</h2>
+        <h2 class="text-xl font-bold text-neutral-900">${esc(s.name)}</h2>
         <div class="flex gap-2 mt-1">
           <span class="badge ${s.employment_status === 'retired' ? 'badge-gray' : s.employment_status === 'leave' ? 'badge-yellow' : s.employment_status === 'preboarding' ? 'badge-purple' : 'badge-green'}">${EMP_STATUS_LABEL[s.employment_status] || '在職中'}</span>
         </div>
@@ -4094,47 +4094,47 @@ async function renderEmployeeDetail(sid) {
 
     <section class="card p-4 mb-4" id="employee-staff-profile">
       <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
-        <h3 class="text-sm font-bold text-gray-700">スタッフ基本情報 <span class="text-xs font-normal text-gray-400">（スタッフマスタにそのまま反映されます）</span></h3>
-        <span class="text-xs text-gray-400"><i class="fas fa-circle-info mr-1"></i>自社雇用スタッフの労務側の基本情報はこの画面でのみ編集できます</span>
+        <h3 class="text-sm font-bold text-neutral-700">スタッフ基本情報 <span class="text-xs font-normal text-neutral-400">（スタッフマスタにそのまま反映されます）</span></h3>
+        <span class="text-xs text-neutral-400"><i class="fas fa-circle-info mr-1"></i>自社雇用スタッフの労務側の基本情報はこの画面でのみ編集できます</span>
       </div>
       <dl class="grid md:grid-cols-2 gap-x-6 gap-y-2">
         ${field('sp-name', '氏名 *', s.name)}
         ${field('sp-kana', 'フリガナ', s.kana || '')}
-        <div class="flex items-center gap-2"><dt class="w-32 text-gray-400 text-xs shrink-0">性別 *</dt><dd class="flex-1"><select id="sp-gender" class="inp text-xs">${genderOptions(s.gender)}</select></dd></div>
-        <div class="flex items-center gap-2"><dt class="w-32 text-gray-400 text-xs shrink-0">生年月日</dt><dd class="flex-1"><input type="date" id="sp-dob" class="inp text-xs" value="${esc(s.date_of_birth || '')}" data-age-input="sp-age"></dd></div>
-        <div class="flex items-start gap-2"><dt class="w-32 text-gray-400 text-xs shrink-0 pt-1">年齢</dt><dd class="flex-1 text-xs">${s.age != null ? `<span class="block mb-0.5">${esc(ageLabel(s))}</span>` : ''}${ageInputHtml('sp-age', s)}</dd></div>
-        <div class="flex items-center gap-2"><dt class="w-32 text-gray-400 text-xs shrink-0">在籍状況</dt><dd class="flex-1">
+        <div class="flex items-center gap-2"><dt class="w-32 text-neutral-400 text-xs shrink-0">性別 *</dt><dd class="flex-1"><select id="sp-gender" class="inp text-xs">${genderOptions(s.gender)}</select></dd></div>
+        <div class="flex items-center gap-2"><dt class="w-32 text-neutral-400 text-xs shrink-0">生年月日</dt><dd class="flex-1"><input type="date" id="sp-dob" class="inp text-xs" value="${esc(s.date_of_birth || '')}" data-age-input="sp-age"></dd></div>
+        <div class="flex items-start gap-2"><dt class="w-32 text-neutral-400 text-xs shrink-0 pt-1">年齢</dt><dd class="flex-1 text-xs">${s.age != null ? `<span class="block mb-0.5">${esc(ageLabel(s))}</span>` : ''}${ageInputHtml('sp-age', s)}</dd></div>
+        <div class="flex items-center gap-2"><dt class="w-32 text-neutral-400 text-xs shrink-0">在籍状況</dt><dd class="flex-1">
           <select id="sp-emp-status" class="inp text-xs">
             ${Object.entries(EMP_STATUS_LABEL).map(([k, l]) => `<option value="${k}" ${(s.employment_status || 'working') === k ? 'selected' : ''}>${l}</option>`).join('')}
           </select></dd></div>
         ${field('sp-retired', '退職日', s.retired_at, 'date')}
-        <div class="flex items-center gap-2"><dt class="w-32 text-gray-400 text-xs shrink-0">所属会社名</dt><dd class="text-xs">${esc(s.affiliation || '')}${data.read_only ? `（現在: ${esc(AFF_TYPE_LABEL[s.affiliation_type] || s.affiliation_type || '')}）` : '（自社）'}</dd></div>
+        <div class="flex items-center gap-2"><dt class="w-32 text-neutral-400 text-xs shrink-0">所属会社名</dt><dd class="text-xs">${esc(s.affiliation || '')}${data.read_only ? `（現在: ${esc(AFF_TYPE_LABEL[s.affiliation_type] || s.affiliation_type || '')}）` : '（自社）'}</dd></div>
         ${field('sp-station-line', '最寄駅（路線）', s.nearest_station_line || '')}
         ${field('sp-station', '最寄駅（駅）', s.nearest_station || '')}
       </dl>
-      <div class="mt-3 pt-3 border-t border-gray-100 text-xs" id="employee-business-summary">
+      <div class="mt-3 pt-3 border-t border-neutral-100 text-xs" id="employee-business-summary">
         <div class="flex items-center justify-between gap-2 mb-2 flex-wrap">
-          <p class="text-gray-500"><i class="fas fa-briefcase mr-1 text-gray-400"></i>業務側の情報（通勤可能時間・稼働開始可能日・稼働可能エリア・スキル・経歴・PRポイント・備考）はスタッフマスタで編集します</p>
+          <p class="text-neutral-500"><i class="fas fa-briefcase mr-1 text-neutral-400"></i>業務側の情報（通勤可能時間・稼働開始可能日・稼働可能エリア・スキル・経歴・PRポイント・備考）はスタッフマスタで編集します</p>
           ${data.read_only ? '' : `<a class="btn btn-outline text-xs" href="#staff/${sid}"><i class="fas fa-pen"></i>スタッフマスタで編集</a>`}
         </div>
-        <dl class="grid md:grid-cols-2 gap-x-6 gap-y-1 text-gray-600">
-          <div class="flex gap-2"><dt class="w-32 text-gray-400 shrink-0">通勤可能時間</dt><dd>${s.commute_minutes != null ? esc(s.commute_minutes) + '分' : '-'}</dd></div>
-          <div class="flex gap-2"><dt class="w-32 text-gray-400 shrink-0">稼働開始可能日</dt><dd>${esc(s.available_from || '-')}</dd></div>
-          <div class="flex gap-2"><dt class="w-32 text-gray-400 shrink-0">稼働可能エリア</dt><dd>${esc(s.work_area || '-')}</dd></div>
-          <div class="flex gap-2"><dt class="w-32 text-gray-400 shrink-0">スキル</dt><dd>${esc(s.skills || '-')}</dd></div>
-          <div class="flex gap-2 md:col-span-2"><dt class="w-32 text-gray-400 shrink-0">経歴</dt><dd class="whitespace-pre-wrap">${esc(s.career || '-')}</dd></div>
+        <dl class="grid md:grid-cols-2 gap-x-6 gap-y-1 text-neutral-600">
+          <div class="flex gap-2"><dt class="w-32 text-neutral-400 shrink-0">通勤可能時間</dt><dd>${s.commute_minutes != null ? esc(s.commute_minutes) + '分' : '-'}</dd></div>
+          <div class="flex gap-2"><dt class="w-32 text-neutral-400 shrink-0">稼働開始可能日</dt><dd>${esc(s.available_from || '-')}</dd></div>
+          <div class="flex gap-2"><dt class="w-32 text-neutral-400 shrink-0">稼働可能エリア</dt><dd>${esc(s.work_area || '-')}</dd></div>
+          <div class="flex gap-2"><dt class="w-32 text-neutral-400 shrink-0">スキル</dt><dd>${esc(s.skills || '-')}</dd></div>
+          <div class="flex gap-2 md:col-span-2"><dt class="w-32 text-neutral-400 shrink-0">経歴</dt><dd class="whitespace-pre-wrap">${esc(s.career || '-')}</dd></div>
         </dl>
       </div>
-      <p class="text-xs text-gray-400 mt-2">※ 退職日を設定すると在籍状況は「退職」になります。退職日から7年経過すると出退勤記録等が定期削除の対象になります。</p>
+      <p class="text-xs text-neutral-400 mt-2">※ 退職日を設定すると在籍状況は「退職」になります。退職日から7年経過すると出退勤記録等が定期削除の対象になります。</p>
     </section>
 
     <div class="grid lg:grid-cols-2 gap-4">
       <section class="card p-4">
-        <h3 class="text-sm font-bold text-gray-700 mb-3">在籍・雇用情報</h3>
+        <h3 class="text-sm font-bold text-neutral-700 mb-3">在籍・雇用情報</h3>
         <dl class="space-y-2">
           ${field('emp-number', '社員番号', r.employee_number)}
           ${field('emp-hire-date', '入社年月日', r.hire_date, 'date')}
-          <div class="flex items-center gap-2"><dt class="w-32 text-gray-400 text-xs shrink-0">勤続年月</dt><dd class="text-xs">${esc(r.tenure || '-')}</dd></div>
+          <div class="flex items-center gap-2"><dt class="w-32 text-neutral-400 text-xs shrink-0">勤続年月</dt><dd class="text-xs">${esc(r.tenure || '-')}</dd></div>
           ${field('emp-location', '拠点', r.base_location)}
           ${field('emp-department', '所属', r.department)}
           ${field('emp-job-title', '役職', r.job_title)}
@@ -4144,9 +4144,9 @@ async function renderEmployeeDetail(sid) {
           ${field('emp-days-week', '所定労働日数(週)', r.scheduled_days_week, 'number')}
           ${field('emp-days-month', '所定労働日数(月)', r.scheduled_days_month, 'number')}
         </dl>
-        <div class="mt-4 pt-3 border-t border-gray-100">
+        <div class="mt-4 pt-3 border-t border-neutral-100">
           <div class="flex items-center justify-between mb-2">
-            <h4 class="text-xs font-bold text-gray-500"><i class="fas fa-file-lines text-blue-500 mr-1"></i>入社時書類</h4>
+            <h4 class="text-xs font-bold text-neutral-500"><i class="fas fa-file-lines text-primary-500 mr-1"></i>入社時書類</h4>
             <button class="btn btn-outline text-xs" onclick="openDocumentUpload('employee', ${sid})"><i class="fas fa-upload"></i>アップロード</button>
           </div>
           <div id="employee-documents-list">${documentListHtml(docData.documents, 'employee', sid)}</div>
@@ -4154,7 +4154,7 @@ async function renderEmployeeDetail(sid) {
       </section>
 
       <section class="card p-4">
-        <h3 class="text-sm font-bold text-gray-700 mb-3">個人情報</h3>
+        <h3 class="text-sm font-bold text-neutral-700 mb-3">個人情報</h3>
         <dl class="space-y-2">
           ${field('emp-postal', '郵便番号', r.postal_code)}
           ${field('emp-pref', '都道府県', r.prefecture)}
@@ -4166,13 +4166,13 @@ async function renderEmployeeDetail(sid) {
           ${field('emp-phone-work', '電話番号（業務）', r.phone_work)}
           ${field('emp-dependents-info', '扶養情報', r.dependents_info)}
           ${field('emp-dependents-count', '扶養人数', r.dependents_count, 'number')}
-          <p class="text-xs text-gray-400 pt-1">マイナンバーは今回のバージョンでは保存されません（項目のみ用意）</p>
-          <div class="flex items-center gap-2"><dt class="w-32 text-gray-400 text-xs shrink-0">マイナンバー</dt><dd class="flex-1"><input class="inp text-xs bg-gray-50" disabled placeholder="未実装（保存されません）"></dd></div>
+          <p class="text-xs text-neutral-400 pt-1">マイナンバーは今回のバージョンでは保存されません（項目のみ用意）</p>
+          <div class="flex items-center gap-2"><dt class="w-32 text-neutral-400 text-xs shrink-0">マイナンバー</dt><dd class="flex-1"><input class="inp text-xs bg-neutral-50" disabled placeholder="未実装（保存されません）"></dd></div>
         </dl>
       </section>
 
       <section class="card p-4">
-        <h3 class="text-sm font-bold text-gray-700 mb-3">緊急連絡先</h3>
+        <h3 class="text-sm font-bold text-neutral-700 mb-3">緊急連絡先</h3>
         <dl class="space-y-2">
           ${field('emp-em-name', '名前', r.emergency_name)}
           ${field('emp-em-kana', 'フリガナ', r.emergency_kana)}
@@ -4187,7 +4187,7 @@ async function renderEmployeeDetail(sid) {
       </section>
 
       <section class="card p-4">
-        <h3 class="text-sm font-bold text-gray-700 mb-3">給与・契約・保険</h3>
+        <h3 class="text-sm font-bold text-neutral-700 mb-3">給与・契約・保険</h3>
         <dl class="space-y-2">
           ${field('emp-contract-start', '契約開始', r.contract_start, 'date')}
           ${field('emp-contract-end', '契約終了', r.contract_end, 'date')}
@@ -4214,8 +4214,8 @@ async function renderEmployeeDetail(sid) {
           ${field('emp-leave-remaining', '有給残数', r.paid_leave_remaining, 'number')}
           ${field('emp-telework', '今月テレワーク残数', r.telework_remaining_this_month, 'number')}
         </dl>
-        <p class="text-[11px] text-gray-400 mt-1">有給残数・付与日・テレワーク残数は本人のアプリ（その他 → 有給・休暇）にも表示されます。有給の休暇を承認すると残数から引きます。</p>
-        <div id="employee-leave" class="mt-3 pt-3 border-t border-gray-100"></div>
+        <p class="text-2xs text-neutral-400 mt-1">有給残数・付与日・テレワーク残数は本人のアプリ（その他 → 有給・休暇）にも表示されます。有給の休暇を承認すると残数から引きます。</p>
+        <div id="employee-leave" class="mt-3 pt-3 border-t border-neutral-100"></div>
       </section>
     </div>`
   loadEmployeeLeave(sid, !!data.read_only) // 休暇の申請（#289）
@@ -4227,7 +4227,7 @@ async function renderEmployeeDetail(sid) {
     $app.querySelectorAll('input, select, textarea').forEach(el => { el.disabled = true })
     $app.querySelectorAll('button[onclick^="saveEmployeeRecord"], button[onclick^="openDocumentUpload"], button[data-action="deleteDocument"]').forEach(el => el.remove())
     const head = $app.querySelector('#employee-staff-profile')
-    if (head) head.insertAdjacentHTML('beforebegin', `<div class="text-sm bg-gray-100 text-gray-700 rounded-lg p-3 mb-4" id="employee-ended-notice">
+    if (head) head.insertAdjacentHTML('beforebegin', `<div class="text-sm bg-neutral-100 text-neutral-700 rounded-lg p-3 mb-4" id="employee-ended-notice">
       <i class="fas fa-box-archive mr-1"></i>雇用終了日: <b>${esc(r.employment_ended_at || '-')}</b>（${esc(r.ended_reason || '')}）。従業員管理のデータは閲覧のみで保持しています（7年保存）。
       自社雇用に戻す場合はスタッフ詳細の「区分を変更」から行ってください。</div>`)
   }
@@ -4236,17 +4236,17 @@ async function renderEmployeeDetail(sid) {
 // ---------- 従業員データ・スタッフ基本情報の変更履歴（#464） ----------
 // 口座番号・保険番号は下4桁だけが残っている（サーバー側で伏せて保存）
 function changeLogValue(field, v) {
-  if (v == null || v === '') return '<span class="text-gray-300">（空欄）</span>'
+  if (v == null || v === '') return '<span class="text-neutral-300">（空欄）</span>'
   if (field === 'gender') return esc(GENDER_LABEL_ADMIN[v] || v)
   if (field === 'employment_status') return esc(EMP_STATUS_LABEL[v] || v)
   return esc(v)
 }
 function changeLogRowsHtml(logs) {
-  return logs.map(l => `<tr class="border-t border-gray-100 align-top">
-    <td class="py-1.5 pr-2 whitespace-nowrap text-gray-500">${esc(String(l.changed_at || '').slice(0, 16))}</td>
-    <td class="py-1.5 pr-2 whitespace-nowrap">${esc(l.label)}${l.source === 'profile' ? ' <span class="badge badge-gray text-[10px]">基本情報</span>' : ''}</td>
-    <td class="py-1.5 pr-2 break-all">${changeLogValue(l.field, l.old_value)} <i class="fas fa-arrow-right text-gray-300 mx-1"></i> ${changeLogValue(l.field, l.new_value)}</td>
-    <td class="py-1.5 whitespace-nowrap text-gray-500">${esc(l.changed_by_name || '-')}</td></tr>`).join('')
+  return logs.map(l => `<tr class="border-t border-neutral-100 align-top">
+    <td class="py-1.5 pr-2 whitespace-nowrap text-neutral-500">${esc(String(l.changed_at || '').slice(0, 16))}</td>
+    <td class="py-1.5 pr-2 whitespace-nowrap">${esc(l.label)}${l.source === 'profile' ? ' <span class="badge badge-gray text-3xs">基本情報</span>' : ''}</td>
+    <td class="py-1.5 pr-2 break-all">${changeLogValue(l.field, l.old_value)} <i class="fas fa-arrow-right text-neutral-300 mx-1"></i> ${changeLogValue(l.field, l.new_value)}</td>
+    <td class="py-1.5 whitespace-nowrap text-neutral-500">${esc(l.changed_by_name || '-')}</td></tr>`).join('')
 }
 // 畳んだときに出す件数。開いているかは box の data-open に持つ（画面を出し直すと畳んだ状態に戻る）
 const EMPLOYEE_CHANGE_LOG_FOLDED = 5
@@ -4275,7 +4275,7 @@ async function loadEmployeeChangeLog(sid, before) {
   if (!box || Number(box.dataset.sid) !== Number(sid)) return
   let data
   try { data = (await axios.get('/api/admin/employees/' + Number(sid) + '/history', { params: before ? { before } : {} })).data }
-  catch (e) { if (!before) box.innerHTML = '<p class="text-xs text-red-500">変更履歴を読み込めませんでした</p>'; else showApiError(e, '変更履歴を読み込めませんでした'); return }
+  catch (e) { if (!before) box.innerHTML = '<p class="text-xs text-danger-500">変更履歴を読み込めませんでした</p>'; else showApiError(e, '変更履歴を読み込めませんでした'); return }
   const logs = data.logs || []
   const more = data.has_more && logs.length
     ? `<button class="btn btn-outline text-xs w-full mt-2" data-action="moreEmployeeChangeLog" data-sid="${Number(sid)}" data-before="${Number(logs[logs.length - 1].log_id)}">さらに表示</button>` : ''
@@ -4287,14 +4287,14 @@ async function loadEmployeeChangeLog(sid, before) {
     applyEmployeeChangeLogFold(box)
     return
   }
-  box.innerHTML = `<div class="flex items-center gap-2 mb-1 flex-wrap"><h3 class="text-sm font-bold text-gray-700"><i class="fas fa-clock-rotate-left text-gray-400 mr-1"></i>変更履歴</h3>
-      <span class="text-xs text-gray-400 employee-change-log-note"></span>
+  box.innerHTML = `<div class="flex items-center gap-2 mb-1 flex-wrap"><h3 class="text-sm font-bold text-neutral-700"><i class="fas fa-clock-rotate-left text-neutral-400 mr-1"></i>変更履歴</h3>
+      <span class="text-xs text-neutral-400 employee-change-log-note"></span>
       <button type="button" class="ml-auto btn btn-outline text-xs hidden" data-action="toggleEmployeeChangeLog"></button></div>
-    <p class="text-xs text-gray-400 mb-2">従業員管理とスタッフ基本情報で変わった項目を、変更した人・日時とともに残しています。口座番号・保険番号は下4桁だけを残します。</p>
-    ${logs.length ? `<div class="overflow-x-auto"><table class="w-full text-xs"><thead><tr class="text-left text-gray-400">
+    <p class="text-xs text-neutral-400 mb-2">従業員管理とスタッフ基本情報で変わった項目を、変更した人・日時とともに残しています。口座番号・保険番号は下4桁だけを残します。</p>
+    ${logs.length ? `<div class="overflow-x-auto"><table class="w-full text-xs"><thead><tr class="text-left text-neutral-400">
       <th class="py-1 pr-2 font-normal">日時</th><th class="py-1 pr-2 font-normal">項目</th><th class="py-1 pr-2 font-normal">変更前 → 変更後</th><th class="py-1 font-normal">変更した人</th></tr></thead>
       <tbody id="employee-change-log-rows">${changeLogRowsHtml(logs)}</tbody></table></div>${more}`
-      : '<p class="text-xs text-gray-400">まだ変更の記録はありません</p>'}`
+      : '<p class="text-xs text-neutral-400">まだ変更の記録はありません</p>'}`
   box.dataset.open = ''
   applyEmployeeChangeLogFold(box)
 }
@@ -4364,23 +4364,23 @@ window.showAddClient = async function () {
   modal(`
     <h3 class="font-bold text-lg mb-4">クライアント登録</h3>
     <div class="space-y-3">
-      <div><label class="text-sm text-gray-600 block mb-1">クライアント名 *</label><input id="nc-name" class="inp"></div>
-      <div><label class="text-sm text-gray-600 block mb-1">フリガナ</label><input id="nc-name-kana" class="inp" maxlength="100" placeholder="ひらがなでも入力できます（カタカナで保存します）"></div>
-      <div><label class="text-sm text-gray-600 block mb-1">種別</label>
+      <div><label class="text-sm text-neutral-600 block mb-1">クライアント名 *</label><input id="nc-name" class="inp"></div>
+      <div><label class="text-sm text-neutral-600 block mb-1">フリガナ</label><input id="nc-name-kana" class="inp" maxlength="100" placeholder="ひらがなでも入力できます（カタカナで保存します）"></div>
+      <div><label class="text-sm text-neutral-600 block mb-1">種別</label>
         <select id="nc-kind" class="inp">${clientKindOptions('')}</select></div>
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <div><label class="text-sm text-gray-600 block mb-1">代表者氏名</label><input id="nc-rep-name" class="inp" maxlength="100"></div>
-        <div><label class="text-sm text-gray-600 block mb-1">電話</label><input id="nc-phone" class="inp" type="tel"></div>
+        <div><label class="text-sm text-neutral-600 block mb-1">代表者氏名</label><input id="nc-rep-name" class="inp" maxlength="100"></div>
+        <div><label class="text-sm text-neutral-600 block mb-1">電話</label><input id="nc-phone" class="inp" type="tel"></div>
       </div>
-      <div><label class="text-sm text-gray-600 block mb-1">メール</label><input id="nc-email" class="inp" type="email"></div>
+      <div><label class="text-sm text-neutral-600 block mb-1">メール</label><input id="nc-email" class="inp" type="email"></div>
       <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
-        <div><label class="text-sm text-gray-600 block mb-1">郵便番号</label><input id="nc-postal" class="inp" inputmode="numeric" maxlength="10" placeholder="123-4567" data-halfwidth="1"></div>
-        <div class="sm:col-span-2"><label class="text-sm text-gray-600 block mb-1">住所</label><input id="nc-address" class="inp"></div>
+        <div><label class="text-sm text-neutral-600 block mb-1">郵便番号</label><input id="nc-postal" class="inp" inputmode="numeric" maxlength="10" placeholder="123-4567" data-halfwidth="1"></div>
+        <div class="sm:col-span-2"><label class="text-sm text-neutral-600 block mb-1">住所</label><input id="nc-address" class="inp"></div>
       </div>
-      <div><label class="text-sm text-gray-600 block mb-1">ホームページ</label><input id="nc-url" class="inp" type="url" maxlength="500" placeholder="https://example.co.jp"></div>
-      <div><label class="text-sm text-gray-600 block mb-1">請求条件</label><input id="nc-billing" class="inp" placeholder="月末締め・翌月末払い"></div>
-      <div><p class="text-sm text-gray-600 mb-1">社内担当者</p>${assigneesEditorHtml('nc', [])}</div>
-      <div><label class="text-sm text-gray-600 block mb-1">備考</label><textarea id="nc-memo" rows="2" class="inp"></textarea></div>
+      <div><label class="text-sm text-neutral-600 block mb-1">ホームページ</label><input id="nc-url" class="inp" type="url" maxlength="500" placeholder="https://example.co.jp"></div>
+      <div><label class="text-sm text-neutral-600 block mb-1">請求条件</label><input id="nc-billing" class="inp" placeholder="月末締め・翌月末払い"></div>
+      <div><p class="text-sm text-neutral-600 mb-1">社内担当者</p>${assigneesEditorHtml('nc', [])}</div>
+      <div><label class="text-sm text-neutral-600 block mb-1">備考</label><textarea id="nc-memo" rows="2" class="inp"></textarea></div>
       <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="addClient">登録する</button></div>
     </div>`)
 }
@@ -4422,12 +4422,12 @@ async function renderShifts(dateStr) {
   for (let i = 0; i < 7; i++) days.push(dayjs(from).add(i, 'day').format('YYYY-MM-DD'))
   const byDay = {}
   for (const s of data.shifts) { (byDay[s.work_date] = byDay[s.work_date] || []).push(s) }
-  const stColor = { requested: 'bg-amber-50 border-amber-200', confirmed: 'bg-blue-50 border-blue-200', absent: 'bg-red-50 border-red-200 opacity-60', substitute: 'bg-purple-50 border-purple-200' }
+  const stColor = { requested: 'bg-warning-50 border-warning-200', confirmed: 'bg-primary-50 border-primary-200', absent: 'bg-danger-50 border-danger-200 opacity-60', substitute: 'bg-accent-50 border-accent-200' }
   const stLabel = { requested: '希望', confirmed: '確定', absent: '欠勤', substitute: '代打' }
 
   $app.innerHTML = `
     <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
-      <h2 class="text-xl font-bold text-gray-900">シフト管理</h2>
+      <h2 class="text-xl font-bold text-neutral-900">シフト管理</h2>
       <div class="flex gap-2">
         <button class="btn btn-outline" onclick="renderShifts('${dayjs(from).subtract(7, 'day').format('YYYY-MM-DD')}')"><i class="fas fa-chevron-left"></i>前週</button>
         <button class="btn btn-outline" onclick="renderShifts()">今週</button>
@@ -4439,17 +4439,17 @@ async function renderShifts(dateStr) {
       ${days.map(d => {
         const isToday = d === dayjs().format('YYYY-MM-DD')
         const dow = ['日', '月', '火', '水', '木', '金', '土'][dayjs(d).day()]
-        return `<div class="card p-2 ${isToday ? 'ring-2 ring-blue-400' : ''}">
-          <p class="text-xs font-bold text-center mb-2 ${dayjs(d).day() === 0 ? 'text-red-500' : dayjs(d).day() === 6 ? 'text-blue-500' : 'text-gray-600'}">
+        return `<div class="card p-2 ${isToday ? 'ring-2 ring-primary-400' : ''}">
+          <p class="text-xs font-bold text-center mb-2 ${dayjs(d).day() === 0 ? 'text-danger-500' : dayjs(d).day() === 6 ? 'text-primary-500' : 'text-neutral-600'}">
             ${dayjs(d).format('M/D')}(${dow})${isToday ? ' <span class="badge badge-blue">今日</span>' : ''}</p>
           <div class="space-y-1.5">
             ${(byDay[d] || []).map(s => `
               <div class="border rounded-lg p-1.5 text-xs ${stColor[s.status] || ''} cursor-pointer" data-action="showEditShift" data-id="${s.shift_id}" data-name="${esc(s.staff_name)}" data-status="${esc(s.status)}">
                 <p class="font-bold truncate">${esc(s.staff_name)}</p>
-                <p class="text-gray-500 truncate">${esc(s.project_name)}</p>
-                <p class="text-gray-400">${esc(s.start_time)}〜${esc(s.end_time)} <span class="font-bold">${stLabel[s.status] || ''}</span>
-                  ${Number(s.photo_count) > 0 ? `<button class="text-blue-500 ml-1" title="入店・退店の写真" data-action="attendancePhotos" data-id="${Number(s.shift_id)}" data-name="${esc(s.staff_name)}"><i class="fas fa-camera"></i></button>` : ''}</p>
-              </div>`).join('') || '<p class="text-xs text-gray-300 text-center py-2">-</p>'}
+                <p class="text-neutral-500 truncate">${esc(s.project_name)}</p>
+                <p class="text-neutral-400">${esc(s.start_time)}〜${esc(s.end_time)} <span class="font-bold">${stLabel[s.status] || ''}</span>
+                  ${Number(s.photo_count) > 0 ? `<button class="text-primary-500 ml-1" title="入店・退店の写真" data-action="attendancePhotos" data-id="${Number(s.shift_id)}" data-name="${esc(s.staff_name)}"><i class="fas fa-camera"></i></button>` : ''}</p>
+              </div>`).join('') || '<p class="text-xs text-neutral-300 text-center py-2">-</p>'}
           </div>
         </div>`
       }).join('')}
@@ -4466,23 +4466,23 @@ window.showAddShift = async function (defaultDate) {
     <h3 class="font-bold text-lg mb-4">シフト登録</h3>
     <div class="space-y-3">
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <div><label class="text-sm text-gray-600 block mb-1">スタッフ *</label>
+        <div><label class="text-sm text-neutral-600 block mb-1">スタッフ *</label>
           <select id="sh-staff" class="inp" required><option value="" selected>選択してください</option>${staff.map(s => `<option value="${s.staff_id}">${esc(s.name)}${s.employment_status === 'leave' ? '（休職中）' : ''}</option>`).join('')}</select></div>
-        <div><label class="text-sm text-gray-600 block mb-1">案件 *</label>
+        <div><label class="text-sm text-neutral-600 block mb-1">案件 *</label>
           <select id="sh-project" class="inp" onchange="addShiftFeeHint()" required><option value="" selected>選択してください</option>${addShiftProjects.map(p => `<option value="${p.project_id}">${esc(p.project_name)}</option>`).join('')}</select></div>
       </div>
-      <div><label class="text-sm text-gray-600 block mb-1">日付 *</label><input id="sh-date" type="date" class="inp" value="${defaultDate || ''}"></div>
+      <div><label class="text-sm text-neutral-600 block mb-1">日付 *</label><input id="sh-date" type="date" class="inp" value="${defaultDate || ''}"></div>
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <div><label class="text-sm text-gray-600 block mb-1">開始</label><input id="sh-start" type="time" value="09:30" class="inp"></div>
-        <div><label class="text-sm text-gray-600 block mb-1">終了</label><input id="sh-end" type="time" value="19:00" class="inp"></div>
+        <div><label class="text-sm text-neutral-600 block mb-1">開始</label><input id="sh-start" type="time" value="09:30" class="inp"></div>
+        <div><label class="text-sm text-neutral-600 block mb-1">終了</label><input id="sh-end" type="time" value="19:00" class="inp"></div>
       </div>
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <div><label class="text-sm text-gray-600 block mb-1">状態</label>
+        <div><label class="text-sm text-neutral-600 block mb-1">状態</label>
           <select id="sh-status" class="inp"><option value="confirmed">確定</option><option value="requested">希望</option><option value="substitute">代打</option></select></div>
-        <div><label class="text-sm text-gray-600 block mb-1">交通費（実費）</label><input id="sh-fee" type="number" min="0" class="inp" placeholder="空欄なら0円">
-          <p id="sh-fee-hint" class="text-[11px] text-gray-400 mt-1"></p></div>
+        <div><label class="text-sm text-neutral-600 block mb-1">交通費（実費）</label><input id="sh-fee" type="number" min="0" class="inp" placeholder="空欄なら0円">
+          <p id="sh-fee-hint" class="text-2xs text-neutral-400 mt-1"></p></div>
       </div>
-      <div id="sh-price" class="rounded-lg border border-gray-100 p-3 text-sm"><p class="text-xs text-gray-400">単価を確認しています…</p></div>
+      <div id="sh-price" class="rounded-lg border border-neutral-100 p-3 text-sm"><p class="text-xs text-neutral-400">単価を確認しています…</p></div>
       ${window.shiftNotifyBoxHtml ? shiftNotifyBoxHtml('sh-notify', { note: '登録したシフトを本人に知らせます' }) : ''}
       <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="addShift">登録する</button></div>
     </div>`)
@@ -4499,7 +4499,7 @@ const ADD_SHIFT_UNIT = { daily: '日額', hourly: '時給' }
 async function addShiftPriceLoad() {
   const box = document.getElementById('sh-price'); if (!box) return
   const v = (id) => document.getElementById(id).value
-  if (!v('sh-date') || !v('sh-project')) { box.innerHTML = '<p class="text-xs text-gray-400">日付と案件を選ぶと、単価を表示します</p>'; ADD_SHIFT_PRICE.base = null; ADD_SHIFT_PRICE.preview = null; return }
+  if (!v('sh-date') || !v('sh-project')) { box.innerHTML = '<p class="text-xs text-neutral-400">日付と案件を選ぶと、単価を表示します</p>'; ADD_SHIFT_PRICE.base = null; ADD_SHIFT_PRICE.preview = null; return }
   const seq = ++ADD_SHIFT_PRICE.seq
   const qs = new URLSearchParams({ project_id: v('sh-project'), work_date: v('sh-date'), staff_ids: v('sh-staff') || '', start_time: v('sh-start'), end_time: v('sh-end') })
   try {
@@ -4510,35 +4510,35 @@ async function addShiftPriceLoad() {
   } catch (e) {
     if (seq !== ADD_SHIFT_PRICE.seq) return
     ADD_SHIFT_PRICE.preview = null; ADD_SHIFT_PRICE.base = null
-    box.innerHTML = '<p class="text-xs text-gray-400">単価を確認できませんでした（登録すると単価の設定から計算します）</p>'
+    box.innerHTML = '<p class="text-xs text-neutral-400">単価を確認できませんでした（登録すると単価の設定から計算します）</p>'
   }
 }
 function addShiftPriceRender() {
   const box = document.getElementById('sh-price'); if (!box) return
   const pv = ADD_SHIFT_PRICE.preview
-  if (!pv) { box.innerHTML = '<p class="text-xs text-gray-400">登録すると単価の設定から計算します</p>'; ADD_SHIFT_PRICE.base = null; return }
+  if (!pv) { box.innerHTML = '<p class="text-xs text-neutral-400">登録すると単価の設定から計算します</p>'; ADD_SHIFT_PRICE.base = null; return }
   const ih = ADD_SHIFT_PRICE.inherit ? pv.inherited : null
   const p = ih ? pv.price : pv.settings
   ADD_SHIFT_PRICE.base = { bill_unit_type: p.bill_unit_type, bill_rate: p.bill_rate, pay_unit_type: p.pay_unit_type, pay_rate: p.pay_rate }
   const unitSel = (id, val) => `<select id="${id}" class="inp text-sm">${Object.entries(ADD_SHIFT_UNIT).map(([k, l]) => `<option value="${k}" ${val === k ? 'selected' : ''}>${l}</option>`).join('')}</select>`
   const tp = (t, a, labels) => `${labels[t] || '実費'}${t === 'fixed' || t === 'capped' ? ' ' + yen(a) : ''}`
   const adj = ih && (Number(ih.bill_adjust || 0) || Number(ih.pay_adjust || 0))
-    ? `<p class="text-xs text-gray-600 mt-1">調整も引き継ぎます: 請求 ${yen(ih.bill_adjust)} ／ 支払 ${yen(ih.pay_adjust)}${ih.adjust_note ? `（${esc(ih.adjust_note)}）` : ''}</p>` : ''
+    ? `<p class="text-xs text-neutral-600 mt-1">調整も引き継ぎます: 請求 ${yen(ih.bill_adjust)} ／ 支払 ${yen(ih.pay_adjust)}${ih.adjust_note ? `（${esc(ih.adjust_note)}）` : ''}</p>` : ''
   box.innerHTML = `
-    <div class="flex items-center justify-between gap-2 mb-2"><p class="font-bold text-gray-700 text-sm"><i class="fas fa-yen-sign mr-1"></i>単価</p>
-      ${pv.inherited ? (ih ? '<button type="button" class="text-xs text-blue-600 hover:underline" data-action="addShiftUseSettings">単価の設定を使う</button>'
-        : '<button type="button" class="text-xs text-blue-600 hover:underline" data-action="addShiftUseInherit">前回の単価に戻す</button>') : ''}</div>
-    ${ih ? `<p id="sh-price-note" class="text-xs text-blue-700 bg-blue-50 rounded p-2 mb-2"><i class="fas fa-clock-rotate-left mr-1"></i>${esc(ih.label)}の単価を引き継いでいます</p>`
-      : `<p id="sh-price-note" class="text-xs text-gray-500 mb-2">単価の設定（案件の標準・単価ルール）から計算します${pv.inherited ? '（前回の単価は使いません）' : ''}</p>`}
+    <div class="flex items-center justify-between gap-2 mb-2"><p class="font-bold text-neutral-700 text-sm"><i class="fas fa-yen-sign mr-1"></i>単価</p>
+      ${pv.inherited ? (ih ? '<button type="button" class="text-xs text-primary-600 hover:underline" data-action="addShiftUseSettings">単価の設定を使う</button>'
+        : '<button type="button" class="text-xs text-primary-600 hover:underline" data-action="addShiftUseInherit">前回の単価に戻す</button>') : ''}</div>
+    ${ih ? `<p id="sh-price-note" class="text-xs text-primary-700 bg-primary-50 rounded p-2 mb-2"><i class="fas fa-clock-rotate-left mr-1"></i>${esc(ih.label)}の単価を引き継いでいます</p>`
+      : `<p id="sh-price-note" class="text-xs text-neutral-500 mb-2">単価の設定（案件の標準・単価ルール）から計算します${pv.inherited ? '（前回の単価は使いません）' : ''}</p>`}
     <div class="grid grid-cols-2 gap-2">
-      <label class="text-xs text-gray-600">請求${unitSel('sh-bill-unit', p.bill_unit_type)}</label>
-      <label class="text-xs text-gray-600">請求単価<input id="sh-bill-rate" type="number" min="0" class="inp text-sm" value="${p.bill_rate ?? ''}"></label>
-      <label class="text-xs text-gray-600">支払${unitSel('sh-pay-unit', p.pay_unit_type)}</label>
-      <label class="text-xs text-gray-600">支払単価<input id="sh-pay-rate" type="number" min="0" class="inp text-sm" value="${p.pay_rate ?? ''}" placeholder="未設定"></label>
+      <label class="text-xs text-neutral-600">請求${unitSel('sh-bill-unit', p.bill_unit_type)}</label>
+      <label class="text-xs text-neutral-600">請求単価<input id="sh-bill-rate" type="number" min="0" class="inp text-sm" value="${p.bill_rate ?? ''}"></label>
+      <label class="text-xs text-neutral-600">支払${unitSel('sh-pay-unit', p.pay_unit_type)}</label>
+      <label class="text-xs text-neutral-600">支払単価<input id="sh-pay-rate" type="number" min="0" class="inp text-sm" value="${p.pay_rate ?? ''}" placeholder="未設定"></label>
     </div>
-    <p class="text-xs text-gray-500 mt-2">交通費: 請求 ${tp(p.bill_transport_type, p.bill_transport_amount, BILL_TRANSPORT_LABEL)} ／ 支払 ${tp(p.pay_transport_type, p.pay_transport_amount, PAY_TRANSPORT_LABEL)}</p>
+    <p class="text-xs text-neutral-500 mt-2">交通費: 請求 ${tp(p.bill_transport_type, p.bill_transport_amount, BILL_TRANSPORT_LABEL)} ／ 支払 ${tp(p.pay_transport_type, p.pay_transport_amount, PAY_TRANSPORT_LABEL)}</p>
     ${adj}
-    <p class="text-[11px] text-gray-400 mt-1">単価を変えて登録すると、このシフトの金額は手動変更になります（次の登録では、この単価を引き継ぎます）</p>`
+    <p class="text-2xs text-neutral-400 mt-1">単価を変えて登録すると、このシフトの金額は手動変更になります（次の登録では、この単価を引き継ぎます）</p>`
 }
 delegate('addShiftUseSettings', () => { ADD_SHIFT_PRICE.inherit = false; addShiftPriceRender() })
 delegate('addShiftUseInherit', () => { ADD_SHIFT_PRICE.inherit = true; addShiftPriceRender() })
@@ -4566,8 +4566,8 @@ window.addShiftFeeHint = function () {
 function addShiftRequire(id, msg) {
   toast(msg)
   const el = document.getElementById(id); if (!el) return
-  el.focus(); el.classList.add('ring-2', 'ring-red-300')
-  el.addEventListener('change', () => el.classList.remove('ring-2', 'ring-red-300'), { once: true })
+  el.focus(); el.classList.add('ring-2', 'ring-danger-300')
+  el.addEventListener('change', () => el.classList.remove('ring-2', 'ring-danger-300'), { once: true })
 }
 // 重複・NG・休職中があれば内容を出して確認し、確認できたら force で登録する（シフトボードと同じ流れ #94）
 window.addShift = async function (force) {
@@ -4604,14 +4604,14 @@ window.showEditShift = async function (shiftId, staffName, status) {
   modal(`
     <h3 class="font-bold text-lg mb-4">シフト操作 — ${esc(staffName)}</h3>
     <div class="space-y-2">
-      <button class="btn btn-outline w-full" onclick="updateShift(${shiftId}, 'confirmed')"><i class="fas fa-check text-emerald-500"></i>確定にする</button>
-      <button class="btn btn-outline w-full" onclick="updateShift(${shiftId}, 'absent')"><i class="fas fa-user-xmark text-red-500"></i>欠勤にする</button>
-      <button class="btn btn-outline w-full" onclick="updateShift(${shiftId}, 'substitute')"><i class="fas fa-people-arrows text-purple-500"></i>代打にする</button>
+      <button class="btn btn-outline w-full" onclick="updateShift(${shiftId}, 'confirmed')"><i class="fas fa-check text-success-500"></i>確定にする</button>
+      <button class="btn btn-outline w-full" onclick="updateShift(${shiftId}, 'absent')"><i class="fas fa-user-xmark text-danger-500"></i>欠勤にする</button>
+      <button class="btn btn-outline w-full" onclick="updateShift(${shiftId}, 'substitute')"><i class="fas fa-people-arrows text-accent-500"></i>代打にする</button>
       <button class="btn btn-danger w-full" onclick="deleteShift(${shiftId})"><i class="fas fa-trash"></i>削除する</button>
     </div>
     ${window.shiftNotifyBoxHtml ? shiftNotifyBoxHtml('es-notify', { note: '上の状態の変更と削除のときに本人に知らせます' }) : ''}
     <div id="edit-shift-location"></div>
-    <div class="mt-4 pt-3 border-t"><p class="text-sm font-bold text-gray-700 mb-2">勤怠報告の写真</p><div id="edit-shift-photos"></div></div>
+    <div class="mt-4 pt-3 border-t"><p class="text-sm font-bold text-neutral-700 mb-2">勤怠報告の写真</p><div id="edit-shift-photos"></div></div>
     <div id="edit-shift-withdrawals"></div>`)
   loadCheckInLocation(document.getElementById('edit-shift-location'), shiftId)
   loadAttendancePhotos(document.getElementById('edit-shift-photos'), shiftId)
@@ -4637,14 +4637,14 @@ async function loadCheckInLocation(box, shiftId) {
   const ci = d.check_in
   if (!ci) return
   const hasPos = ci.latitude != null && ci.longitude != null
-  const map = hasPos ? ` <a class="text-blue-600 underline" target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(Number(ci.latitude) + ',' + Number(ci.longitude))}"><i class="fas fa-location-dot mr-0.5"></i>地図</a>` : ''
+  const map = hasPos ? ` <a class="text-primary-600 underline" target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(Number(ci.latitude) + ',' + Number(ci.longitude))}"><i class="fas fa-location-dot mr-0.5"></i>地図</a>` : ''
   const msg = !hasPos ? '<span class="badge badge-yellow">位置なし</span> 入店の報告に位置情報がありません'
     : ci.distance_m == null ? `<span class="badge badge-gray">判定なし</span> 開催場所の位置が未登録のため、現場との距離を判定できません（案件の詳細の「開催場所」で位置を登録できます）${map}`
       : ci.far ? `<span class="badge badge-red">位置ずれ</span> 現場から約${fmtDistance(ci.distance_m)}離れた位置で入店を報告しています（基準 ${fmtDistance(d.threshold_m)}）${map}`
         : Number(d.threshold_m) > 0 ? `<span class="badge badge-green">現場付近</span> 現場から約${fmtDistance(ci.distance_m)}${map}`
           : `<span class="badge badge-gray">判定しない設定</span> 現場から約${fmtDistance(ci.distance_m)}${map}`
-  box.innerHTML = `<div class="mt-4 pt-3 border-t"><p class="text-sm font-bold text-gray-700 mb-2">入店の位置</p>
-    <p class="text-xs text-gray-600 ${ci.far ? 'bg-red-50 rounded p-2' : ''}">${msg}</p></div>`
+  box.innerHTML = `<div class="mt-4 pt-3 border-t"><p class="text-sm font-bold text-neutral-700 mb-2">入店の位置</p>
+    <p class="text-xs text-neutral-600 ${ci.far ? 'bg-danger-50 rounded p-2' : ''}">${msg}</p></div>`
 }
 delegate('showEditShift', el => showEditShift(Number(el.dataset.id), el.dataset.name, el.dataset.status))
 // スタッフ本人が押し間違いで取り消した勤怠報告の記録（#323）。無ければ何も出さない
@@ -4653,8 +4653,8 @@ async function loadAttendanceWithdrawals(box, shiftId) {
   let data
   try { data = (await axios.get('/api/admin/shifts/' + Number(shiftId) + '/attendance-withdrawals')).data } catch (e) { return }
   if (!data.withdrawals.length) return
-  box.innerHTML = `<div class="mt-4 pt-3 border-t"><p class="text-sm font-bold text-gray-700 mb-2">本人が取り消した報告</p>
-    <ul class="space-y-1">${data.withdrawals.map(w => `<li class="text-xs text-gray-600"><i class="fas fa-rotate-left text-gray-400 mr-1"></i>${esc(w.body || w.title)}</li>`).join('')}</ul></div>`
+  box.innerHTML = `<div class="mt-4 pt-3 border-t"><p class="text-sm font-bold text-neutral-700 mb-2">本人が取り消した報告</p>
+    <ul class="space-y-1">${data.withdrawals.map(w => `<li class="text-xs text-neutral-600"><i class="fas fa-rotate-left text-neutral-400 mr-1"></i>${esc(w.body || w.title)}</li>`).join('')}</ul></div>`
 }
 
 // ============ 勤怠報告の写真（入店・退店。#217） ============
@@ -4668,10 +4668,10 @@ delegate('photoSkipSetting', async () => {
   let d
   try { d = (await axios.get('/api/admin/settings/photo-skip')).data } catch (e) { showApiError(e, '設定を読み込めませんでした'); return }
   modal(`<h3 class="font-bold text-lg mb-2">写真を送れないときの扱い</h3>
-    <p class="text-sm text-gray-600 mb-3">店舗が撮影禁止・カメラが使えないなどで写真を送れないとき、スタッフが理由を選んで写真なしで入店・退店を報告できるようにします（アプリと報告用URL）。写真なしの報告と理由は、シフトの報告状況と写真の一覧に表示されます。</p>
-    <p class="text-xs text-gray-500 mb-3">選べる理由: ${Object.values(d.reasons || {}).map(esc).join('・')}</p>
+    <p class="text-sm text-neutral-600 mb-3">店舗が撮影禁止・カメラが使えないなどで写真を送れないとき、スタッフが理由を選んで写真なしで入店・退店を報告できるようにします（アプリと報告用URL）。写真なしの報告と理由は、シフトの報告状況と写真の一覧に表示されます。</p>
+    <p class="text-xs text-neutral-500 mb-3">選べる理由: ${Object.values(d.reasons || {}).map(esc).join('・')}</p>
     <p class="text-sm mb-4">現在: <span class="badge ${d.enabled ? 'badge-green' : 'badge-gray'}">${d.enabled ? '写真なしの報告を許可' : '許可しない（担当者に連絡してもらう）'}</span></p>
-    ${d.can_edit === false ? `<p class="text-xs text-amber-700 bg-amber-50 rounded-lg p-2 mb-3">${esc(ATTENDANCE_SETTING_DENIED_TEXT)}</p>` : ''}
+    ${d.can_edit === false ? `<p class="text-xs text-warning-700 bg-warning-50 rounded-lg p-2 mb-3">${esc(ATTENDANCE_SETTING_DENIED_TEXT)}</p>` : ''}
     <div class="flex gap-2"><button class="btn btn-outline flex-1" onclick="closeModal()">閉じる</button>
       ${d.can_edit === false ? '' : `<button class="btn btn-primary flex-1" data-action="savePhotoSkip" data-enabled="${d.enabled ? '0' : '1'}">${d.enabled ? '許可をやめる' : '許可する'}</button>`}</div>`)
 })
@@ -4686,21 +4686,21 @@ async function loadAttendancePhotos(box, shiftId) {
   box.innerHTML = '<span class="spin"></span>'
   let data
   try { data = (await axios.get('/api/admin/shifts/' + Number(shiftId) + '/attendance-photos')).data } catch (e) {
-    box.innerHTML = `<p class="text-xs text-red-600">${esc((e.response && e.response.data && e.response.data.error) || '写真を読み込めませんでした')}</p>`
+    box.innerHTML = `<p class="text-xs text-danger-600">${esc((e.response && e.response.data && e.response.data.error) || '写真を読み込めませんでした')}</p>`
     return
   }
   const rows = data.reports.filter(r => r.has_photo)
   // 写真なしで報告した入店・退店（理由つき。#535）
   const skipped = data.reports.filter(r => !r.has_photo && r.no_photo_reason)
   box.innerHTML = (rows.length ? `<div class="grid grid-cols-2 gap-2">${rows.map(r => `
-      <a href="/api/admin/attendance-photo/${Number(r.attendance_id)}" target="_blank" rel="noopener" class="block border rounded-lg overflow-hidden hover:ring-2 ring-blue-300">
-        <img src="/api/admin/attendance-photo/${Number(r.attendance_id)}" alt="${esc(PHOTO_REPORT_LABEL[r.report_type] || r.report_type)}の写真" loading="lazy" class="w-full h-32 object-cover bg-gray-100">
-        <p class="text-xs px-2 py-1 text-gray-600"><span class="font-bold">${esc(PHOTO_REPORT_LABEL[r.report_type] || r.report_type)}</span> ${esc(dayjs(r.reported_at).format('M/D HH:mm'))}
-          <span class="text-gray-400">${esc(PHOTO_ENTRY_LABEL[r.entry_method] || '')}${r.device ? '・' + esc(r.device) : ''}${r.photo_source ? '・' + esc(PHOTO_SOURCE_LABEL[r.photo_source] || '') : ''}</span>
-          ${r.photo_stale ? `<span class="block text-amber-700"><i class="fas fa-clock-rotate-left mr-0.5"></i>写真の日時 ${esc(dayjs(r.photo_taken_at).format('M/D HH:mm'))}（報告と30分以上ずれています）</span>` : ''}</p>
+      <a href="/api/admin/attendance-photo/${Number(r.attendance_id)}" target="_blank" rel="noopener" class="block border rounded-lg overflow-hidden hover:ring-2 ring-primary-300">
+        <img src="/api/admin/attendance-photo/${Number(r.attendance_id)}" alt="${esc(PHOTO_REPORT_LABEL[r.report_type] || r.report_type)}の写真" loading="lazy" class="w-full h-32 object-cover bg-neutral-100">
+        <p class="text-xs px-2 py-1 text-neutral-600"><span class="font-bold">${esc(PHOTO_REPORT_LABEL[r.report_type] || r.report_type)}</span> ${esc(dayjs(r.reported_at).format('M/D HH:mm'))}
+          <span class="text-neutral-400">${esc(PHOTO_ENTRY_LABEL[r.entry_method] || '')}${r.device ? '・' + esc(r.device) : ''}${r.photo_source ? '・' + esc(PHOTO_SOURCE_LABEL[r.photo_source] || '') : ''}</span>
+          ${r.photo_stale ? `<span class="block text-warning-700"><i class="fas fa-clock-rotate-left mr-0.5"></i>写真の日時 ${esc(dayjs(r.photo_taken_at).format('M/D HH:mm'))}（報告と30分以上ずれています）</span>` : ''}</p>
       </a>`).join('')}</div>`
-    : '<p class="text-xs text-gray-400">写真の付いた報告はありません</p>')
-    + skipped.map(r => `<p class="text-xs text-amber-800 bg-amber-50 rounded p-2 mt-2"><i class="fas fa-camera-slash mr-1"></i>${esc(PHOTO_REPORT_LABEL[r.report_type] || r.report_type)} ${esc(dayjs(r.reported_at).format('M/D HH:mm'))}: 写真なしで報告（${esc(r.no_photo_reason)}）</p>`).join('')
+    : '<p class="text-xs text-neutral-400">写真の付いた報告はありません</p>')
+    + skipped.map(r => `<p class="text-xs text-warning-800 bg-warning-50 rounded p-2 mt-2"><i class="fas fa-camera-slash mr-1"></i>${esc(PHOTO_REPORT_LABEL[r.report_type] || r.report_type)} ${esc(dayjs(r.reported_at).format('M/D HH:mm'))}: 写真なしで報告（${esc(r.no_photo_reason)}）</p>`).join('')
 }
 window.loadAttendancePhotos = loadAttendancePhotos
 window.openAttendancePhotos = function (shiftId, staffName) {
@@ -4735,7 +4735,7 @@ const REPORT_NO_TEMPLATE_FIELDS = [{ key: 'free', label: '報告内容', type: '
 // values の項目でも日報の列でも、赤枠の中にまとめて出す
 const REPORT_INCIDENT_KEY = /^(incident|complaint)_(?!flag$)/
 const reportEmpty = v => v === undefined || v === null || v === ''
-const REPORT_TEXT_STYLE = { good_case: 'text-emerald-700 bg-emerald-50', store_share: 'text-blue-700 bg-blue-50' }
+const REPORT_TEXT_STYLE = { good_case: 'text-success-700 bg-success-50', store_share: 'text-primary-700 bg-primary-50' }
 
 function reportFilterFromHash() {
   const m = (location.hash || '').match(/^#reports\/(.*)$/)
@@ -4802,16 +4802,16 @@ function reportValuesHtml(r, fields) {
     if (f.type === 'number') { if (Number(v) > 0) nums.push([f.label, v]) } else texts.push([f.label, v, f.key])
   }
   const others = Object.entries(vals).filter(([k, v]) => !used.has(k) && !empty(v) && !(typeof v === 'number' && v === 0))
-  const textHtml = ([label, v, key]) => `<div class="text-xs rounded-lg px-2.5 py-1.5 mb-1 ${REPORT_TEXT_STYLE[key] || 'text-gray-700 bg-gray-50'}">
+  const textHtml = ([label, v, key]) => `<div class="text-xs rounded-lg px-2.5 py-1.5 mb-1 ${REPORT_TEXT_STYLE[key] || 'text-neutral-700 bg-neutral-50'}">
       <span class="font-bold">${esc(label)}</span><p class="whitespace-pre-wrap break-words mt-0.5">${esc(v)}</p></div>`
   return `
     ${nums.length ? `<div class="flex flex-wrap gap-1.5 mb-2">${nums.map(([l, v]) => `<span class="badge badge-blue">${esc(l)} ${esc(v)}</span>`).join('')}</div>` : ''}
     ${texts.map(textHtml).join('')}
-    ${others.length ? `<div class="mt-2"><p class="text-[11px] text-gray-400 mb-1">テンプレートにない項目</p>
+    ${others.length ? `<div class="mt-2"><p class="text-2xs text-neutral-400 mb-1">テンプレートにない項目</p>
       ${others.map(([k, v]) => typeof v === 'number'
         ? `<span class="badge badge-gray mr-1">${esc(LABELS[k] || k)} ${esc(v)}</span>`
         : textHtml([LABELS[k] || k, typeof v === 'object' ? JSON.stringify(v) : v, k])).join('')}</div>` : ''}
-    ${!nums.length && !texts.length && !others.length ? '<p class="text-xs text-gray-400">入力された項目はありません</p>' : ''}`
+    ${!nums.length && !texts.length && !others.length ? '<p class="text-xs text-neutral-400">入力された項目はありません</p>' : ''}`
 }
 
 function reportIncidentHtml(r, fields) {
@@ -4822,10 +4822,10 @@ function reportIncidentHtml(r, fields) {
   for (const [k, v] of Object.entries(r)) if (REPORT_INCIDENT_KEY.test(k) && !REPORT_INCIDENT_META.has(k) && !(k in vals) && typeof v === 'string' && v) notes.push([label(k), v])
   if (!r.incident_flag && !r.complaint_flag && !notes.length) return ''
   const kinds = [r.incident_flag ? 'インシデント' : '', r.complaint_flag ? 'クレーム' : ''].filter(Boolean).join('・') || 'インシデント・クレーム'
-  return `<div class="text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg px-2.5 py-2 mb-2">
+  return `<div class="text-xs text-danger-700 bg-danger-50 border border-danger-200 rounded-lg px-2.5 py-2 mb-2">
     <p class="font-bold"><i class="fas fa-triangle-exclamation mr-1"></i>${esc(kinds)}の報告あり</p>
     ${notes.length ? notes.map(([l, v]) => `<p class="mt-1"><span class="font-bold">${esc(l)}</span></p><p class="whitespace-pre-wrap break-words">${esc(typeof v === 'object' ? JSON.stringify(v) : v)}</p>`).join('')
-      : '<p class="mt-1 text-red-500">内容の記入はありません。スタッフに確認してください。</p>'}
+      : '<p class="mt-1 text-danger-500">内容の記入はありません。スタッフに確認してください。</p>'}
     ${r.incident_flag || r.complaint_flag ? reportIncidentStatusHtml(r) : ''}
   </div>`
 }
@@ -4837,15 +4837,15 @@ const INCIDENT_STATUS_BADGE = { open: 'badge-red', in_progress: 'badge-yellow', 
 function reportIncidentStatusHtml(r) {
   const st = r.incident_status || 'open'
   const fmt = d => (d ? dayjs(String(d).replace(' ', 'T')).format('M/D HH:mm') : '')
-  return `<div class="mt-2 pt-2 border-t border-red-200 text-gray-700">
+  return `<div class="mt-2 pt-2 border-t border-danger-200 text-neutral-700">
     <div class="flex items-center gap-2 flex-wrap">
-      <span class="font-bold text-red-700">対応状況</span>
+      <span class="font-bold text-danger-700">対応状況</span>
       <span class="badge ${INCIDENT_STATUS_BADGE[st] || 'badge-gray'}">${INCIDENT_STATUS_LABEL[st] || ''}</span>
       ${r.incident_client_shared_at ? `<span class="badge badge-blue">クライアント共有済み ${esc(fmt(r.incident_client_shared_at))}</span>` : ''}
       <button class="btn btn-outline text-xs ml-auto" data-action="editIncident" data-id="${Number(r.daily_report_id)}"><i class="fas fa-pen-to-square"></i>対応を記録</button>
     </div>
     ${r.incident_memo ? `<p class="whitespace-pre-wrap break-words mt-1">${esc(r.incident_memo)}</p>` : ''}
-    ${r.incident_updated_at ? `<p class="text-[11px] text-gray-400 mt-0.5">更新: ${esc(r.incident_updated_by_name || '')} ${esc(fmt(r.incident_updated_at))}</p>` : ''}
+    ${r.incident_updated_at ? `<p class="text-2xs text-neutral-400 mt-0.5">更新: ${esc(r.incident_updated_by_name || '')} ${esc(fmt(r.incident_updated_at))}</p>` : ''}
   </div>`
 }
 delegate('editIncident', (el) => {
@@ -4853,12 +4853,12 @@ delegate('editIncident', (el) => {
   const st = r.incident_status || 'open'
   modal(`
     <h3 class="font-bold text-lg mb-1">インシデント・クレームの対応</h3>
-    <p class="text-xs text-gray-500 mb-3">${esc(dayjs(r.work_date).format('M/D(dd)'))} ${esc(r.staff_name)}・${esc(r.project_name)}</p>
+    <p class="text-xs text-neutral-500 mb-3">${esc(dayjs(r.work_date).format('M/D(dd)'))} ${esc(r.staff_name)}・${esc(r.project_name)}</p>
     <div class="flex gap-2 flex-wrap mb-3">
       ${Object.entries(INCIDENT_STATUS_LABEL).map(([k, l]) => `<label class="flex items-center gap-1.5 text-sm border rounded-lg px-3 py-2 cursor-pointer"><input type="radio" name="inc-status" value="${k}" ${k === st ? 'checked' : ''}>${l}</label>`).join('')}
     </div>
     <label class="flex items-center gap-2 text-sm mb-3"><input id="inc-shared" type="checkbox" class="w-4 h-4" ${r.incident_client_shared_at ? 'checked' : ''}>クライアントに共有した${r.incident_client_shared_at ? `（${esc(dayjs(String(r.incident_client_shared_at).replace(' ', 'T')).format('M/D HH:mm'))}）` : ''}</label>
-    <label class="text-sm text-gray-600 block mb-1" for="inc-memo">対応メモ</label>
+    <label class="text-sm text-neutral-600 block mb-1" for="inc-memo">対応メモ</label>
     <textarea id="inc-memo" rows="5" class="inp text-sm w-full" style="resize:vertical" maxlength="2000" placeholder="だれに・いつ・何を連絡したか、再発防止の内容など">${esc(r.incident_memo || '')}</textarea>
     <div class="flex gap-2 justify-end mt-3">
       <button class="btn btn-outline text-sm" onclick="closeModal()">キャンセル</button>
@@ -4897,10 +4897,10 @@ function reportCommentReadHtml(cm, fmt) {
 }
 // 日報のコメント（#9965。日報1件に複数。古い順）。書いた本人のコメントと、書いた人の記録がない古いコメント（#9975）だけに「編集」「削除」を出す（サーバーでも確かめる）
 function reportCommentsHtml(r, fmt) {
-  return (r.comments || []).map(cm => `<div class="text-xs bg-gray-50 rounded-lg px-2.5 py-1.5 mt-2" data-report-comment="${Number(cm.comment_id)}"><i class="fas fa-comment-dots text-gray-400 mr-1"></i><span class="whitespace-pre-wrap break-words">${esc(cm.body)}</span>
-        <span class="flex items-center gap-2 flex-wrap text-[11px] text-gray-400 mt-0.5"><span>${esc(cm.author_name || '管理者')} ${esc(fmt(cm.created_at))}${cm.updated_at ? `（編集 ${esc(fmt(cm.updated_at))}）` : ''}</span>${reportCommentReadHtml(cm, fmt)}
-          ${cm.mine || cm.editable ? `<button class="text-blue-600 hover:underline" data-action="commentReport" data-id="${Number(r.daily_report_id)}" data-cid="${Number(cm.comment_id)}">編集</button>
-          <button class="text-red-600 hover:underline" data-action="deleteReportComment" data-id="${Number(r.daily_report_id)}" data-cid="${Number(cm.comment_id)}">削除</button>` : ''}</span></div>`).join('')
+  return (r.comments || []).map(cm => `<div class="text-xs bg-neutral-50 rounded-lg px-2.5 py-1.5 mt-2" data-report-comment="${Number(cm.comment_id)}"><i class="fas fa-comment-dots text-neutral-400 mr-1"></i><span class="whitespace-pre-wrap break-words">${esc(cm.body)}</span>
+        <span class="flex items-center gap-2 flex-wrap text-2xs text-neutral-400 mt-0.5"><span>${esc(cm.author_name || '管理者')} ${esc(fmt(cm.created_at))}${cm.updated_at ? `（編集 ${esc(fmt(cm.updated_at))}）` : ''}</span>${reportCommentReadHtml(cm, fmt)}
+          ${cm.mine || cm.editable ? `<button class="text-primary-600 hover:underline" data-action="commentReport" data-id="${Number(r.daily_report_id)}" data-cid="${Number(cm.comment_id)}">編集</button>
+          <button class="text-danger-600 hover:underline" data-action="deleteReportComment" data-id="${Number(r.daily_report_id)}" data-cid="${Number(cm.comment_id)}">削除</button>` : ''}</span></div>`).join('')
 }
 // 最後の実績の修正・再提出（#9902。API の last_edit）。「誰が・いつ・どの項目を・いくつからいくつに」を1行で出し、全部は修正履歴で見る
 // 修正履歴のボタンはこの行に1つだけ出す（この行が出ないときだけ、カードの下に出す。#9920）
@@ -4912,11 +4912,11 @@ function reportLastEditHtml(r, fields, fmt) {
   const who = e.kind === 'admin_edit' ? `${e.edited_by_name || '管理者'}が修正`
     : e.entry_method === 'proxy' ? `${e.edited_by_name || '管理者'}が代理入力で再提出` : `${r.staff_name || 'スタッフ'}が再提出`
   // テキストの値は長いことがあるので折り返す（項目名だけ折り返さない）
-  const list = e.changes.map(c => `<span><span class="text-gray-500 whitespace-nowrap">${esc(label.get(c.key) || LABELS[c.key] || c.key)}</span> ${esc(reportEditValueText(c.before))} → <b>${esc(reportEditValueText(c.after))}</b></span>`).join('、')
-  return `<div class="text-xs rounded-lg px-2.5 py-1.5 mt-1.5 break-words ${e.kind === 'admin_edit' ? 'bg-purple-50 text-purple-900' : 'bg-amber-50 text-amber-900'}" data-report-last-edit>
-    <i class="fas fa-user-pen mr-1"></i><b>${esc(who)}</b> <span class="text-gray-500">${esc(fmt(e.edited_at))}</span>：${list}${Number(e.more) > 0 ? ` ほか${Number(e.more)}項目` : ''}
-    ${e.reason ? `<span class="block text-gray-600 mt-0.5 whitespace-pre-wrap break-words">理由: ${esc(e.reason)}</span>` : ''}
-    <button class="text-blue-600 hover:underline ml-1" data-action="reportEditHistory" data-id="${Number(r.daily_report_id)}">修正履歴をすべて見る（${Number(r.edit_count) || 1}件）</button>
+  const list = e.changes.map(c => `<span><span class="text-neutral-500 whitespace-nowrap">${esc(label.get(c.key) || LABELS[c.key] || c.key)}</span> ${esc(reportEditValueText(c.before))} → <b>${esc(reportEditValueText(c.after))}</b></span>`).join('、')
+  return `<div class="text-xs rounded-lg px-2.5 py-1.5 mt-1.5 break-words ${e.kind === 'admin_edit' ? 'bg-accent-50 text-accent-900' : 'bg-warning-50 text-warning-900'}" data-report-last-edit>
+    <i class="fas fa-user-pen mr-1"></i><b>${esc(who)}</b> <span class="text-neutral-500">${esc(fmt(e.edited_at))}</span>：${list}${Number(e.more) > 0 ? ` ほか${Number(e.more)}項目` : ''}
+    ${e.reason ? `<span class="block text-neutral-600 mt-0.5 whitespace-pre-wrap break-words">理由: ${esc(e.reason)}</span>` : ''}
+    <button class="text-primary-600 hover:underline ml-1" data-action="reportEditHistory" data-id="${Number(r.daily_report_id)}">修正履歴をすべて見る（${Number(r.edit_count) || 1}件）</button>
   </div>`
 }
 // 日報のカードの見出し（#9919。提出済みの日報と未提出のシフトで同じ並び・同じ見た目にする）
@@ -4925,15 +4925,15 @@ function reportCardHeadHtml(o) {
   const time = o.start_time ? formatShiftTime(o.start_time, o.end_time) : ''
   return `
       <div class="flex items-center gap-2 flex-wrap mb-2" data-report-head>
-        <span class="font-bold text-gray-800">${esc(dayjs(o.work_date).format('M/D(dd)'))}</span>
-        <a href="#staff/${Number(o.staff_id)}" class="text-blue-600 font-medium hover:underline">${esc(o.staff_name)}</a>
-        <span class="inline-flex items-center gap-x-2 gap-y-0.5 flex-wrap text-xs text-gray-400 min-w-0">
+        <span class="font-bold text-neutral-800">${esc(dayjs(o.work_date).format('M/D(dd)'))}</span>
+        <a href="#staff/${Number(o.staff_id)}" class="text-primary-600 font-medium hover:underline">${esc(o.staff_name)}</a>
+        <span class="inline-flex items-center gap-x-2 gap-y-0.5 flex-wrap text-xs text-neutral-400 min-w-0">
           <a href="${esc(reportsHash({ ...reportFilterFromHash(), project: o.project_id, page: 0 }))}" class="hover:underline" title="この案件で絞り込む">${esc(o.project_name)}</a>
           ${o.site_name ? `<span class="break-all"><i class="fas fa-location-dot mr-0.5"></i>${esc(o.site_name)}</span>` : ''}
           ${time ? `<span class="whitespace-nowrap"><i class="far fa-clock mr-0.5"></i>${esc(time)}</span>` : ''}
         </span>
         ${o.badges || ''}
-        ${o.right ? `<span class="text-xs text-gray-400 ml-auto">${o.right}</span>` : ''}
+        ${o.right ? `<span class="text-xs text-neutral-400 ml-auto">${o.right}</span>` : ''}
       </div>`
 }
 function reportCardHtml(r, fields) {
@@ -4947,13 +4947,13 @@ function reportCardHtml(r, fields) {
         ${reportEntryBadge(r)}
         ${reportAdminEditBadge(r, fmt)}`
   return `
-    <section class="card p-4 ${r.incident_flag || r.complaint_flag ? 'ring-1 ring-red-200' : ''}">
+    <section class="card p-4 ${r.incident_flag || r.complaint_flag ? 'ring-1 ring-danger-200' : ''}">
       ${reportCardHeadHtml({ work_date: r.work_date, staff_id: r.staff_id, staff_name: r.staff_name, project_id: r.project_id, project_name: r.project_name,
         site_name: r.site_name, start_time: r.shift_start_time, end_time: r.shift_end_time, badges, right: `提出 ${esc(fmt(r.submitted_at))}` })}
       ${reportIncidentHtml(r, fields)}
       <div class="flex items-center gap-2 mb-1.5">
-        <span class="text-[11px] font-bold text-gray-500">日報の内容</span>
-        <button class="btn btn-outline text-xs py-1 px-2.5 ml-auto text-blue-700 border-blue-200" data-action="editReportValues" data-id="${Number(r.daily_report_id)}" title="管理者に届いた本当の実績と照らし合わせて、日報の値を直します（直した人・もとの値は修正履歴に残ります）"><i class="fas fa-pen-to-square"></i>実績を修正</button>
+        <span class="text-2xs font-bold text-neutral-500">日報の内容</span>
+        <button class="btn btn-outline text-xs py-1 px-2.5 ml-auto text-primary-700 border-primary-200" data-action="editReportValues" data-id="${Number(r.daily_report_id)}" title="管理者に届いた本当の実績と照らし合わせて、日報の値を直します（直した人・もとの値は修正履歴に残ります）"><i class="fas fa-pen-to-square"></i>実績を修正</button>
       </div>
       ${reportValuesHtml(r, fields)}
       ${reportLastEditHtml(r, fields, fmt)}
@@ -4961,10 +4961,10 @@ function reportCardHtml(r, fields) {
       <div class="flex gap-2 mt-3 flex-wrap items-center">
         ${r.manager_checked
           ? `<button class="btn btn-outline text-xs" data-action="uncheckReport" data-id="${Number(r.daily_report_id)}"><i class="fas fa-rotate-left"></i>未確認に戻す</button>
-             ${r.manager_checked_by_name || r.manager_checked_at ? `<span class="text-[11px] text-gray-400">確認: ${esc(r.manager_checked_by_name || '')} ${esc(fmt(r.manager_checked_at))}</span>` : ''}`
+             ${r.manager_checked_by_name || r.manager_checked_at ? `<span class="text-2xs text-neutral-400">確認: ${esc(r.manager_checked_by_name || '')} ${esc(fmt(r.manager_checked_at))}</span>` : ''}`
           : `<button class="btn btn-outline text-xs" data-action="checkReport" data-id="${Number(r.daily_report_id)}"><i class="fas fa-check"></i>確認済みにする</button>`}
         <button class="btn btn-outline text-xs" data-action="commentReport" data-id="${Number(r.daily_report_id)}"><i class="fas fa-comment"></i>${(r.comments || []).length ? 'コメントを追加' : 'コメント'}</button>
-        ${Number(r.edit_count) > 0 && !reportLastEditHtml(r, fields, fmt) ? `<button class="text-xs text-blue-600 hover:underline" data-action="reportEditHistory" data-id="${Number(r.daily_report_id)}"><i class="fas fa-clock-rotate-left mr-0.5"></i>修正履歴（${Number(r.edit_count)}件）</button>` : ''}
+        ${Number(r.edit_count) > 0 && !reportLastEditHtml(r, fields, fmt) ? `<button class="text-xs text-primary-600 hover:underline" data-action="reportEditHistory" data-id="${Number(r.daily_report_id)}"><i class="fas fa-clock-rotate-left mr-0.5"></i>修正履歴（${Number(r.edit_count)}件）</button>` : ''}
       </div>
     </section>`
 }
@@ -5000,19 +5000,19 @@ delegate('editReportValues', (el) => withSubmitLock(el, async () => {
   const input = (f, i) => {
     const v = vals[f.key]
     const id = 'rev-f-' + i
-    const req = f.required ? '<span class="text-red-500 ml-0.5">*</span>' : ''
-    const label = `<label class="text-xs font-bold text-gray-600 block mb-0.5" for="${id}">${esc(f.label)}${f.unit ? `（${esc(f.unit)}）` : ''}${req}${f.past ? ' <span class="badge badge-gray font-normal">以前の項目</span>' : ''}</label>`
+    const req = f.required ? '<span class="text-danger-500 ml-0.5">*</span>' : ''
+    const label = `<label class="text-xs font-bold text-neutral-600 block mb-0.5" for="${id}">${esc(f.label)}${f.unit ? `（${esc(f.unit)}）` : ''}${req}${f.past ? ' <span class="badge badge-gray font-normal">以前の項目</span>' : ''}</label>`
     if (f.type === 'number') return `<div>${label}<input id="${id}" data-key="${esc(f.key)}" data-type="number" type="text" inputmode="numeric" class="inp text-sm w-full rev-field" value="${esc(v == null ? '' : v)}" placeholder="0"></div>`
     const max = Number(f.maxLength) > 0 ? Number(f.maxLength) : 2000
     return `<div class="col-span-full">${label}<textarea id="${id}" data-key="${esc(f.key)}" data-type="text" rows="${f.type === 'textarea' ? 3 : 2}" maxlength="${max}" class="inp text-sm w-full rev-field" style="resize:vertical">${esc(v == null ? '' : v)}</textarea></div>`
   }
   modal(`
     <h3 class="font-bold text-lg mb-1">日報の実績を修正</h3>
-    <p class="text-xs text-gray-500 mb-2">${esc(dayjs(r.work_date).format('M/D(dd)'))} ${esc(r.staff_name)}・${esc(r.project_name)}　提出 ${esc(r.submitted_at ? dayjs(String(r.submitted_at).replace(' ', 'T')).format('M/D HH:mm') : '')}</p>
-    <p class="text-xs text-gray-600 bg-blue-50 rounded-lg px-2.5 py-1.5 mb-3">直した値が正になり、実績分析・案件の実績・CSV・スタッフのアプリに使われます。スタッフのアプリには「管理者が修正」と表示され、通知が届きます。もとの値は修正履歴に残ります。</p>
-    ${r.admin_edited_at ? `<p class="text-[11px] text-gray-400 mb-2">前回の修正: ${esc(r.admin_edited_by_name || '')} ${esc(dayjs(String(r.admin_edited_at).replace(' ', 'T')).format('M/D HH:mm'))}</p>` : ''}
-    <div class="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-3">${d.fields.map(input).join('') || '<p class="text-sm text-gray-400 col-span-full">直せる項目がありません</p>'}</div>
-    <label class="text-sm text-gray-600 block mb-1" for="rev-reason">修正の理由（任意。スタッフにも伝わります）</label>
+    <p class="text-xs text-neutral-500 mb-2">${esc(dayjs(r.work_date).format('M/D(dd)'))} ${esc(r.staff_name)}・${esc(r.project_name)}　提出 ${esc(r.submitted_at ? dayjs(String(r.submitted_at).replace(' ', 'T')).format('M/D HH:mm') : '')}</p>
+    <p class="text-xs text-neutral-600 bg-primary-50 rounded-lg px-2.5 py-1.5 mb-3">直した値が正になり、実績分析・案件の実績・CSV・スタッフのアプリに使われます。スタッフのアプリには「管理者が修正」と表示され、通知が届きます。もとの値は修正履歴に残ります。</p>
+    ${r.admin_edited_at ? `<p class="text-2xs text-neutral-400 mb-2">前回の修正: ${esc(r.admin_edited_by_name || '')} ${esc(dayjs(String(r.admin_edited_at).replace(' ', 'T')).format('M/D HH:mm'))}</p>` : ''}
+    <div class="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-3">${d.fields.map(input).join('') || '<p class="text-sm text-neutral-400 col-span-full">直せる項目がありません</p>'}</div>
+    <label class="text-sm text-neutral-600 block mb-1" for="rev-reason">修正の理由（任意。スタッフにも伝わります）</label>
     <textarea id="rev-reason" rows="2" class="inp text-sm w-full" style="resize:vertical" maxlength="${Number(d.reason_max) || 500}" placeholder="例: 店舗から届いた実績の数に合わせました"></textarea>
     <div class="flex gap-2 justify-end mt-3 flex-wrap">
       ${d.edits && d.edits.length ? `<button class="btn btn-outline text-sm mr-auto" data-action="reportEditHistory" data-id="${Number(r.daily_report_id)}"><i class="fas fa-clock-rotate-left"></i>修正履歴（${d.edits.length}件）</button>` : ''}
@@ -5054,26 +5054,26 @@ delegate('reportEditHistory', (el) => withSubmitLock(el, async () => {
   const label = new Map((d.fields || []).map(f => [f.key, f.label]))
   const fmt = t => (t ? dayjs(String(t).replace(' ', 'T')).format('YYYY/M/D HH:mm') : '')
   const item = e => `
-    <li class="border border-gray-200 rounded-lg p-3">
+    <li class="border border-neutral-200 rounded-lg p-3">
       <div class="flex items-center gap-2 flex-wrap text-xs">
         <span class="badge ${e.kind === 'admin_edit' ? 'badge-purple' : 'badge-yellow'}">${esc(REPORT_EDIT_KIND_LABEL[e.kind] || e.kind)}</span>
-        ${e.kind === 'resubmit' && e.entry_method ? `<span class="text-gray-500">${esc(REPORT_EDIT_METHOD_LABEL[e.entry_method] || e.entry_method)}</span>` : ''}
-        <span class="text-gray-600">${esc(e.edited_by_name || (e.kind === 'resubmit' ? r.staff_name : ''))}</span>
-        <span class="text-gray-400 ml-auto">${esc(fmt(e.edited_at))}</span>
+        ${e.kind === 'resubmit' && e.entry_method ? `<span class="text-neutral-500">${esc(REPORT_EDIT_METHOD_LABEL[e.entry_method] || e.entry_method)}</span>` : ''}
+        <span class="text-neutral-600">${esc(e.edited_by_name || (e.kind === 'resubmit' ? r.staff_name : ''))}</span>
+        <span class="text-neutral-400 ml-auto">${esc(fmt(e.edited_at))}</span>
       </div>
-      ${e.reason ? `<p class="text-xs text-gray-700 bg-gray-50 rounded px-2 py-1 mt-1.5 whitespace-pre-wrap break-words">理由: ${esc(e.reason)}</p>` : ''}
-      <table class="w-full text-xs mt-1.5"><thead><tr class="text-[11px] text-gray-400"><th class="text-left font-normal pr-2">項目</th><th class="text-left font-normal pr-1">もとの値</th><th></th><th class="text-left font-normal">変えた後</th></tr></thead><tbody>
-        ${(e.changed_keys || []).map(k => `<tr class="border-t border-gray-100">
-          <td class="py-1 pr-2 text-gray-500 align-top whitespace-nowrap">${esc(label.get(k) || LABELS[k] || k)}</td>
-          <td class="py-1 pr-1 text-gray-500 align-top whitespace-pre-wrap break-words">${esc(reportEditValueText(e.before[k]))}</td>
-          <td class="py-1 px-1 text-gray-400 align-top">→</td>
-          <td class="py-1 font-bold text-gray-800 align-top whitespace-pre-wrap break-words">${esc(reportEditValueText(e.after[k]))}</td></tr>`).join('')}
+      ${e.reason ? `<p class="text-xs text-neutral-700 bg-neutral-50 rounded px-2 py-1 mt-1.5 whitespace-pre-wrap break-words">理由: ${esc(e.reason)}</p>` : ''}
+      <table class="w-full text-xs mt-1.5"><thead><tr class="text-2xs text-neutral-400"><th class="text-left font-normal pr-2">項目</th><th class="text-left font-normal pr-1">もとの値</th><th></th><th class="text-left font-normal">変えた後</th></tr></thead><tbody>
+        ${(e.changed_keys || []).map(k => `<tr class="border-t border-neutral-100">
+          <td class="py-1 pr-2 text-neutral-500 align-top whitespace-nowrap">${esc(label.get(k) || LABELS[k] || k)}</td>
+          <td class="py-1 pr-1 text-neutral-500 align-top whitespace-pre-wrap break-words">${esc(reportEditValueText(e.before[k]))}</td>
+          <td class="py-1 px-1 text-neutral-400 align-top">→</td>
+          <td class="py-1 font-bold text-neutral-800 align-top whitespace-pre-wrap break-words">${esc(reportEditValueText(e.after[k]))}</td></tr>`).join('')}
       </tbody></table>
     </li>`
   modal(`
     <h3 class="font-bold text-lg mb-1">実績の修正履歴</h3>
-    <p class="text-xs text-gray-500 mb-3">${esc(dayjs(r.work_date).format('M/D(dd)'))} ${esc(r.staff_name)}・${esc(r.project_name)}（新しい順。左がもとの値、右が直した後の値）</p>
-    ${d.edits && d.edits.length ? `<ul class="space-y-2 max-h-[60vh] overflow-y-auto">${d.edits.map(item).join('')}</ul>` : '<p class="text-sm text-gray-400">修正の履歴はありません</p>'}
+    <p class="text-xs text-neutral-500 mb-3">${esc(dayjs(r.work_date).format('M/D(dd)'))} ${esc(r.staff_name)}・${esc(r.project_name)}（新しい順。左がもとの値、右が直した後の値）</p>
+    ${d.edits && d.edits.length ? `<ul class="space-y-2 max-h-[60vh] overflow-y-auto">${d.edits.map(item).join('')}</ul>` : '<p class="text-sm text-neutral-400">修正の履歴はありません</p>'}
     <div class="flex justify-end mt-3"><button class="btn btn-outline text-sm" onclick="closeModal()">閉じる</button></div>`)
 }))
 
@@ -5081,7 +5081,7 @@ delegate('reportEditHistory', (el) => withSubmitLock(el, async () => {
 // 提出済みの日報と未提出のシフト（#344）の切り替え。期間・案件・スタッフの絞り込みは引き継ぐ
 function reportModeTabsHtml(f) {
   const base = { from: f.from, to: f.to, project: f.project, staff: f.staff }
-  const tab = (on, label, hash) => `<a href="${esc(hash)}" class="px-3 py-1.5 rounded-lg text-sm ${on ? 'bg-blue-600 text-white' : 'bg-white border border-gray-200 text-gray-600'}">${label}</a>`
+  const tab = (on, label, hash) => `<a href="${esc(hash)}" class="px-3 py-1.5 rounded-lg text-sm ${on ? 'bg-primary-600 text-white' : 'bg-surface border border-neutral-200 text-neutral-600'}">${label}</a>`
   return `<div class="flex gap-2" id="report-mode-tabs">${tab(!f.missing, '提出済みの日報', reportsHash(base))}${tab(!!f.missing, '未提出', reportsHash({ ...base, missing: 1 }))}</div>`
 }
 // 日報が未提出のシフト（確定・代打で、勤務日を過ぎた・日報が必要なもの）。API は GET /admin/daily-reports/missing（#344）
@@ -5098,7 +5098,7 @@ async function renderMissingReports(f, refresh) {
     if (!REPORT_OPTIONS) REPORT_OPTIONS = (await axios.get('/api/admin/daily-reports', { params: { limit: 1, options: 1 } })).data.options || null
     data = (await axios.get('/api/admin/daily-reports/missing', { params: q })).data
   } catch (e) {
-    $app.innerHTML = `<div class="flex items-center justify-between mb-3 flex-wrap gap-2"><div class="flex items-center gap-3 flex-wrap"><h2 class="text-xl font-bold text-gray-900">日報一覧</h2>${reportModeTabsHtml(f)}</div></div><div class="card p-6 text-center text-sm text-gray-500">未提出のシフトを読み込めませんでした。<button class="btn btn-outline text-xs ml-2" onclick="renderReports()">再読み込み</button><a class="btn btn-outline text-xs ml-2" href="#reports/missing=1">期間を既定に戻す</a></div>`
+    $app.innerHTML = `<div class="flex items-center justify-between mb-3 flex-wrap gap-2"><div class="flex items-center gap-3 flex-wrap"><h2 class="text-xl font-bold text-neutral-900">日報一覧</h2>${reportModeTabsHtml(f)}</div></div><div class="card p-6 text-center text-sm text-neutral-500">未提出のシフトを読み込めませんでした。<button class="btn btn-outline text-xs ml-2" onclick="renderReports()">再読み込み</button><a class="btn btn-outline text-xs ml-2" href="#reports/missing=1">期間を既定に戻す</a></div>`
     showApiError(e, '未提出のシフトを読み込めませんでした'); return
   }
   const opts = REPORT_OPTIONS || { projects: [], staff: [] }
@@ -5109,7 +5109,7 @@ async function renderMissingReports(f, refresh) {
   // 見出し・タブの並びは提出済みの日報の画面と同じにする（#9919）
   $app.innerHTML = `
     <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
-      <div class="flex items-center gap-3 flex-wrap"><h2 class="text-xl font-bold text-gray-900">日報一覧</h2>${reportModeTabsHtml(f)}</div>
+      <div class="flex items-center gap-3 flex-wrap"><h2 class="text-xl font-bold text-neutral-900">日報一覧</h2>${reportModeTabsHtml(f)}</div>
     </div>
     <section class="card p-3 mb-4">
       <div class="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
@@ -5120,13 +5120,13 @@ async function renderMissingReports(f, refresh) {
         <label>スタッフ<select id="rp-staff" class="inp" onchange="applyReportFilter()"><option value="">すべて</option>
           ${opts.staff.map(s => `<option value="${Number(s.staff_id)}" ${f.staff === s.staff_id ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</select></label>
       </div>
-      <p class="text-[11px] text-gray-400 mt-2">確定・代打のシフトのうち、日報が必要で、まだ日報が出ていないものです（日報「不要」の案件・シフトは出しません。期間は昨日までの62日以内）。「報告状況・代理入力」を押すと、そのシフトの報告状況から日報を代理入力できます</p>
+      <p class="text-2xs text-neutral-400 mt-2">確定・代打のシフトのうち、日報が必要で、まだ日報が出ていないものです（日報「不要」の案件・シフトは出しません。期間は昨日までの62日以内）。「報告状況・代理入力」を押すと、そのシフトの報告状況から日報を代理入力できます</p>
     </section>
     <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
-      <p class="text-xs text-gray-500" id="missing-total">未提出 ${rows.length}件${data.has_more ? '（多いため先頭の分だけを表示しています。期間を短くしてください）' : ''}</p>
+      <p class="text-xs text-neutral-500" id="missing-total">未提出 ${rows.length}件${data.has_more ? '（多いため先頭の分だけを表示しています。期間を短くしてください）' : ''}</p>
     </div>
     <div class="space-y-3" id="missing-report-list">
-      ${rows.map(missingReportCardHtml).join('') || '<p class="text-center text-gray-400 py-10">この条件で未提出の日報はありません <i class="fas fa-check text-emerald-500"></i></p>'}
+      ${rows.map(missingReportCardHtml).join('') || '<p class="text-center text-neutral-400 py-10">この条件で未提出の日報はありません <i class="fas fa-check text-success-500"></i></p>'}
     </div>`
   if (refresh) window.scrollTo(0, scrollY)
 }
@@ -5140,12 +5140,12 @@ function missingReportCardHtml(r) {
       ${reportCardHeadHtml({ work_date: r.work_date, staff_id: r.staff_id, staff_name: r.staff_name, project_id: r.project_id, project_name: r.project_name,
         site_name: r.site_name, start_time: r.start_time, end_time: r.end_time, badges, right: '日報 未提出' })}
       <div class="flex items-center gap-2 mb-1.5">
-        <span class="text-[11px] font-bold text-gray-500">日報の内容</span>
-        <button type="button" class="btn btn-outline text-xs py-1 px-2.5 ml-auto text-blue-700 border-blue-200" data-action="missingReportOpen" data-id="${Number(r.shift_id)}" title="このシフトの報告状況を開き、日報を代理入力します（ログインのない人には報告用URLも発行できます）"><i class="fas fa-file-pen"></i>報告状況・代理入力</button>
+        <span class="text-2xs font-bold text-neutral-500">日報の内容</span>
+        <button type="button" class="btn btn-outline text-xs py-1 px-2.5 ml-auto text-primary-700 border-primary-200" data-action="missingReportOpen" data-id="${Number(r.shift_id)}" title="このシフトの報告状況を開き、日報を代理入力します（ログインのない人には報告用URLも発行できます）"><i class="fas fa-file-pen"></i>報告状況・代理入力</button>
       </div>
-      <p class="text-xs text-gray-400">まだ日報が出ていません</p>
+      <p class="text-xs text-neutral-400">まだ日報が出ていません</p>
       <div class="flex gap-2 mt-3 flex-wrap items-center">
-        ${tel ? `<a href="tel:${esc(tel)}" class="btn btn-outline text-xs"><i class="fas fa-phone"></i>${esc(r.staff_phone)}</a>` : '<span class="text-[11px] text-gray-400"><i class="fas fa-phone mr-0.5"></i>電話番号の登録なし</span>'}
+        ${tel ? `<a href="tel:${esc(tel)}" class="btn btn-outline text-xs"><i class="fas fa-phone"></i>${esc(r.staff_phone)}</a>` : '<span class="text-2xs text-neutral-400"><i class="fas fa-phone mr-0.5"></i>電話番号の登録なし</span>'}
       </div>
     </section>`
 }
@@ -5153,8 +5153,8 @@ const MISSING_ROWS = new Map()
 delegate('missingReportOpen', el => {
   const id = Number(el.dataset.id), s = MISSING_ROWS.get(id) || {}
   modal(`<h3 class="font-bold text-lg mb-1">${esc(s.staff_name || '')}</h3>
-    <p class="text-xs text-gray-500 mb-3">${s.work_date ? esc(dayjs(s.work_date).format('M/D')) + ' ' : ''}${esc(formatShiftTime(s.start_time, s.end_time))}・${esc(s.project_name || '')}${s.site_name ? '・' + esc(s.site_name) : ''}</p>
-    <div id="shift-report-panel" class="mb-3"><p class="text-xs text-gray-400">読み込み中…</p></div>
+    <p class="text-xs text-neutral-500 mb-3">${s.work_date ? esc(dayjs(s.work_date).format('M/D')) + ' ' : ''}${esc(formatShiftTime(s.start_time, s.end_time))}・${esc(s.project_name || '')}${s.site_name ? '・' + esc(s.site_name) : ''}</p>
+    <div id="shift-report-panel" class="mb-3"><p class="text-xs text-neutral-400">読み込み中…</p></div>
     <button type="button" class="btn btn-outline w-full text-xs" onclick="closeModal(); renderReports(true)">閉じて更新</button>`)
   if (window.renderShiftReportPanel) renderShiftReportPanel(id)
 })
@@ -5175,7 +5175,7 @@ async function renderReports(refresh) {
   if (!refresh || !REPORT_OPTIONS) q.set('options', '1')
   let data
   try { data = (await axios.get('/api/admin/daily-reports?' + q.toString())).data } catch (e) {
-    $app.innerHTML = `<div class="card p-6 text-center text-sm text-gray-500">日報を読み込めませんでした。<button class="btn btn-outline text-xs ml-2" onclick="renderReports()">再読み込み</button></div>`
+    $app.innerHTML = `<div class="card p-6 text-center text-sm text-neutral-500">日報を読み込めませんでした。<button class="btn btn-outline text-xs ml-2" onclick="renderReports()">再読み込み</button></div>`
     showApiError(e, '日報を読み込めませんでした'); return
   }
   if (data.options) REPORT_OPTIONS = data.options
@@ -5190,12 +5190,12 @@ async function renderReports(refresh) {
   const pager = total > REPORT_PAGE_SIZE ? `
     <div class="flex items-center justify-center gap-2 mt-4">
       <button class="btn btn-outline text-xs" data-action="reportPage" data-page="${page - 1}" ${page <= 1 ? 'disabled' : ''}><i class="fas fa-chevron-left"></i>前へ</button>
-      <span class="text-xs text-gray-500">${page} / ${lastPage} ページ</span>
+      <span class="text-xs text-neutral-500">${page} / ${lastPage} ページ</span>
       <button class="btn btn-outline text-xs" data-action="reportPage" data-page="${page + 1}" ${page >= lastPage ? 'disabled' : ''}>次へ<i class="fas fa-chevron-right"></i></button>
     </div>` : ''
   $app.innerHTML = `
     <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
-      <div class="flex items-center gap-3 flex-wrap"><h2 class="text-xl font-bold text-gray-900">日報一覧</h2>${reportModeTabsHtml(f)}</div>
+      <div class="flex items-center gap-3 flex-wrap"><h2 class="text-xl font-bold text-neutral-900">日報一覧</h2>${reportModeTabsHtml(f)}</div>
       <div class="flex gap-2 text-xs">
         <button class="badge badge-yellow" data-action="reportQuick" data-kind="unchecked">未確認 ${Number(data.counts.unchecked)}件</button>
         <button class="badge badge-red" data-action="reportQuick" data-kind="flagged">インシデント・クレーム ${Number(data.counts.flagged)}件</button>
@@ -5215,16 +5215,16 @@ async function renderReports(refresh) {
         <label class="flex items-center gap-2"><input id="rp-unchecked" type="checkbox" class="w-4 h-4" ${f.unchecked ? 'checked' : ''} onchange="applyReportFilter()">未確認のみ</label>
         <label class="flex items-center gap-2"><input id="rp-flagged" type="checkbox" class="w-4 h-4" ${f.flagged ? 'checked' : ''} onchange="applyReportFilter()">インシデント・クレームのみ</label>
         <label class="flex items-center gap-2"><input id="rp-open" type="checkbox" class="w-4 h-4" ${f.open ? 'checked' : ''} onchange="applyReportFilter()">対応済みでないインシデント・クレームのみ</label>
-        ${filtered ? '<a href="#reports" class="text-xs text-blue-600 hover:underline">条件をクリア</a>' : ''}
+        ${filtered ? '<a href="#reports" class="text-xs text-primary-600 hover:underline">条件をクリア</a>' : ''}
       </div>
     </section>
     ${reportArchiveBarHtml()}
     <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
-      <p class="text-xs text-gray-500">全 ${total} 件${total ? `中 ${start}〜${end} 件を表示` : ''}</p>
+      <p class="text-xs text-neutral-500">全 ${total} 件${total ? `中 ${start}〜${end} 件を表示` : ''}</p>
       ${uncheckedShown ? `<button class="btn btn-primary text-xs" data-action="checkShownReports"><i class="fas fa-check-double"></i>表示中の未確認 ${uncheckedShown}件をまとめて確認済みにする</button>` : ''}
     </div>
     <div class="space-y-3">
-      ${data.reports.map(r => reportCardHtml(r, reportFieldsOf(data, r))).join('') || `<p class="text-center text-gray-400 py-10">${filtered ? '条件に合う日報がありません' : '日報がありません'}</p>`}
+      ${data.reports.map(r => reportCardHtml(r, reportFieldsOf(data, r))).join('') || `<p class="text-center text-neutral-400 py-10">${filtered ? '条件に合う日報がありません' : '日報がありません'}</p>`}
     </div>
     ${pager}`
   loadReportRetentionNote()
@@ -5237,7 +5237,7 @@ async function renderReports(refresh) {
 let REPORT_RETENTION = null // 保存期間と、今後30日で削除される件数（画面を開いた最初の1回だけ読む）
 function reportArchiveBarHtml() {
   return `
-    <div class="flex items-center justify-between flex-wrap gap-2 mb-3 text-xs text-gray-500">
+    <div class="flex items-center justify-between flex-wrap gap-2 mb-3 text-xs text-neutral-500">
       <p id="rp-retention"><i class="fas fa-box-archive mr-1"></i>日報は稼働日から3年で自動削除されます。必要な日報は CSV で控えを保存してください。</p>
       <button class="btn btn-outline text-xs" data-action="openReportCsv"><i class="fas fa-file-csv"></i>CSVで書き出す</button>
     </div>`
@@ -5250,7 +5250,7 @@ async function loadReportRetentionNote() {
   const r = REPORT_RETENTION
   if (!el || !r) return
   const due = r.due_count > 0
-    ? `今後${Number(r.days)}日のうちに <b class="text-red-600">${Number(r.due_count)}件</b>（稼働日 ${esc(r.due_from)}〜${esc(r.due_to)}）が削除されます。`
+    ? `今後${Number(r.days)}日のうちに <b class="text-danger-600">${Number(r.due_count)}件</b>（稼働日 ${esc(r.due_from)}〜${esc(r.due_to)}）が削除されます。`
     : `今後${Number(r.days)}日のうちに削除される日報はありません。`
   el.innerHTML = `<i class="fas fa-box-archive mr-1"></i>日報は稼働日から${Number(r.years)}年で自動削除されます。${due}必要な日報は CSV で控えを保存してください。`
 }
@@ -5267,7 +5267,7 @@ delegate('openReportCsv', () => {
   const opts = REPORT_OPTIONS || { projects: [], staff: [] }
   modal(`
     <h3 class="font-bold text-lg mb-2">日報をCSVで書き出す</h3>
-    <p class="text-xs text-gray-500 mb-3">日報は稼働日から3年で自動削除されます。1回に書き出せる期間は62日まで（2,000件まで）です。項目ごとの列と、インシデント・コメントを含みます。</p>
+    <p class="text-xs text-neutral-500 mb-3">日報は稼働日から3年で自動削除されます。1回に書き出せる期間は62日まで（2,000件まで）です。項目ごとの列と、インシデント・コメントを含みます。</p>
     <div class="grid grid-cols-2 gap-2 text-xs">
       <label>開始日<input id="rpc-from" type="date" class="inp" value="${esc(from)}"></label>
       <label>終了日<input id="rpc-to" type="date" class="inp" value="${esc(to)}"></label>
@@ -5349,11 +5349,11 @@ delegate('commentReport', (el) => {
   const others = (r.comments || []).filter(x => x !== cm)
   modal(`
     <h3 class="font-bold text-lg mb-1">${cm ? 'コメントを編集' : 'スタッフへのコメント'}</h3>
-    <p class="text-xs text-gray-500 mb-3">${esc(dayjs(r.work_date).format('M/D(dd)'))} ${esc(r.staff_name)}・${esc(r.project_name)}</p>
-    ${!cm && others.length ? `<div class="max-h-40 overflow-y-auto mb-2 space-y-1">${others.map(x => `<div class="text-xs bg-gray-50 rounded-lg px-2.5 py-1.5"><span class="whitespace-pre-wrap break-words">${esc(x.body)}</span>
-      <span class="block text-[11px] text-gray-400">${esc(x.author_name || '管理者')} ${esc(fmt(x.created_at))}</span></div>`).join('')}</div>
-      <p class="text-[11px] text-gray-400 mb-1">ここに書いた内容は、新しいコメントとして追加されます（ほかの人のコメントは書き換えません）</p>` : ''}
-    ${cm ? `<p class="text-[11px] text-gray-400 mb-1">${cm.read_at ? `スタッフ既読 ${esc(fmt(cm.read_at))}（直すと未読に戻ります）` : 'スタッフ未読'}</p>` : ''}
+    <p class="text-xs text-neutral-500 mb-3">${esc(dayjs(r.work_date).format('M/D(dd)'))} ${esc(r.staff_name)}・${esc(r.project_name)}</p>
+    ${!cm && others.length ? `<div class="max-h-40 overflow-y-auto mb-2 space-y-1">${others.map(x => `<div class="text-xs bg-neutral-50 rounded-lg px-2.5 py-1.5"><span class="whitespace-pre-wrap break-words">${esc(x.body)}</span>
+      <span class="block text-2xs text-neutral-400">${esc(x.author_name || '管理者')} ${esc(fmt(x.created_at))}</span></div>`).join('')}</div>
+      <p class="text-2xs text-neutral-400 mb-1">ここに書いた内容は、新しいコメントとして追加されます（ほかの人のコメントは書き換えません）</p>` : ''}
+    ${cm ? `<p class="text-2xs text-neutral-400 mb-1">${cm.read_at ? `スタッフ既読 ${esc(fmt(cm.read_at))}（直すと未読に戻ります）` : 'スタッフ未読'}</p>` : ''}
     <textarea id="rc-text" rows="5" class="inp text-sm w-full" style="resize:vertical" maxlength="2000" placeholder="コメントを入力">${esc(cm ? cm.body : '')}</textarea>
     <div class="flex gap-2 justify-end mt-3 flex-wrap">
       <button class="btn btn-outline text-sm" onclick="closeModal()">キャンセル</button>
@@ -5422,7 +5422,7 @@ async function renderAnalytics(month, project) {
   try { data = (await axios.get('/api/admin/analytics', { params })).data } catch (e) {
     // 消した案件など、選べない案件のときは全案件に戻す
     if (ANALYTICS.project && e.response && e.response.status === 404) { toast('案件が見つからないため、全案件を表示します'); return renderAnalytics(ANALYTICS.month, '') }
-    $app.innerHTML = `<p class="text-red-600">${esc(showApiError(e, '実績を読み込めませんでした'))}</p>`; return
+    $app.innerHTML = `<p class="text-danger-600">${esc(showApiError(e, '実績を読み込めませんでした'))}</p>`; return
   }
   ANALYTICS.data = data
   const h = ANALYTICS.project ? '#analytics/' + ANALYTICS.project : '#analytics'
@@ -5451,17 +5451,17 @@ delegate('showProjectGoals', async () => {
   try { GOAL_PROJECTS = (await axios.get('/api/admin/project-goals')).data.projects || [] } catch (e) { showApiError(e, '目標を読み込めませんでした'); return }
   const summary = p => {
     const set = p.fields.filter(f => p.goals[f.key])
-    return set.length ? set.map(f => `${esc(f.label)} ${Number(p.goals[f.key])}件`).join('、') : '<span class="text-gray-400">目標なし</span>'
+    return set.length ? set.map(f => `${esc(f.label)} ${Number(p.goals[f.key])}件`).join('、') : '<span class="text-neutral-400">目標なし</span>'
   }
   modal(`
-    <h3 class="font-bold text-lg mb-1"><i class="fas fa-bullseye text-emerald-600 mr-1"></i>案件の月間目標</h3>
-    <p class="text-xs text-gray-500 mb-3">スタッフ1人あたりの今月の目標件数です。スタッフの実績画面に、目標・実績・あと何件かが出ます（実績を見せない案件では出ません）。</p>
+    <h3 class="font-bold text-lg mb-1"><i class="fas fa-bullseye text-success-600 mr-1"></i>案件の月間目標</h3>
+    <p class="text-xs text-neutral-500 mb-3">スタッフ1人あたりの今月の目標件数です。スタッフの実績画面に、目標・実績・あと何件かが出ます（実績を見せない案件では出ません）。</p>
     <div class="space-y-2 max-h-[60vh] overflow-y-auto">
       ${GOAL_PROJECTS.map(p => `<div class="border rounded-lg p-2.5 flex items-center gap-2">
-        <div class="min-w-0 flex-1"><p class="text-sm font-medium text-gray-800">${esc(p.project_name)}${p.show_performance ? '' : ' <span class="badge badge-gray">実績を見せない</span>'}</p>
-          <p class="text-xs text-gray-600 mt-0.5">${p.fields.length ? summary(p) : '<span class="text-gray-400">日報テンプレートに数値の項目がありません</span>'}</p></div>
+        <div class="min-w-0 flex-1"><p class="text-sm font-medium text-neutral-800">${esc(p.project_name)}${p.show_performance ? '' : ' <span class="badge badge-gray">実績を見せない</span>'}</p>
+          <p class="text-xs text-neutral-600 mt-0.5">${p.fields.length ? summary(p) : '<span class="text-neutral-400">日報テンプレートに数値の項目がありません</span>'}</p></div>
         ${p.fields.length ? `<button class="btn btn-outline text-xs shrink-0" data-action="editProjectGoals" data-id="${Number(p.project_id)}">設定</button>` : ''}
-      </div>`).join('') || '<p class="text-sm text-gray-400">稼働中の案件がありません</p>'}
+      </div>`).join('') || '<p class="text-sm text-neutral-400">稼働中の案件がありません</p>'}
     </div>
     <button class="btn btn-outline w-full mt-4" onclick="closeModal()">閉じる</button>`)
 })
@@ -5469,9 +5469,9 @@ delegate('editProjectGoals', (el) => {
   const p = GOAL_PROJECTS.find(x => x.project_id === Number(el.dataset.id)); if (!p) return
   modal(`
     <h3 class="font-bold text-lg mb-1">月間目標（1人あたり）</h3>
-    <p class="text-xs text-gray-500 mb-3">${esc(p.project_name)}。空欄・0 の項目は目標なしになります。</p>
+    <p class="text-xs text-neutral-500 mb-3">${esc(p.project_name)}。空欄・0 の項目は目標なしになります。</p>
     <div class="grid grid-cols-2 gap-3">
-      ${p.fields.map(f => `<label class="text-xs text-gray-600">${esc(f.label)}<input type="number" min="0" max="99999" step="1" inputmode="numeric" class="inp goal-inp" data-key="${esc(f.key)}" value="${p.goals[f.key] ? Number(p.goals[f.key]) : ''}"></label>`).join('')}
+      ${p.fields.map(f => `<label class="text-xs text-neutral-600">${esc(f.label)}<input type="number" min="0" max="99999" step="1" inputmode="numeric" class="inp goal-inp" data-key="${esc(f.key)}" value="${p.goals[f.key] ? Number(p.goals[f.key]) : ''}"></label>`).join('')}
     </div>
     <div class="flex gap-2 justify-end mt-4">
       <button class="btn btn-outline text-sm" data-action="showProjectGoals">戻る</button>
@@ -5498,13 +5498,13 @@ delegate('showStaffViewSetting', async () => {
   try { s = (await axios.get('/api/admin/settings/staff-view')).data } catch (e) { showApiError(e, '設定を読み込めませんでした'); return }
   const row = (id, checked, title, note) => `<label class="flex items-start gap-2 py-2 border-b last:border-b-0">
     <input id="${id}" type="checkbox" class="w-4 h-4 mt-0.5" ${checked ? 'checked' : ''} ${s.can_edit ? '' : 'disabled'}>
-    <span><span class="text-sm font-medium text-gray-800">${title}</span><span class="block text-xs text-gray-500">${note}</span></span></label>`
+    <span><span class="text-sm font-medium text-neutral-800">${title}</span><span class="block text-xs text-neutral-500">${note}</span></span></label>`
   modal(`
-    <h3 class="font-bold text-lg mb-2"><i class="fas fa-mobile-screen text-blue-600 mr-1"></i>スタッフアプリへの表示</h3>
+    <h3 class="font-bold text-lg mb-2"><i class="fas fa-mobile-screen text-primary-600 mr-1"></i>スタッフアプリへの表示</h3>
     ${row('sv-ranking', s.ranking_visible, '実績画面に、案件の中での順位を出す', '同じ月・同じ案件の日報の合計で、本人の順位・人数・平均との差と上位の件数を出します')}
     ${row('sv-anon', s.ranking_anonymous, '順位はほかの人の名前を出さない（匿名）', 'オフにすると、上位の人の姓も出します')}
     ${row('sv-cowork', s.show_coworkers, '一緒に入る人を出す', 'シフト画面で、同じ日・同じ現場に入るほかのスタッフの姓と時刻を出します（電話番号などは出しません）')}
-    ${s.can_edit ? `<div class="flex gap-2 mt-4">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="saveStaffViewSetting">保存する</button></div>` :'<p class="text-xs text-gray-500 mt-3">この設定は会社管理者だけが変更できます</p>'}`)
+    ${s.can_edit ? `<div class="flex gap-2 mt-4">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="saveStaffViewSetting">保存する</button></div>` :'<p class="text-xs text-neutral-500 mt-3">この設定は会社管理者だけが変更できます</p>'}`)
 })
 delegate('saveStaffViewSetting', el => withSubmitLock(el, async () => {
   const body = { ranking_visible: document.getElementById('sv-ranking').checked, ranking_anonymous: document.getElementById('sv-anon').checked, show_coworkers: document.getElementById('sv-cowork').checked }
@@ -5518,7 +5518,7 @@ const ANALYTICS_COUNT_COLS = {
   client: [['staff_count', '稼働人数'], ['project_count', '案件数'], ['flagged', 'インシデント・クレーム']],
 }
 // 差し替える前のテンプレートの項目の見出しに付ける印（#9511）
-const pastFieldMark = f => f && f.past ? '<span class="badge badge-gray ml-0.5 text-[10px]" title="以前の日報テンプレートの項目">旧</span>' : ''
+const pastFieldMark = f => f && f.past ? '<span class="badge badge-gray ml-0.5 text-3xs" title="以前の日報テンプレートの項目">旧</span>' : ''
 // スタッフの絞り込みの表示（全員・1人ならその名前・2人以上なら人数）
 function analyticsStaffLabel(data) {
   const ids = ANALYTICS.staff
@@ -5536,32 +5536,32 @@ function analyticsHeaderHtml(data) {
   const fields = data.fields || []
   return `
     <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
-      <h2 class="text-xl font-bold text-gray-900">実績分析</h2>
+      <h2 class="text-xl font-bold text-neutral-900">実績分析</h2>
       <div class="flex gap-2 items-center flex-wrap">
         <button class="btn btn-outline text-sm" data-action="showProjectGoals" title="スタッフの実績画面に出す、案件ごとの月間目標"><i class="fas fa-bullseye"></i>案件の目標</button>
         <button class="btn btn-outline text-sm" data-action="showStaffViewSetting" title="スタッフアプリに出す順位・一緒に入る人の設定"><i class="fas fa-mobile-screen"></i>スタッフへの表示</button>
       </div>
     </div>
     <section class="card p-3 mb-4 flex items-end gap-3 flex-wrap">
-      <label class="text-xs text-gray-500">案件
+      <label class="text-xs text-neutral-500">案件
         <select class="inp text-sm w-auto max-w-[16rem] block" data-analytics-project aria-label="案件">
           <option value="">全案件</option>
           ${projects.map(p => `<option value="${Number(p.project_id)}" ${Number(p.project_id) === sel ? 'selected' : ''}>${esc(p.project_name || '')}${p.status && p.status !== 'active' ? '（終了）' : ''}</option>`).join('')}
         </select></label>
-      <div class="text-xs text-gray-500">スタッフ
+      <div class="text-xs text-neutral-500">スタッフ
         <div class="flex items-center gap-1">
-          <button type="button" class="inp text-sm w-auto max-w-[16rem] text-left truncate ${ANALYTICS.staff.length ? 'text-blue-700 font-medium' : ''}" data-action="pickAnalyticsStaff" aria-label="スタッフで絞り込む" title="スタッフで絞り込む（表・グラフ・CSV に効きます）"><i class="fas fa-user-check text-gray-400 mr-1"></i>${esc(analyticsStaffLabel(data))}</button>
+          <button type="button" class="inp text-sm w-auto max-w-[16rem] text-left truncate ${ANALYTICS.staff.length ? 'text-primary-700 font-medium' : ''}" data-action="pickAnalyticsStaff" aria-label="スタッフで絞り込む" title="スタッフで絞り込む（表・グラフ・CSV に効きます）"><i class="fas fa-user-check text-neutral-400 mr-1"></i>${esc(analyticsStaffLabel(data))}</button>
           ${ANALYTICS.staff.length ? '<button type="button" class="btn btn-outline text-xs px-2" data-action="clearAnalyticsStaff" aria-label="スタッフの絞り込みを外す" title="全員に戻す"><i class="fas fa-xmark"></i></button>' : ''}
         </div></div>
-      <div class="text-xs text-gray-500">月
+      <div class="text-xs text-neutral-500">月
         <div class="flex items-center gap-1">
           <button class="btn btn-outline" data-action="analyticsMonth" data-month="${esc(m0.subtract(1, 'month').format('YYYY-MM'))}" aria-label="前の月"><i class="fas fa-chevron-left"></i></button>
           <input type="month" class="inp text-sm w-auto" data-analytics-month value="${esc(data.month)}" aria-label="月を選ぶ">
           <button class="btn btn-outline" data-action="analyticsMonth" data-month="${esc(m0.add(1, 'month').format('YYYY-MM'))}" aria-label="次の月"><i class="fas fa-chevron-right"></i></button>
         </div></div>
-      ${fields.length ? `<label class="text-xs text-gray-500">指標
+      ${fields.length ? `<label class="text-xs text-neutral-500">指標
         <select class="inp text-sm w-auto block" data-analytics-key aria-label="指標">${fields.map(f => `<option value="${esc(f.key)}" ${f.key === ANALYTICS.key ? 'selected' : ''}>${esc(f.label)}${f.past ? '（以前の項目）' : ''}</option>`).join('')}</select></label>` : ''}
-      ${data.project ? `<a href="#projects/${Number(data.project.project_id)}" class="text-xs text-blue-600 hover:underline ml-auto self-center">案件の詳細を開く</a>` : ''}
+      ${data.project ? `<a href="#projects/${Number(data.project.project_id)}" class="text-xs text-primary-600 hover:underline ml-auto self-center">案件の詳細を開く</a>` : ''}
     </section>`
 }
 function drawAnalytics() {
@@ -5572,14 +5572,14 @@ function drawAnalytics() {
   const has = k => fields.some(f => f.key === k)
   const rate = has('shodan') && has('seiyaku') ? (tv.shodan ? Math.round((tv.seiyaku / tv.shodan) * 100) : 0) + '%' : null
   const num = v => Number(v || 0).toLocaleString()
-  const heads = fields.map(f => `<th class="whitespace-nowrap ${f.key === key ? 'text-blue-700' : ''}">${esc(f.label)}${pastFieldMark(f)}</th>`).join('')
+  const heads = fields.map(f => `<th class="whitespace-nowrap ${f.key === key ? 'text-primary-700' : ''}">${esc(f.label)}${pastFieldMark(f)}</th>`).join('')
   const cells = r => fields.map(f => `<td class="${f.key === key ? 'font-bold' : ''}">${num(r.values && r.values[f.key])}</td>`).join('')
   const countHeads = by => (ANALYTICS_COUNT_COLS[by] || []).filter(([k]) => !(project && k === 'project_count')).map(([, l]) => `<th class="whitespace-nowrap">${esc(l)}</th>`).join('')
   const countCells = (by, r) => (ANALYTICS_COUNT_COLS[by] || []).filter(([k]) => !(project && k === 'project_count')).map(([k]) => `<td>${num(r[k])}</td>`).join('')
   const countLen = by => (ANALYTICS_COUNT_COLS[by] || []).filter(([k]) => !(project && k === 'project_count')).length
   const csvQs = by => new URLSearchParams({ month, by, ...(project ? { project_id: String(project.project_id) } : {}), ...analyticsStaffParams() }).toString()
-  const csvLink = by => `<a class="text-xs text-blue-600 hover:underline font-normal ml-2" href="/api/admin/analytics/csv?${esc(csvQs(by))}"><i class="fas fa-file-csv mr-0.5"></i>CSV</a>`
-  const empty = (n) => `<tr><td colspan="${n}" class="text-center text-gray-400 py-4">日報はありません</td></tr>`
+  const csvLink = by => `<a class="text-xs text-primary-600 hover:underline font-normal ml-2" href="/api/admin/analytics/csv?${esc(csvQs(by))}"><i class="fas fa-file-csv mr-0.5"></i>CSV</a>`
+  const empty = (n) => `<tr><td colspan="${n}" class="text-center text-neutral-400 py-4">日報はありません</td></tr>`
   // ランキングは 合計・1日あたり・成約率 で並べ替えられる（#489）。日数は日報の数。全案件のときは日報数の多い順
   const hasRate = has('shodan') && has('seiyaku')
   const staff = key ? rankRows(data.by_staff.map(s => ({ ...s, days: Number(s.reports || 0), val: Number(s.values[key] || 0), num: Number(s.values.seiyaku || 0), den: Number(s.values.shodan || 0) })), hasRate) : data.by_staff
@@ -5594,21 +5594,21 @@ function drawAnalytics() {
 
   $app.innerHTML = `
     ${analyticsHeaderHtml(data)}
-    <p class="text-xs text-gray-500 mb-3">${esc(m0.format('YYYY年M月'))}・${scope}の実績です。${project
+    <p class="text-xs text-neutral-500 mb-3">${esc(m0.format('YYYY年M月'))}・${scope}の実績です。${project
       ? '集計する項目は、この月の日報に値のある、この案件の日報テンプレートの数値項目です（テンプレートを差し替える前の項目は「旧」を付けて後ろに出します）。'
       : '全案件のときは、全案件に共通の数（日報数・稼働人数〈日報を出した人の数〉など）だけを出します。成約数などの日報の項目は、案件を選ぶと出ます。'}</p>
     <section class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3 mb-5">
       ${cards.map(([l, v, f]) => `
-        <div class="card p-3 text-center"><p class="text-xl font-bold text-blue-600">${esc(v)}</p><p class="text-xs text-gray-500">${esc(l)}${pastFieldMark(f)}</p></div>`).join('')}
+        <div class="card p-3 text-center"><p class="text-xl font-bold text-primary-600">${esc(v)}</p><p class="text-xs text-neutral-500">${esc(l)}${pastFieldMark(f)}</p></div>`).join('')}
     </section>
-    ${project && !fields.length ? '<p class="card p-4 text-sm text-gray-400 mb-5">この月のこの案件の日報には、集計できる数値の項目がありません。</p>' : ''}
+    ${project && !fields.length ? '<p class="card p-4 text-sm text-neutral-400 mb-5">この月のこの案件の日報には、集計できる数値の項目がありません。</p>' : ''}
     <section class="card p-4 mb-5" id="analytics-chart-card" data-csv-daily="${esc('/api/admin/analytics/csv?' + csvQs('daily'))}">
-      <h3 class="text-sm font-bold text-gray-700 mb-3">推移（${esc(chartLabel)}）</h3>
+      <h3 class="text-sm font-bold text-neutral-700 mb-3">推移（${esc(chartLabel)}）</h3>
       <div id="analytics-chart-body" class="py-6 text-center"><span class="spin"></span></div>
     </section>
     <section class="card p-4 mb-5">
       <div class="flex items-center gap-2 mb-3 flex-wrap">
-        <h3 class="text-sm font-bold text-gray-700"><i class="fas fa-ranking-star text-amber-500 mr-1"></i>スタッフ別${key ? 'ランキング' : ''}（${esc(rankLabel)}）${csvLink('staff')}</h3>
+        <h3 class="text-sm font-bold text-neutral-700"><i class="fas fa-ranking-star text-warning-500 mr-1"></i>スタッフ別${key ? 'ランキング' : ''}（${esc(rankLabel)}）${csvLink('staff')}</h3>
         ${key ? `<span class="ml-auto">${rankControlsHtml('rankAnalytics', hasRate)}</span>` : ''}
       </div>
       <div class="overflow-x-auto">
@@ -5616,7 +5616,7 @@ function drawAnalytics() {
         <thead><tr><th>#</th><th>スタッフ</th><th>日報</th>${countHeads('staff')}${heads}${key ? `<th class="whitespace-nowrap">${esc(keyLabel)}/日</th>` : ''}${hasRate ? '<th>成約率</th>' : ''}</tr></thead>
         <tbody>${staff.map((s, i) => `
           <tr><td>${i < 3 && key && s.values[key] ? ['🥇', '🥈', '🥉'][i] : i + 1}</td>
-          <td class="whitespace-nowrap"><a href="#staff/${Number(s.staff_id)}" class="text-blue-600 hover:underline">${esc(s.name || '')}</a></td>
+          <td class="whitespace-nowrap"><a href="#staff/${Number(s.staff_id)}" class="text-primary-600 hover:underline">${esc(s.name || '')}</a></td>
           <td>${num(s.reports)}</td>${countCells('staff', s)}${cells(s)}${key ? `<td>${perDay(s.val, s.days)}</td>` : ''}${hasRate ? `<td>${ratePct(s.num, s.den)}</td>` : ''}</tr>`).join('') || empty(fields.length + 3 + countLen('staff') + (key ? 1 : 0) + (hasRate ? 1 : 0))}
         </tbody>
       </table>
@@ -5624,12 +5624,12 @@ function drawAnalytics() {
     </section>
     ${project ? '' : `
     <section class="card p-4 mb-5">
-      <h3 class="text-sm font-bold text-gray-700 mb-3">案件別実績${csvLink('project')}</h3>
+      <h3 class="text-sm font-bold text-neutral-700 mb-3">案件別実績${csvLink('project')}</h3>
       <div class="overflow-x-auto">
       <table class="tbl">
         <thead><tr><th>案件</th><th>クライアント</th><th>日報</th>${countHeads('project')}<th></th></tr></thead>
         <tbody>${data.by_project.map(p => `
-          <tr><td><a href="#projects/${Number(p.project_id)}" class="text-blue-600 hover:underline text-xs">${esc(p.project_name || '')}</a></td>
+          <tr><td><a href="#projects/${Number(p.project_id)}" class="text-primary-600 hover:underline text-xs">${esc(p.project_name || '')}</a></td>
           <td class="text-xs">${esc(p.client_name || '-')}</td><td>${num(p.reports)}</td>${countCells('project', p)}
           <td><button class="btn btn-outline text-xs whitespace-nowrap" data-action="analyticsProject" data-id="${Number(p.project_id)}" title="この案件の日報の項目で集計する"><i class="fas fa-chart-column"></i>項目別に見る</button></td></tr>`).join('') || empty(4 + countLen('project'))}
         </tbody>
@@ -5637,7 +5637,7 @@ function drawAnalytics() {
       </div>
     </section>
     <section class="card p-4">
-      <h3 class="text-sm font-bold text-gray-700 mb-3">クライアント別実績${csvLink('client')}</h3>
+      <h3 class="text-sm font-bold text-neutral-700 mb-3">クライアント別実績${csvLink('client')}</h3>
       <div class="overflow-x-auto">
       <table class="tbl">
         <thead><tr><th>クライアント</th><th>日報</th>${countHeads('client')}</tr></thead>
@@ -5710,7 +5710,7 @@ async function loadAnalyticsChart(reuse = false) {
   try { d = (await axios.get('/api/admin/analytics/series', { params })).data } catch (e) {
     if (seq !== ACHART.seq || !document.getElementById('analytics-chart-body')) return
     body.style.opacity = ''
-    body.innerHTML = `<p class="text-sm text-red-600">${esc(showApiError(e, 'グラフを読み込めませんでした'))}</p>`; return
+    body.innerHTML = `<p class="text-sm text-danger-600">${esc(showApiError(e, 'グラフを読み込めませんでした'))}</p>`; return
   }
   // 読み込み中に設定や画面が変わったときは、古い結果を描かない
   if (seq !== ACHART.seq || !document.getElementById('analytics-chart-body')) return
@@ -5720,7 +5720,7 @@ async function loadAnalyticsChart(reuse = false) {
 function analyticsChartControlsHtml(d) {
   const split = achartSplit(); const view = achartView()
   const opt = (v, l, cur) => `<option value="${esc(v)}" ${String(v) === String(cur) ? 'selected' : ''}>${esc(l)}</option>`
-  const sel = (name, label, options, cur, cls = '') => `<label class="text-xs text-gray-500">${esc(label)}
+  const sel = (name, label, options, cur, cls = '') => `<label class="text-xs text-neutral-500">${esc(label)}
     <select class="inp text-sm w-auto block ${cls}" data-chart="${name}" aria-label="グラフの${esc(label)}">${options.map(([v, l]) => opt(v, l, cur)).join('')}</select></label>`
   const metricVal = m => (m.metric === 'field' ? 'field:' + m.key : m.metric)
   const curMetric = d.metric === 'field' ? 'field:' + d.key : d.metric
@@ -5728,7 +5728,7 @@ function analyticsChartControlsHtml(d) {
   return `
     <div class="flex items-end gap-2 flex-wrap mb-3">
       ${sel('range', '期間', ACHART_RANGES, ACHART.range)}
-      ${ACHART.range === 'custom' ? `<div class="text-xs text-gray-500">開始月〜終了月（${ACHART_MAX_MONTHS}か月まで）
+      ${ACHART.range === 'custom' ? `<div class="text-xs text-neutral-500">開始月〜終了月（${ACHART_MAX_MONTHS}か月まで）
         <div class="flex items-center gap-1"><input type="month" class="inp text-sm w-auto" data-chart="from" value="${esc(d.from)}" aria-label="開始月">
         <span>〜</span><input type="month" class="inp text-sm w-auto" data-chart="to" value="${esc(d.to)}" aria-label="終了月"></div></div>` : ''}
       ${sel('unit', 'まとめ方', ACHART_UNITS, d.unit)}
@@ -5768,13 +5768,13 @@ function drawAnalyticsChart() {
   const height = hbar ? Math.max(120, parts.length * 34 + 40) : 300
   card.innerHTML = `
     <div class="flex items-center gap-2 mb-2 flex-wrap">
-      <h3 class="text-sm font-bold text-gray-700">推移（${esc(d.label)}${split !== 'none' ? '・' + esc(ACHART_SPLITS[split] || '') : ''}）</h3>
-      <span class="text-xs text-gray-500">${esc(period)}・合計 ${esc(num(d.total_sum))}</span>
-      <a class="text-xs text-blue-600 hover:underline ml-auto" href="${esc(card.dataset.csvDaily || '')}" title="選んだ月の日別の表（CSV）"><i class="fas fa-file-csv mr-0.5"></i>CSV（${esc(dayjs(ANALYTICS.month + '-01').format('M月'))}の日別）</a>
+      <h3 class="text-sm font-bold text-neutral-700">推移（${esc(d.label)}${split !== 'none' ? '・' + esc(ACHART_SPLITS[split] || '') : ''}）</h3>
+      <span class="text-xs text-neutral-500">${esc(period)}・合計 ${esc(num(d.total_sum))}</span>
+      <a class="text-xs text-primary-600 hover:underline ml-auto" href="${esc(card.dataset.csvDaily || '')}" title="選んだ月の日別の表（CSV）"><i class="fas fa-file-csv mr-0.5"></i>CSV（${esc(dayjs(ANALYTICS.month + '-01').format('M月'))}の日別）</a>
     </div>
     ${analyticsChartControlsHtml(d)}
     <div id="analytics-chart-body" style="position:relative;height:${height}px"><canvas id="daily-chart" role="img" aria-label="${esc(d.label)}の推移のグラフ"></canvas></div>
-    ${notes.length ? `<p class="text-xs text-gray-500 mt-2">${notes.map(esc).join('<br>')}</p>` : ''}`
+    ${notes.length ? `<p class="text-xs text-neutral-500 mt-2">${notes.map(esc).join('<br>')}</p>` : ''}`
   const legend = { display: parts.length > 1, position: 'bottom', labels: { boxWidth: 12, boxHeight: 12 } }
   const tooltip = { callbacks: { title: items => (!items[0] ? '' : hbar ? items[0].label : titleOf(d.buckets[items[0].dataIndex])) } }
   const yScale = { beginAtZero: true, ticks: { precision: 0 } }
@@ -5789,7 +5789,7 @@ function drawAnalyticsChart() {
   } else if (split === 'none') {
     cfg = {
       type: view === 'line' ? 'line' : 'bar',
-      data: { labels: d.buckets.map(labelOf), datasets: [{ label: d.label, data: d.total, backgroundColor: '#2563eb', borderColor: '#2563eb', borderWidth: view === 'line' ? 2 : 0, pointRadius: dots, tension: 0.2 }] },
+      data: { labels: d.buckets.map(labelOf), datasets: [{ label: d.label, data: d.total, backgroundColor: tokenColor('primary', 1, '#2563eb'), borderColor: tokenColor('primary', 1, '#2563eb'), borderWidth: view === 'line' ? 2 : 0, pointRadius: dots, tension: 0.2 }] },
       options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip }, scales: { y: yScale } },
     }
   } else {
@@ -5836,11 +5836,11 @@ delegate('pickAnalyticsStaff', () => {
   for (const f of d.staff_filter || []) if (!opts.some(o => Number(o.staff_id) === Number(f.staff_id))) opts.push({ staff_id: f.staff_id, name: f.name, reports: 0 })
   modal(`
     <h3 class="font-bold text-lg mb-1">スタッフで絞り込む</h3>
-    <p class="text-xs text-gray-500 mb-2">${ANALYTICS_STAFF_MAX}人まで選べます。選んだ人の日報だけで、表・グラフ・CSV を出します。この月${d.project ? 'のこの案件' : ''}に日報のある人を、日報の多い順に出しています。</p>
+    <p class="text-xs text-neutral-500 mb-2">${ANALYTICS_STAFF_MAX}人まで選べます。選んだ人の日報だけで、表・グラフ・CSV を出します。この月${d.project ? 'のこの案件' : ''}に日報のある人を、日報の多い順に出しています。</p>
     <input id="as-q" class="inp text-sm mb-2" placeholder="名前で絞り込み" aria-label="名前で絞り込み">
     <div class="max-h-[50vh] overflow-y-auto border rounded-lg divide-y" id="as-rows">
       ${opts.map(o => `<label class="flex items-center gap-2 px-3 py-2 text-sm" data-name="${esc(o.name || '')}"><input type="checkbox" class="w-4 h-4 analytics-staff-pick" value="${Number(o.staff_id)}" ${picks.has(Number(o.staff_id)) ? 'checked' : ''}>
-        <span class="flex-1">${esc(o.name || '（名前なし）')}</span><span class="text-xs text-gray-500">${Number(o.reports) ? `日報 ${Number(o.reports)}件` : 'この月の日報なし'}</span></label>`).join('') || '<p class="text-sm text-gray-400 p-3">この月に日報のある人がいません</p>'}
+        <span class="flex-1">${esc(o.name || '（名前なし）')}</span><span class="text-xs text-neutral-500">${Number(o.reports) ? `日報 ${Number(o.reports)}件` : 'この月の日報なし'}</span></label>`).join('') || '<p class="text-sm text-neutral-400 p-3">この月に日報のある人がいません</p>'}
     </div>
     <div class="flex gap-2 mt-4 flex-wrap">${MODAL_CANCEL_BTN}
       <button class="btn btn-outline flex-1" data-action="clearAnalyticsStaff">全員に戻す</button>
@@ -5886,7 +5886,7 @@ function noticeAttachmentLinks(n, base) {
   const files = n.attachments || []
   if (!files.length) return ''
   return `<div class="flex flex-wrap gap-2 mt-2">${files.map(a => `
-    <a class="text-xs text-blue-600 hover:underline inline-flex items-center gap-1" target="_blank" rel="noopener" href="${base}/${Number(a.attachment_id)}">
+    <a class="text-xs text-primary-600 hover:underline inline-flex items-center gap-1" target="_blank" rel="noopener" href="${base}/${Number(a.attachment_id)}">
       <i class="fas ${a.content_type === 'application/pdf' ? 'fa-file-pdf' : 'fa-image'}"></i>${esc(a.file_name)}</a>`).join('')}</div>`
 }
 function noticeAdminCardHtml(n) {
@@ -5905,33 +5905,33 @@ function noticeAdminCardHtml(n) {
         ${noticeAdminImportanceBadge(n)}
         ${n.read_required ? '<span class="badge badge-purple">既読確認必須</span>' : ''}
         <span class="badge badge-gray">${target}</span>
-        ${pending ? '' : `<span class="text-xs text-gray-400">${noticeFmt(n.published_at)}</span>`}
-        <span class="text-xs text-gray-400">作成: ${esc(n.created_by_name || '-')}</span>
-        ${pending ? `<span class="text-xs text-gray-500 ml-auto">配信予定 ${total}名</span>`
-          : `<button class="text-xs text-blue-600 ml-auto hover:underline" data-action="showReads" data-id="${id}"
+        ${pending ? '' : `<span class="text-xs text-neutral-400">${noticeFmt(n.published_at)}</span>`}
+        <span class="text-xs text-neutral-400">作成: ${esc(n.created_by_name || '-')}</span>
+        ${pending ? `<span class="text-xs text-neutral-500 ml-auto">配信予定 ${total}名</span>`
+          : `<button class="text-xs text-primary-600 ml-auto hover:underline" data-action="showReads" data-id="${id}"
           ${n.reads_purged_at ? 'title="公開から2年たったため、既読の記録は削除済みです（人数は削除の直前の値）"' : ''}>
-          既読 ${read}/${total}名${!n.reads_purged_at && !withdrawn && total > read ? `<span class="${n.read_required || n.importance === 'urgent' ? 'text-red-600 font-bold' : ''}">（未読 ${total - read}名）</span>` : ''}${n.reads_purged_at ? '（記録の保存期間外）' : ''}</button>`}
+          既読 ${read}/${total}名${!n.reads_purged_at && !withdrawn && total > read ? `<span class="${n.read_required || n.importance === 'urgent' ? 'text-danger-600 font-bold' : ''}">（未読 ${total - read}名）</span>` : ''}${n.reads_purged_at ? '（記録の保存期間外）' : ''}</button>`}
       </div>
-      <h3 class="font-bold text-gray-800 ${withdrawn ? 'line-through' : ''}">${esc(n.title)}</h3>
-      <p class="text-sm text-gray-600 mt-1 whitespace-pre-wrap">${esc(n.body)}</p>
+      <h3 class="font-bold text-neutral-800 ${withdrawn ? 'line-through' : ''}">${esc(n.title)}</h3>
+      <p class="text-sm text-neutral-600 mt-1 whitespace-pre-wrap">${esc(n.body)}</p>
       ${noticeAttachmentLinks(n, `/api/admin/notices/${id}/attachments`)}
-      <div class="text-xs text-gray-500 mt-2 space-y-0.5">
+      <div class="text-xs text-neutral-500 mt-2 space-y-0.5">
         ${n.expires_at ? `<p><i class="fas fa-calendar-xmark mr-1"></i>掲載期限 ${noticeFmt(n.expires_at, 'YYYY/M/D')} まで${n.expired ? '（終了）' : ''}</p>` : ''}
         ${options.length || n.response_comment ? `<p><i class="fas fa-reply mr-1"></i>回答: ${options.length ? esc(options.join('／')) : ''}${n.response_comment ? `${options.length ? '・' : ''}自由記入` : ''}
-          ${pending ? '' : `<button class="text-blue-600 hover:underline ml-1" data-action="showReads" data-id="${id}">回答 ${Number(n.response_count) || 0}件を見る</button>`}</p>` : ''}
+          ${pending ? '' : `<button class="text-primary-600 hover:underline ml-1" data-action="showReads" data-id="${id}">回答 ${Number(n.response_count) || 0}件を見る</button>`}</p>` : ''}
         ${pending && n.send_email ? '<p><i class="fas fa-envelope mr-1"></i>配信のときにメールでも送ります</p>' : ''}
         ${n.updated_at ? `<p><i class="fas fa-pen mr-1"></i>${noticeFmt(n.updated_at, 'M/D HH:mm')} に修正（${esc(n.updated_by_name || '-')}）
-          <button class="text-blue-600 hover:underline ml-1" data-action="noticeRevisions" data-id="${id}">履歴</button></p>` : ''}
-        ${withdrawn ? `<p class="text-red-600"><i class="fas fa-ban mr-1"></i>${noticeFmt(n.withdrawn_at, 'M/D HH:mm')} に取消（${esc(n.withdrawn_by_name || '-')}）${n.withdraw_reason ? `: ${esc(n.withdraw_reason)}` : ''}
-          <button class="text-blue-600 hover:underline ml-1" data-action="noticeRevisions" data-id="${id}">履歴</button></p>` : ''}
+          <button class="text-primary-600 hover:underline ml-1" data-action="noticeRevisions" data-id="${id}">履歴</button></p>` : ''}
+        ${withdrawn ? `<p class="text-danger-600"><i class="fas fa-ban mr-1"></i>${noticeFmt(n.withdrawn_at, 'M/D HH:mm')} に取消（${esc(n.withdrawn_by_name || '-')}）${n.withdraw_reason ? `: ${esc(n.withdraw_reason)}` : ''}
+          <button class="text-primary-600 hover:underline ml-1" data-action="noticeRevisions" data-id="${id}">履歴</button></p>` : ''}
       </div>
-      ${n.remind_count ? `<p class="text-xs text-gray-500 mt-2"><i class="fas fa-bell mr-1"></i>未読者に再通知 ${Number(n.remind_count)}回（最終 ${noticeFmt(n.reminded_at, 'M/D HH:mm')}）</p>` : ''}
+      ${n.remind_count ? `<p class="text-xs text-neutral-500 mt-2"><i class="fas fa-bell mr-1"></i>未読者に再通知 ${Number(n.remind_count)}回（最終 ${noticeFmt(n.reminded_at, 'M/D HH:mm')}）</p>` : ''}
       ${noticeEmailSummary(n)}
-      ${withdrawn ? '' : `<div class="flex flex-wrap gap-2 mt-3 pt-3 border-t border-gray-100">
+      ${withdrawn ? '' : `<div class="flex flex-wrap gap-2 mt-3 pt-3 border-t border-neutral-100">
         <button class="btn btn-outline text-xs" data-action="noticeEdit" data-id="${id}"><i class="fas fa-pen"></i>${pending ? '編集' : '修正'}</button>
         ${pending ? `<button class="btn btn-primary text-xs" data-action="noticePublishNow" data-id="${id}"><i class="fas fa-paper-plane"></i>今すぐ配信</button>
-          <button class="btn btn-outline text-xs text-red-600" data-action="noticeDelete" data-id="${id}"><i class="fas fa-trash"></i>削除</button>`
-          : `<button class="btn btn-outline text-xs text-red-600" data-action="noticeWithdraw" data-id="${id}"><i class="fas fa-ban"></i>取り消す</button>`}
+          <button class="btn btn-outline text-xs text-danger-600" data-action="noticeDelete" data-id="${id}"><i class="fas fa-trash"></i>削除</button>`
+          : `<button class="btn btn-outline text-xs text-danger-600" data-action="noticeWithdraw" data-id="${id}"><i class="fas fa-ban"></i>取り消す</button>`}
       </div>`}
     </div>`
 }
@@ -5955,7 +5955,7 @@ function drawAdminNoticeList() {
   const el = document.getElementById('notice-admin-list')
   if (!el) return
   const f = NOTICE_ADMIN
-  el.innerHTML = (f.list.map(noticeAdminCardHtml).join('') || `<p class="text-sm text-gray-400 text-center py-8">${noticeAdminFiltered() ? '条件に合うお知らせはありません' : 'お知らせはまだありません'}</p>`)
+  el.innerHTML = (f.list.map(noticeAdminCardHtml).join('') || `<p class="text-sm text-neutral-400 text-center py-8">${noticeAdminFiltered() ? '条件に合うお知らせはありません' : 'お知らせはまだありません'}</p>`)
     + (f.has_more ? '<button class="btn btn-outline w-full" data-action="noticeAdminMore">もっと見る</button>' : '')
 }
 
@@ -5970,51 +5970,51 @@ function noticeFormHtml(p, n) {
   const scheduled = n && n.state === 'scheduled' ? dayjs(String(n.published_at).replace(' ', 'T')).format('YYYY-MM-DDTHH:mm') : ''
   return `
     <div class="space-y-3" id="${p}-form">
-      <div><label class="text-sm text-gray-600 block mb-1">タイトル *</label><input id="${p}-title" class="inp" maxlength="200" value="${esc(n ? n.title : '')}"></div>
-      <div><label class="text-sm text-gray-600 block mb-1">本文</label><textarea id="${p}-body" rows="4" class="inp">${esc(n ? n.body : '')}</textarea></div>
+      <div><label class="text-sm text-neutral-600 block mb-1">タイトル *</label><input id="${p}-title" class="inp" maxlength="200" value="${esc(n ? n.title : '')}"></div>
+      <div><label class="text-sm text-neutral-600 block mb-1">本文</label><textarea id="${p}-body" rows="4" class="inp">${esc(n ? n.body : '')}</textarea></div>
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <div><label class="text-sm text-gray-600 block mb-1">配信対象</label>
+        <div><label class="text-sm text-neutral-600 block mb-1">配信対象</label>
           <select id="${p}-target" class="inp" data-notice-target="${p}">
             <option value="all" ${tt === 'all' ? 'selected' : ''}>全スタッフ</option>
             <option value="project" ${tt === 'project' ? 'selected' : ''}>案件を選ぶ（複数可）</option>
             <option value="staff" ${tt === 'staff' ? 'selected' : ''}>スタッフを選ぶ（複数可）</option>
           </select></div>
-        <div><label class="text-sm text-gray-600 block mb-1">重要度</label>
+        <div><label class="text-sm text-neutral-600 block mb-1">重要度</label>
           <select id="${p}-importance" class="inp">${[['normal', '通常'], ['important', '重要'], ['urgent', '緊急']].map(([v, l]) => `<option value="${v}" ${(n ? n.importance : 'normal') === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
       </div>
       <div id="${p}-project-wrap" style="display:${tt === 'project' ? 'block' : 'none'}">
-        <label class="text-sm text-gray-600 block mb-1">対象案件 <span class="text-xs text-gray-400" id="${p}-project-count"></span></label>
-        <div class="border border-gray-200 rounded-lg p-2 max-h-40 overflow-y-auto space-y-1">
-          ${d.projects.filter(pj => pj.status === 'active' || (tt === 'project' && ids.has(Number(pj.project_id)))).map(pj => `<label class="flex items-center gap-2 text-sm"><input type="checkbox" class="w-4 h-4" name="${p}-project" value="${Number(pj.project_id)}" ${tt === 'project' && ids.has(Number(pj.project_id)) ? 'checked' : ''}>${esc(pj.project_name)}${pj.status === 'active' ? '' : '<span class="text-xs text-gray-400">（終了）</span>'}</label>`).join('') || '<p class="text-xs text-gray-400">稼働中の案件がありません</p>'}
+        <label class="text-sm text-neutral-600 block mb-1">対象案件 <span class="text-xs text-neutral-400" id="${p}-project-count"></span></label>
+        <div class="border border-neutral-200 rounded-lg p-2 max-h-40 overflow-y-auto space-y-1">
+          ${d.projects.filter(pj => pj.status === 'active' || (tt === 'project' && ids.has(Number(pj.project_id)))).map(pj => `<label class="flex items-center gap-2 text-sm"><input type="checkbox" class="w-4 h-4" name="${p}-project" value="${Number(pj.project_id)}" ${tt === 'project' && ids.has(Number(pj.project_id)) ? 'checked' : ''}>${esc(pj.project_name)}${pj.status === 'active' ? '' : '<span class="text-xs text-neutral-400">（終了）</span>'}</label>`).join('') || '<p class="text-xs text-neutral-400">稼働中の案件がありません</p>'}
         </div>
-        <p class="text-[11px] text-gray-400 mt-1">公開日の30日前以降に、選んだ案件で確定・代打のシフトがあるスタッフに届きます</p>
+        <p class="text-2xs text-neutral-400 mt-1">公開日の30日前以降に、選んだ案件で確定・代打のシフトがあるスタッフに届きます</p>
       </div>
       <div id="${p}-staff-wrap" style="display:${tt === 'staff' ? 'block' : 'none'}">
-        <label class="text-sm text-gray-600 block mb-1">対象スタッフ <span class="text-xs text-gray-400" id="${p}-staff-count"></span></label>
+        <label class="text-sm text-neutral-600 block mb-1">対象スタッフ <span class="text-xs text-neutral-400" id="${p}-staff-count"></span></label>
         <input class="inp text-sm mb-1" placeholder="氏名・かなで絞り込む" data-notice-staff-filter="${p}">
-        <div class="border border-gray-200 rounded-lg p-2 max-h-48 overflow-y-auto space-y-1" id="${p}-staff-list">
-          ${d.staff.map(s => `<label class="flex items-center gap-2 text-sm" data-q="${esc(String((s.name || '') + ' ' + (s.kana || '')).toLowerCase())}"><input type="checkbox" class="w-4 h-4" name="${p}-staff" value="${Number(s.staff_id)}" ${tt === 'staff' && ids.has(Number(s.staff_id)) ? 'checked' : ''}>${esc(s.name)}</label>`).join('') || '<p class="text-xs text-gray-400">ログインのある在籍中のスタッフがいません</p>'}
+        <div class="border border-neutral-200 rounded-lg p-2 max-h-48 overflow-y-auto space-y-1" id="${p}-staff-list">
+          ${d.staff.map(s => `<label class="flex items-center gap-2 text-sm" data-q="${esc(String((s.name || '') + ' ' + (s.kana || '')).toLowerCase())}"><input type="checkbox" class="w-4 h-4" name="${p}-staff" value="${Number(s.staff_id)}" ${tt === 'staff' && ids.has(Number(s.staff_id)) ? 'checked' : ''}>${esc(s.name)}</label>`).join('') || '<p class="text-xs text-neutral-400">ログインのある在籍中のスタッフがいません</p>'}
         </div>
-        <p class="text-[11px] text-gray-400 mt-1">ログインのある在籍中のスタッフから選べます</p>
+        <p class="text-2xs text-neutral-400 mt-1">ログインのある在籍中のスタッフから選べます</p>
       </div>
       <label class="flex items-center gap-2 text-sm"><input id="${p}-required" type="checkbox" class="w-4 h-4" ${n && n.read_required ? 'checked' : ''}>既読確認を必須にする</label>
-      <p class="text-[11px] text-gray-400 -mt-2 ml-6">スタッフの一覧で上に固定し、「まとめて確認」から外します。未読の人には既読状況から再通知できます</p>
-      <div><label class="text-sm text-gray-600 block mb-1">掲載期限（任意）</label>
+      <p class="text-2xs text-neutral-400 -mt-2 ml-6">スタッフの一覧で上に固定し、「まとめて確認」から外します。未読の人には既読状況から再通知できます</p>
+      <div><label class="text-sm text-neutral-600 block mb-1">掲載期限（任意）</label>
         <input id="${p}-expires" type="date" class="inp" value="${esc(n && n.expires_at ? String(n.expires_at).slice(0, 10) : '')}">
-        <p class="text-[11px] text-gray-400 mt-1">この日を過ぎると、スタッフのホームと一覧から外れ「掲載終了」に移ります</p></div>
-      <div class="border border-gray-100 rounded-lg p-3">
+        <p class="text-2xs text-neutral-400 mt-1">この日を過ぎると、スタッフのホームと一覧から外れ「掲載終了」に移ります</p></div>
+      <div class="border border-neutral-100 rounded-lg p-3">
         <label class="flex items-center gap-2 text-sm"><input id="${p}-response" type="checkbox" class="w-4 h-4" data-notice-response="${p}" ${wantResponse ? 'checked' : ''}>回答を求める（出欠・質問など）</label>
         <div id="${p}-response-wrap" class="mt-2 space-y-2" style="display:${wantResponse ? 'block' : 'none'}">
-          <div><label class="text-xs text-gray-500 block mb-1">選択肢（1行に1つ。空なら自由記入だけ）</label>
+          <div><label class="text-xs text-neutral-500 block mb-1">選択肢（1行に1つ。空なら自由記入だけ）</label>
             <textarea id="${p}-options" rows="3" class="inp text-sm">${esc(options.join('\n'))}</textarea>
-            <div class="flex flex-wrap gap-2 mt-1">${NOTICE_RESPONSE_PRESETS.map((set, i) => `<button type="button" class="text-xs text-blue-600 hover:underline" data-action="noticeResponsePreset" data-prefix="${p}" data-i="${i}">「${esc(set.join('／'))}」を入れる</button>`).join('')}</div></div>
+            <div class="flex flex-wrap gap-2 mt-1">${NOTICE_RESPONSE_PRESETS.map((set, i) => `<button type="button" class="text-xs text-primary-600 hover:underline" data-action="noticeResponsePreset" data-prefix="${p}" data-i="${i}">「${esc(set.join('／'))}」を入れる</button>`).join('')}</div></div>
           <label class="flex items-center gap-2 text-sm"><input id="${p}-comment" type="checkbox" class="w-4 h-4" ${n && n.response_comment ? 'checked' : ''}>自由記入欄を付ける（コメント・質問への回答）</label>
         </div>
       </div>
-      ${n ? '' : `<div><label class="text-sm text-gray-600 block mb-1">添付（画像・PDF。5件まで、1件10MBまで）</label>
+      ${n ? '' : `<div><label class="text-sm text-neutral-600 block mb-1">添付（画像・PDF。5件まで、1件10MBまで）</label>
         <input id="${p}-files" type="file" multiple accept="${NOTICE_ATTACH_ACCEPT}" class="text-sm"></div>`}
-      ${pending ? `<div class="border border-gray-100 rounded-lg p-3 space-y-1">
-        <p class="text-sm text-gray-600">配信のしかた</p>
+      ${pending ? `<div class="border border-neutral-100 rounded-lg p-3 space-y-1">
+        <p class="text-sm text-neutral-600">配信のしかた</p>
         ${n ? '' : `<label class="flex items-center gap-2 text-sm"><input type="radio" name="${p}-mode" value="publish" checked data-notice-mode="${p}">すぐに配信する</label>`}
         <label class="flex items-center gap-2 text-sm"><input type="radio" name="${p}-mode" value="schedule" ${n && n.state === 'scheduled' ? 'checked' : ''} data-notice-mode="${p}">日時を指定して配信する（予約）</label>
         <div id="${p}-schedule-wrap" class="ml-6" style="display:${n && n.state === 'scheduled' ? 'block' : 'none'}"><input id="${p}-scheduled" type="datetime-local" class="inp text-sm" value="${esc(scheduled)}"></div>
@@ -6090,30 +6090,30 @@ async function renderNotices() {
     const [, p, s] = await Promise.all([loadAdminNotices(false), axios.get('/api/admin/projects'), axios.get('/api/admin/notices/recipients')])
     NOTICE_FORM_DATA = { projects: p.data.projects || [], staff: s.data.staff || [] }
   } catch (e) {
-    $app.innerHTML = `<div class="card p-4 text-sm text-gray-600">お知らせを読み込めませんでした。<button class="btn btn-outline ml-2" onclick="renderNotices()">再読み込み</button></div>`
+    $app.innerHTML = `<div class="card p-4 text-sm text-neutral-600">お知らせを読み込めませんでした。<button class="btn btn-outline ml-2" onclick="renderNotices()">再読み込み</button></div>`
     return
   }
   const f = NOTICE_ADMIN
   const pj = NOTICE_FORM_DATA.projects
   $app.innerHTML = `
-    <h2 class="text-xl font-bold text-gray-900 mb-4">お知らせ配信</h2>
+    <h2 class="text-xl font-bold text-neutral-900 mb-4">お知らせ配信</h2>
     <div class="grid lg:grid-cols-5 gap-4">
       <section class="card p-4 lg:col-span-2 h-fit">
-        <h3 class="font-bold text-gray-700 mb-3"><i class="fas fa-paper-plane text-blue-600 mr-1"></i>新規配信</h3>
+        <h3 class="font-bold text-neutral-700 mb-3"><i class="fas fa-paper-plane text-primary-600 mr-1"></i>新規配信</h3>
         ${noticeFormHtml('nt', null)}
         <button class="btn btn-primary w-full mt-3" data-action="sendNotice">配信する／保存する</button>
       </section>
       <section class="lg:col-span-3 space-y-3">
         <div class="card p-3 flex flex-wrap items-end gap-2">
-          <div class="flex-1 min-w-[10rem]"><label class="text-xs text-gray-500 block mb-1">キーワード（タイトル・本文）</label><input id="nf-q" class="inp text-sm" value="${esc(f.q)}"></div>
-          <div><label class="text-xs text-gray-500 block mb-1">配信先の案件</label>
+          <div class="flex-1 min-w-[10rem]"><label class="text-xs text-neutral-500 block mb-1">キーワード（タイトル・本文）</label><input id="nf-q" class="inp text-sm" value="${esc(f.q)}"></div>
+          <div><label class="text-xs text-neutral-500 block mb-1">配信先の案件</label>
             <select id="nf-project" class="inp text-sm"><option value="">すべて</option>${pj.map(p => `<option value="${Number(p.project_id)}" ${String(p.project_id) === String(f.project_id) ? 'selected' : ''}>${esc(p.project_name)}</option>`).join('')}</select></div>
-          <div><label class="text-xs text-gray-500 block mb-1">状態</label>
+          <div><label class="text-xs text-neutral-500 block mb-1">状態</label>
             <select id="nf-status" class="inp text-sm">${[['', 'すべて'], ['pending', '下書き・予約'], ['expired', '掲載終了'], ['withdrawn', '取消']].map(([v, l]) => `<option value="${v}" ${f.status === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
-          <div><label class="text-xs text-gray-500 block mb-1">配信日</label>
+          <div><label class="text-xs text-neutral-500 block mb-1">配信日</label>
             <div class="flex items-center gap-1"><input id="nf-from" type="date" class="inp text-sm" value="${esc(f.from)}"><span class="text-xs">〜</span><input id="nf-to" type="date" class="inp text-sm" value="${esc(f.to)}"></div></div>
           <button class="btn btn-outline text-sm" data-action="noticeAdminSearch"><i class="fas fa-magnifying-glass"></i>絞り込む</button>
-          ${noticeAdminFiltered() ? '<button class="text-xs text-gray-500 hover:underline" data-action="noticeAdminClear">条件をクリア</button>' : ''}
+          ${noticeAdminFiltered() ? '<button class="text-xs text-neutral-500 hover:underline" data-action="noticeAdminClear">条件をクリア</button>' : ''}
         </div>
         <div id="notice-admin-list" class="space-y-3"></div>
       </section>
@@ -6145,9 +6145,9 @@ function noticeEmailSummary(n) {
   const stalled = m.pending && dayjs().diff(dayjs(n.published_at), 'minute') >= 10
   const parts = Object.keys(NOTICE_MAIL_STATUS).filter(k => m[k]).map(k => {
     const label = k === 'pending' && stalled ? '未完了' : NOTICE_MAIL_STATUS[k]
-    return `<span class="${k === 'failed' || (k === 'pending' && stalled) ? 'text-red-600' : k === 'no_email' ? 'text-amber-600' : ''}">${label} ${Number(m[k])}名</span>`
+    return `<span class="${k === 'failed' || (k === 'pending' && stalled) ? 'text-danger-600' : k === 'no_email' ? 'text-warning-600' : ''}">${label} ${Number(m[k])}名</span>`
   })
-  return `<button class="text-xs text-gray-500 mt-2 hover:underline text-left" onclick="showNoticeEmails(${Number(n.notice_id)})">
+  return `<button class="text-xs text-neutral-500 mt-2 hover:underline text-left" onclick="showNoticeEmails(${Number(n.notice_id)})">
     <i class="fas fa-envelope mr-1"></i>メール: ${parts.join(' ・')}</button>`
 }
 window.showNoticeEmails = async function (id) {
@@ -6159,10 +6159,10 @@ window.showNoticeEmails = async function (id) {
   const badge = (s) => `<span class="badge ${s === 'sent' ? 'badge-green' : s === 'failed' ? 'badge-red' : s === 'no_email' ? 'badge-yellow' : 'badge-gray'} whitespace-nowrap">${NOTICE_MAIL_STATUS[s] || esc(s)}</span>`
   modal(`
     <h3 class="font-bold text-lg mb-1">メールの送信結果</h3>
-    <p class="text-sm text-gray-600 mb-3">${esc(data.notice.title)}</p>
+    <p class="text-sm text-neutral-600 mb-3">${esc(data.notice.title)}</p>
     <div class="space-y-1 text-sm max-h-96 overflow-y-auto">${data.deliveries.map(d => `<div class="flex items-center gap-2">${badge(d.status)}<span>${esc(d.name || '')}</span>
-      ${d.error ? `<span class="text-xs text-red-600">${esc(errText(d.error))}</span>` : ''}</div>`).join('') || '<p class="text-gray-400 text-xs">なし</p>'}</div>
-    <p class="text-xs text-gray-500 mt-3">メール未登録の人には、アプリのお知らせだけが届いています。届かなかったアドレスは<a href="#corrections/emails" class="text-blue-600 hover:underline" onclick="closeModal()">メール送信状況</a>で確認できます。</p>`)
+      ${d.error ? `<span class="text-xs text-danger-600">${esc(errText(d.error))}</span>` : ''}</div>`).join('') || '<p class="text-neutral-400 text-xs">なし</p>'}</div>
+    <p class="text-xs text-neutral-500 mt-3">メール未登録の人には、アプリのお知らせだけが届いています。届かなかったアドレスは<a href="#corrections/emails" class="text-primary-600 hover:underline" onclick="closeModal()">メール送信状況</a>で確認できます。</p>`)
 }
 function noticeEmailMessage(e) {
   if (!e) return ''
@@ -6231,14 +6231,14 @@ delegate('sendNotice', el => withSubmitLock(el, async () => {
 function noticeEditAttachmentsHtml(n) {
   const files = n.attachments || []
   return `
-    <div class="border-t border-gray-100 pt-3 mt-3" id="ne-attachments">
-      <p class="text-sm text-gray-600 mb-1">添付（画像・PDF。5件まで、1件10MBまで）</p>
+    <div class="border-t border-neutral-100 pt-3 mt-3" id="ne-attachments">
+      <p class="text-sm text-neutral-600 mb-1">添付（画像・PDF。5件まで、1件10MBまで）</p>
       <div class="space-y-1 mb-2">${files.map(a => `<div class="flex items-center gap-2 text-sm">
-        <a class="text-blue-600 hover:underline truncate" target="_blank" rel="noopener" href="/api/admin/notices/${Number(n.notice_id)}/attachments/${Number(a.attachment_id)}">${esc(a.file_name)}</a>
-        <button class="text-xs text-red-600 hover:underline ml-auto" data-action="noticeAttachmentDelete" data-id="${Number(n.notice_id)}" data-aid="${Number(a.attachment_id)}" data-name="${esc(a.file_name)}">削除</button></div>`).join('') || '<p class="text-xs text-gray-400">なし</p>'}</div>
+        <a class="text-primary-600 hover:underline truncate" target="_blank" rel="noopener" href="/api/admin/notices/${Number(n.notice_id)}/attachments/${Number(a.attachment_id)}">${esc(a.file_name)}</a>
+        <button class="text-xs text-danger-600 hover:underline ml-auto" data-action="noticeAttachmentDelete" data-id="${Number(n.notice_id)}" data-aid="${Number(a.attachment_id)}" data-name="${esc(a.file_name)}">削除</button></div>`).join('') || '<p class="text-xs text-neutral-400">なし</p>'}</div>
       ${files.length < 5 ? `<div class="flex items-center gap-2"><input id="ne-files" type="file" multiple accept="${NOTICE_ATTACH_ACCEPT}" class="text-sm flex-1">
         <button class="btn btn-outline text-xs" data-action="noticeAttachmentAdd" data-id="${Number(n.notice_id)}"><i class="fas fa-paperclip"></i>添付する</button></div>` : ''}
-      ${n.state === 'published' ? '<p class="text-[11px] text-gray-400 mt-1">配信済みのお知らせの添付を変えると、スタッフの画面に「更新」の印が付きます</p>' : ''}
+      ${n.state === 'published' ? '<p class="text-2xs text-neutral-400 mt-1">配信済みのお知らせの添付を変えると、スタッフの画面に「更新」の印が付きます</p>' : ''}
     </div>`
 }
 function openNoticeEdit(id) {
@@ -6247,7 +6247,7 @@ function openNoticeEdit(id) {
   const pending = n.state === 'draft' || n.state === 'scheduled'
   modal(`
     <h3 class="font-bold text-lg mb-1">${pending ? 'お知らせの編集' : 'お知らせの修正'}</h3>
-    ${pending ? '' : '<p class="text-xs text-gray-500 mb-3">配信済みのお知らせを直します。直す前の内容は履歴に残ります。タイトル・本文を直すと、スタッフの画面に「更新」の印が付きます</p>'}
+    ${pending ? '' : '<p class="text-xs text-neutral-500 mb-3">配信済みのお知らせを直します。直す前の内容は履歴に残ります。タイトル・本文を直すと、スタッフの画面に「更新」の印が付きます</p>'}
     ${noticeFormHtml('ne', n)}
     ${noticeEditAttachmentsHtml(n)}
     <div class="flex gap-2 mt-4">
@@ -6317,8 +6317,8 @@ delegate('noticeWithdraw', el => {
   if (!n) return
   modal(`
     <h3 class="font-bold text-lg mb-1">お知らせを取り消す</h3>
-    <p class="text-sm text-gray-600 mb-3">「${esc(n.title)}」をスタッフの画面から消します。既読・回答の記録は残ります。取り消した後は元に戻せません。</p>
-    <label class="text-sm text-gray-600 block mb-1">取消の理由（任意・200文字まで）</label>
+    <p class="text-sm text-neutral-600 mb-3">「${esc(n.title)}」をスタッフの画面から消します。既読・回答の記録は残ります。取り消した後は元に戻せません。</p>
+    <label class="text-sm text-neutral-600 block mb-1">取消の理由（任意・200文字まで）</label>
     <input id="nw-reason" class="inp mb-2" maxlength="200" placeholder="例: 日時に誤りがあったため">
     <label class="flex items-center gap-2 text-sm"><input id="nw-notify" type="checkbox" class="w-4 h-4" checked>取り消したことを配信先のスタッフにアプリで知らせる</label>
     <div class="flex gap-2 mt-4">
@@ -6343,15 +6343,15 @@ delegate('noticeRevisions', async el => {
   const label = { edit: '修正', withdraw: '取消' }
   modal(`
     <h3 class="font-bold text-lg mb-1">修正・取消の履歴</h3>
-    <p class="text-xs text-gray-500 mb-3">それぞれの操作の前の内容です（新しい順）</p>
+    <p class="text-xs text-neutral-500 mb-3">それぞれの操作の前の内容です（新しい順）</p>
     <div class="space-y-3 max-h-96 overflow-y-auto">${data.revisions.map(r => `
-      <div class="border border-gray-100 rounded-lg p-3 text-sm">
-        <p class="text-xs text-gray-500 mb-1"><span class="badge ${r.action === 'withdraw' ? 'badge-red' : 'badge-gray'}">${label[r.action] || esc(r.action)}</span>
+      <div class="border border-neutral-100 rounded-lg p-3 text-sm">
+        <p class="text-xs text-neutral-500 mb-1"><span class="badge ${r.action === 'withdraw' ? 'badge-red' : 'badge-gray'}">${label[r.action] || esc(r.action)}</span>
           ${noticeFmt(r.edited_at)}（${esc(r.edited_by_name || '-')}）</p>
         <p class="font-bold">${esc(r.title)}</p>
-        <p class="text-gray-600 whitespace-pre-wrap">${esc(r.body)}</p>
-        ${r.expires_at ? `<p class="text-xs text-gray-500 mt-1">掲載期限 ${noticeFmt(r.expires_at, 'YYYY/M/D')}</p>` : ''}
-      </div>`).join('') || '<p class="text-sm text-gray-400">履歴はありません</p>'}</div>`)
+        <p class="text-neutral-600 whitespace-pre-wrap">${esc(r.body)}</p>
+        ${r.expires_at ? `<p class="text-xs text-neutral-500 mt-1">掲載期限 ${noticeFmt(r.expires_at, 'YYYY/M/D')}</p>` : ''}
+      </div>`).join('') || '<p class="text-sm text-neutral-400">履歴はありません</p>'}</div>`)
 })
 // 既読状況。既読・未読とも配信対象の人だけ。既読の時刻はサーバーで日本時間にして返す（#7 #104）。
 // 回答を求めるお知らせは、選択肢ごとの人数・回答・未回答の人も出す（#554）
@@ -6361,33 +6361,33 @@ window.showReads = async function (id) {
   if (data.purged) {
     modal(`
       <h3 class="font-bold text-lg mb-4">既読状況</h3>
-      <p class="text-sm text-gray-600">公開から2年たったため、既読・回答の記録は削除済みです。</p>
-      <p class="text-sm text-gray-600 mt-2">削除の直前の既読: ${Number(data.read_count) || 0}/${Number(data.target_count) || 0}名</p>`)
+      <p class="text-sm text-neutral-600">公開から2年たったため、既読・回答の記録は削除済みです。</p>
+      <p class="text-sm text-neutral-600 mt-2">削除の直前の既読: ${Number(data.read_count) || 0}/${Number(data.target_count) || 0}名</p>`)
     return
   }
   const rs = data.responses
   const canRemind = data.state === 'published' && data.unread.length
   modal(`
     <h3 class="font-bold text-lg mb-1">既読状況${rs ? '・回答' : ''}</h3>
-    <p class="text-xs text-gray-500 mb-4">配信対象 ${Number(data.target_count) || 0}名（いま在籍中の人）${data.state === 'withdrawn' ? '・取消済み' : ''}</p>
-    ${rs ? `<div class="border border-gray-100 rounded-lg p-3 mb-4">
-      <div class="flex items-center mb-2"><h4 class="text-sm font-bold text-gray-700">回答 ${rs.answered.length}名・未回答 ${rs.unanswered.length}名</h4>
-        <a class="text-xs text-blue-600 hover:underline ml-auto" href="/api/admin/notices/${Number(id)}/responses.csv"><i class="fas fa-file-csv mr-1"></i>CSV</a></div>
+    <p class="text-xs text-neutral-500 mb-4">配信対象 ${Number(data.target_count) || 0}名（いま在籍中の人）${data.state === 'withdrawn' ? '・取消済み' : ''}</p>
+    ${rs ? `<div class="border border-neutral-100 rounded-lg p-3 mb-4">
+      <div class="flex items-center mb-2"><h4 class="text-sm font-bold text-neutral-700">回答 ${rs.answered.length}名・未回答 ${rs.unanswered.length}名</h4>
+        <a class="text-xs text-primary-600 hover:underline ml-auto" href="/api/admin/notices/${Number(id)}/responses.csv"><i class="fas fa-file-csv mr-1"></i>CSV</a></div>
       ${rs.options.length ? `<div class="flex flex-wrap gap-2 mb-2">${rs.options.map(o => `<span class="badge badge-blue">${esc(o)} ${Number(rs.counts[o]) || 0}名</span>`).join('')}</div>` : ''}
       <div class="space-y-1 text-sm max-h-48 overflow-y-auto">${rs.answered.map(a => `<p>${esc(a.name)}${a.choice != null ? ` <span class="badge badge-gray">${esc(a.choice)}</span>` : ''}
-        ${a.comment ? `<span class="text-gray-600">「${esc(a.comment)}」</span>` : ''} <span class="text-xs text-gray-400">${noticeFmt(a.answered_at, 'M/D HH:mm')}</span></p>`).join('') || '<p class="text-gray-400 text-xs">まだ回答はありません</p>'}</div>
-      ${rs.unanswered.length ? `<p class="text-xs text-gray-500 mt-2">未回答: ${rs.unanswered.map(u => esc(u.name)).join('、')}</p>` : ''}
+        ${a.comment ? `<span class="text-neutral-600">「${esc(a.comment)}」</span>` : ''} <span class="text-xs text-neutral-400">${noticeFmt(a.answered_at, 'M/D HH:mm')}</span></p>`).join('') || '<p class="text-neutral-400 text-xs">まだ回答はありません</p>'}</div>
+      ${rs.unanswered.length ? `<p class="text-xs text-neutral-500 mt-2">未回答: ${rs.unanswered.map(u => esc(u.name)).join('、')}</p>` : ''}
     </div>` : ''}
     <div class="grid grid-cols-2 gap-4">
-      <div><h4 class="text-sm font-bold text-emerald-700 mb-2">既読 ${data.read.length}名</h4>
-        <div class="space-y-1 text-sm">${data.read.map(r => `<p>${esc(r.name)} <span class="text-xs text-gray-400">${r.read_at ? esc(dayjs(String(r.read_at).replace(' ', 'T')).format('M/D HH:mm')) : ''}</span></p>`).join('') || '<p class="text-gray-400 text-xs">なし</p>'}</div></div>
-      <div><h4 class="text-sm font-bold text-red-700 mb-2">未読 ${data.unread.length}名</h4>
-        <div class="space-y-1 text-sm">${data.unread.map(r => `<p>${esc(r.name)}</p>`).join('') || '<p class="text-gray-400 text-xs">なし</p>'}</div></div>
+      <div><h4 class="text-sm font-bold text-success-700 mb-2">既読 ${data.read.length}名</h4>
+        <div class="space-y-1 text-sm">${data.read.map(r => `<p>${esc(r.name)} <span class="text-xs text-neutral-400">${r.read_at ? esc(dayjs(String(r.read_at).replace(' ', 'T')).format('M/D HH:mm')) : ''}</span></p>`).join('') || '<p class="text-neutral-400 text-xs">なし</p>'}</div></div>
+      <div><h4 class="text-sm font-bold text-danger-700 mb-2">未読 ${data.unread.length}名</h4>
+        <div class="space-y-1 text-sm">${data.unread.map(r => `<p>${esc(r.name)}</p>`).join('') || '<p class="text-neutral-400 text-xs">なし</p>'}</div></div>
     </div>
-    ${canRemind ? `<div class="border-t border-gray-100 mt-4 pt-3">
+    ${canRemind ? `<div class="border-t border-neutral-100 mt-4 pt-3">
       <label class="flex items-center gap-2 text-sm mb-2"><input id="remind-email" type="checkbox" class="w-4 h-4">メールでも送る</label>
       <button class="btn btn-primary w-full" data-action="remindNotice" data-id="${Number(id)}"><i class="fas fa-bell"></i>未読の ${data.unread.length}名に再通知する</button>
-      <p class="text-[11px] text-gray-400 mt-1">スタッフのアプリの「通知」に確認のお願いが届きます（押すとこのお知らせが開きます）</p>
+      <p class="text-2xs text-neutral-400 mt-1">スタッフのアプリの「通知」に確認のお願いが届きます（押すとこのお知らせが開きます）</p>
     </div>` : ''}`)
 }
 delegate('showReads', el => showReads(Number(el.dataset.id)))
@@ -6427,14 +6427,14 @@ async function renderNoticeReadReport(fy) {
   for (let y = currentFiscalYearJs(); y >= currentFiscalYearJs() - 6; y--) fyOptions.push(y)
   // 年度の状態: 確定済み / 年度の途中（毎日更新）/ 集計中（確定前）
   const state = !s ? '' : data.finalized
-    ? `<span class="badge badge-green">確定</span><span class="text-xs text-gray-500">確定日時: ${noticeReportTime(s.finalized_at)}</span>`
+    ? `<span class="badge badge-green">確定</span><span class="text-xs text-neutral-500">確定日時: ${noticeReportTime(s.finalized_at)}</span>`
     : data.in_progress
-      ? `<span class="badge badge-yellow">年度の途中</span><span class="text-xs text-gray-500">${noticeReportTime(s.calculated_at)} 時点の集計（毎日更新）</span>`
-      : `<span class="badge badge-gray">確定前</span><span class="text-xs text-gray-500">${noticeReportTime(s.calculated_at)} 時点の集計（年度末から30日後に確定）</span>`
+      ? `<span class="badge badge-yellow">年度の途中</span><span class="text-xs text-neutral-500">${noticeReportTime(s.calculated_at)} 時点の集計（毎日更新）</span>`
+      : `<span class="badge badge-gray">確定前</span><span class="text-xs text-neutral-500">${noticeReportTime(s.calculated_at)} 時点の集計（年度末から30日後に確定）</span>`
 
   $app.innerHTML = `
     <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
-      <h2 class="text-xl font-bold text-gray-900">お知らせ既読率レポート</h2>
+      <h2 class="text-xl font-bold text-neutral-900">お知らせ既読率レポート</h2>
       <div class="flex items-center gap-2">
         <select class="inp text-sm" onchange="renderNoticeReadReport(Number(this.value))">
           ${fyOptions.map(y => `<option value="${y}" ${y === fy ? 'selected' : ''}>${fiscalYearLabel(y)}</option>`).join('')}
@@ -6443,27 +6443,27 @@ async function renderNoticeReadReport(fy) {
         <a class="btn btn-outline text-sm" href="/api/admin/notice-reports/${Number(fy)}/csv"><i class="fas fa-file-csv"></i>CSV出力</a>
       </div>
     </div>
-    ${data.recalculable ? '' : `<p class="text-xs text-gray-500 mb-3"><i class="fas fa-lock mr-1"></i>${esc(data.recalc_block_reason || '')}（保存済みの集計を表示しています）</p>`}
+    ${data.recalculable ? '' : `<p class="text-xs text-neutral-500 mb-3"><i class="fas fa-lock mr-1"></i>${esc(data.recalc_block_reason || '')}（保存済みの集計を表示しています）</p>`}
 
     <section class="card p-4 mb-4">
-      <div class="flex items-center gap-2 mb-3 flex-wrap"><h3 class="text-sm font-bold text-gray-700">年度全体</h3>${state}</div>
-      ${!s ? `<p class="text-sm text-gray-400">このレポートはまだ生成されていません。${data.recalculable ? '「再集計」を実行してください。' : ''}</p>` : `
+      <div class="flex items-center gap-2 mb-3 flex-wrap"><h3 class="text-sm font-bold text-neutral-700">年度全体</h3>${state}</div>
+      ${!s ? `<p class="text-sm text-neutral-400">このレポートはまだ生成されていません。${data.recalculable ? '「再集計」を実行してください。' : ''}</p>` : `
         <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          <div><p class="text-xs text-gray-400">対象お知らせ数</p><p class="text-lg font-bold">${s.target_notice_count}件</p></div>
-          <div><p class="text-xs text-gray-400">対象延べ人数</p><p class="text-lg font-bold">${s.target_user_count}人</p></div>
-          <div><p class="text-xs text-gray-400">既読延べ人数</p><p class="text-lg font-bold text-emerald-600">${s.read_count}人</p></div>
-          <div><p class="text-xs text-gray-400">年度既読率</p><p class="text-lg font-bold text-blue-600">${s.read_rate == null ? '-' : s.read_rate.toFixed(1) + '%'}</p></div>
+          <div><p class="text-xs text-neutral-400">対象お知らせ数</p><p class="text-lg font-bold">${s.target_notice_count}件</p></div>
+          <div><p class="text-xs text-neutral-400">対象延べ人数</p><p class="text-lg font-bold">${s.target_user_count}人</p></div>
+          <div><p class="text-xs text-neutral-400">既読延べ人数</p><p class="text-lg font-bold text-success-600">${s.read_count}人</p></div>
+          <div><p class="text-xs text-neutral-400">年度既読率</p><p class="text-lg font-bold text-primary-600">${s.read_rate == null ? '-' : s.read_rate.toFixed(1) + '%'}</p></div>
         </div>
-        <p class="text-xs text-gray-500 mt-3">対象は、お知らせを公開した時点で在籍していた人です（後で退職した人も含みます。入社前のお知らせは含みません）。</p>`}
+        <p class="text-xs text-neutral-500 mt-3">対象は、お知らせを公開した時点で在籍していた人です（後で退職した人も含みます。入社前のお知らせは含みません）。</p>`}
     </section>
 
     <section class="card p-4">
-      <h3 class="text-sm font-bold text-gray-700 mb-3">スタッフ別（人事評価の参考資料）</h3>
-      ${data.staff_reports.length === 0 ? '<p class="text-sm text-gray-400">対象となるお知らせがありません。</p>' : `
-      <div class="flex items-center gap-3 flex-wrap text-xs text-gray-600 mb-3">
+      <h3 class="text-sm font-bold text-neutral-700 mb-3">スタッフ別（人事評価の参考資料）</h3>
+      ${data.staff_reports.length === 0 ? '<p class="text-sm text-neutral-400">対象となるお知らせがありません。</p>' : `
+      <div class="flex items-center gap-3 flex-wrap text-xs text-neutral-600 mb-3">
         <label class="flex items-center gap-1">既読率<input type="number" min="0" max="100" step="1" class="inp text-sm w-20" value="${esc(NR_STAFF.rateBelow)}" oninput="setNoticeStaffFilter('rateBelow', this.value)">%未満</label>
         <label class="flex items-center gap-1">未読<input type="number" min="0" step="1" class="inp text-sm w-20" value="${esc(NR_STAFF.unreadMin)}" oninput="setNoticeStaffFilter('unreadMin', this.value)">件以上</label>
-        <span class="text-gray-400">見出しを押すと並べ替えます</span>
+        <span class="text-neutral-400">見出しを押すと並べ替えます</span>
       </div>
       <div id="nr-staff-table" class="overflow-x-auto"></div>`}
     </section>`
@@ -6494,7 +6494,7 @@ function drawNoticeStaffTable() {
       const c = typeof x === 'string' ? x.localeCompare(y, 'ja') : x - y
       return c * NR_STAFF.dir || String(a.staff_name || '').localeCompare(String(b.staff_name || ''), 'ja')
     })
-  const th = (k) => `<th><button class="hover:underline whitespace-nowrap ${NR_STAFF.sort === k ? 'text-blue-700' : ''}" data-action="nrStaffSort" data-key="${k}">${NR_SORT[k].label}${NR_STAFF.sort === k ? (NR_STAFF.dir > 0 ? ' ▲' : ' ▼') : ''}</button></th>`
+  const th = (k) => `<th><button class="hover:underline whitespace-nowrap ${NR_STAFF.sort === k ? 'text-primary-700' : ''}" data-action="nrStaffSort" data-key="${k}">${NR_SORT[k].label}${NR_STAFF.sort === k ? (NR_STAFF.dir > 0 ? ' ▲' : ' ▼') : ''}</button></th>`
   box.innerHTML = `
     <table class="tbl">
       <thead><tr>${th('name')}<th>社員番号</th>${th('target')}${th('read')}${th('unread')}${th('rate')}<th></th></tr></thead>
@@ -6502,16 +6502,16 @@ function drawNoticeStaffTable() {
         ${rows.map(r => `
           <tr>
             <td>${esc(r.staff_name)}</td>
-            <td class="text-xs text-gray-500">${esc(r.employee_number || '')}</td>
+            <td class="text-xs text-neutral-500">${esc(r.employee_number || '')}</td>
             <td>${r.target_count}</td>
             <td>${r.read_count}</td>
             <td>${r.unread_count}</td>
             <td>${r.read_rate == null ? '-' : r.read_rate.toFixed(1) + '%'}</td>
-            <td><button class="text-xs text-blue-600 hover:underline" data-action="showStaffNoticeReport" data-fy="${Number(fy)}" data-id="${Number(r.staff_id)}">詳細</button></td>
-          </tr>`).join('') || '<tr><td colspan="7" class="text-center text-gray-400 py-4">条件に合うスタッフはいません</td></tr>'}
+            <td><button class="text-xs text-primary-600 hover:underline" data-action="showStaffNoticeReport" data-fy="${Number(fy)}" data-id="${Number(r.staff_id)}">詳細</button></td>
+          </tr>`).join('') || '<tr><td colspan="7" class="text-center text-neutral-400 py-4">条件に合うスタッフはいません</td></tr>'}
       </tbody>
     </table>
-    <p class="text-xs text-gray-400 mt-2">${rows.length} / ${data.staff_reports.length}人を表示</p>`
+    <p class="text-xs text-neutral-400 mt-2">${rows.length} / ${data.staff_reports.length}人を表示</p>`
 }
 delegate('nrStaffSort', el => {
   const k = el.dataset.key
@@ -6540,22 +6540,22 @@ window.showStaffNoticeReport = async function (fy, staffId) {
   const s = window._noticeReportData && window._noticeReportData.fiscal_year === fy ? window._noticeReportData.summary : null
   modal(`
     <h3 class="font-bold text-lg mb-1">${esc(data.staff_name)}</h3>
-    <p class="text-sm text-gray-400 mb-1">${fiscalYearLabel(fy)}</p>
-    <p class="text-xs text-gray-500 mb-4">下の既読・未読はいまの状態です。一覧の数字は ${s ? noticeReportTime(s.calculated_at) : '-'} 時点の集計です。</p>
+    <p class="text-sm text-neutral-400 mb-1">${fiscalYearLabel(fy)}</p>
+    <p class="text-xs text-neutral-500 mb-4">下の既読・未読はいまの状態です。一覧の数字は ${s ? noticeReportTime(s.calculated_at) : '-'} 時点の集計です。</p>
     <div class="space-y-1.5 max-h-96 overflow-y-auto">
-      ${data.notices.length === 0 ? '<p class="text-sm text-gray-400">対象のお知らせがありません</p>' : noticeDetailRows(data.notices)}
+      ${data.notices.length === 0 ? '<p class="text-sm text-neutral-400">対象のお知らせがありません</p>' : noticeDetailRows(data.notices)}
     </div>`)
 }
 // 未読を上にまとめ、それぞれ配信日の新しい順。配信日と重要度・既読必須も出す（#518）
-const NOTICE_IMPORTANCE_BADGE = { important: '<span class="badge badge-yellow text-[10px]">重要</span>', urgent: '<span class="badge badge-red text-[10px]">緊急</span>' }
+const NOTICE_IMPORTANCE_BADGE = { important: '<span class="badge badge-yellow text-3xs">重要</span>', urgent: '<span class="badge badge-red text-3xs">緊急</span>' }
 function noticeDetailRows(notices) {
   const rank = n => (n.is_read === false ? 0 : n.is_read === null ? 1 : 2)
   return notices.slice().sort((a, b) => rank(a) - rank(b) || String(b.published_at || '').localeCompare(String(a.published_at || ''))).map(n => `
-    <div class="flex items-center justify-between gap-2 text-sm p-2 rounded-lg ${n.is_read === false ? 'bg-red-50' : 'bg-gray-50'}">
+    <div class="flex items-center justify-between gap-2 text-sm p-2 rounded-lg ${n.is_read === false ? 'bg-danger-50' : 'bg-neutral-50'}">
       <div class="min-w-0">
         <p class="truncate">${esc(n.title)}</p>
-        <p class="text-xs text-gray-500 flex items-center gap-1 flex-wrap">${n.published_at ? esc(dayjs(String(n.published_at).replace(' ', 'T')).format('YYYY/M/D')) + ' 配信' : ''}
-          ${NOTICE_IMPORTANCE_BADGE[n.importance] || ''}${n.read_required ? '<span class="badge badge-blue text-[10px]">既読必須</span>' : ''}</p>
+        <p class="text-xs text-neutral-500 flex items-center gap-1 flex-wrap">${n.published_at ? esc(dayjs(String(n.published_at).replace(' ', 'T')).format('YYYY/M/D')) + ' 配信' : ''}
+          ${NOTICE_IMPORTANCE_BADGE[n.importance] || ''}${n.read_required ? '<span class="badge badge-blue text-3xs">既読必須</span>' : ''}</p>
       </div>
       <span class="badge ${n.is_read === null ? 'badge-gray' : n.is_read ? 'badge-green' : 'badge-red'} shrink-0">${n.is_read === null ? '記録なし（保存期間外）' : n.is_read ? '既読' : '未読'}</span>
     </div>`).join('')
@@ -6578,8 +6578,8 @@ async function renderFollow() {
   if (FOLLOW_VIEW.q) params.q = FOLLOW_VIEW.q
   let data
   try { data = (await axios.get('/api/admin/follow-logs?' + new URLSearchParams(params))).data } catch (e) {
-    $app.innerHTML = `<h2 class="text-xl font-bold text-gray-900 mb-4">フォロー履歴管理</h2>
-      <section class="card p-6 text-center"><p class="text-sm text-red-600 mb-3">${esc((e && e.response && e.response.data && e.response.data.error) || 'フォロー履歴を読み込めませんでした')}</p>
+    $app.innerHTML = `<h2 class="text-xl font-bold text-neutral-900 mb-4">フォロー履歴管理</h2>
+      <section class="card p-6 text-center"><p class="text-sm text-danger-600 mb-3">${esc((e && e.response && e.response.data && e.response.data.error) || 'フォロー履歴を読み込めませんでした')}</p>
       <button class="btn btn-outline" data-action="followReload"><i class="fas fa-rotate-right"></i>再読み込み</button></section>`
     return
   }
@@ -6588,7 +6588,7 @@ async function renderFollow() {
   const pages = Math.max(1, Math.ceil((data.total || 0) / (data.per_page || 50)))
   const day = d => esc(dayjs(d).format('M/D'))
   $app.innerHTML = `
-    <h2 class="text-xl font-bold text-gray-900 mb-4">フォロー履歴管理</h2>
+    <h2 class="text-xl font-bold text-neutral-900 mb-4">フォロー履歴管理</h2>
     <div class="flex gap-2 flex-wrap items-center mb-4">
       ${FOLLOW_TABS.map(([k, l]) => `<button class="btn ${FOLLOW_VIEW.tab === k ? 'btn-primary' : 'btn-outline'} text-xs" data-action="followTab" data-tab="${esc(k)}">${esc(l)}（${tabCount[k]}）</button>`).join('')}
       <form class="flex gap-1 ml-auto" id="follow-search"><input id="follow-q" class="inp text-sm w-40" placeholder="スタッフ名で探す" value="${esc(FOLLOW_VIEW.q)}" maxlength="50">
@@ -6601,27 +6601,27 @@ async function renderFollow() {
         <section class="card p-4">
           <div class="flex items-center gap-2 flex-wrap mb-1">
             <span class="badge badge-purple">${esc(FOLLOW_LABELS[f.follow_type] || f.follow_type)}</span>
-            <a href="#staff/${Number(f.staff_id)}" class="font-bold text-blue-700 hover:underline">${esc(f.staff_name)}</a>
-            <span class="text-xs text-gray-400">対応者: ${esc(f.manager_name || '-')}</span>
-            <span class="text-xs text-gray-400">${esc(dayjs(String(f.created_at || '').replace(' ', 'T')).format('M/D HH:mm'))}</span>
+            <a href="#staff/${Number(f.staff_id)}" class="font-bold text-primary-700 hover:underline">${esc(f.staff_name)}</a>
+            <span class="text-xs text-neutral-400">対応者: ${esc(f.manager_name || '-')}</span>
+            <span class="text-xs text-neutral-400">${esc(dayjs(String(f.created_at || '').replace(' ', 'T')).format('M/D HH:mm'))}</span>
             ${f.status === 'open' ? `<button type="button" class="badge badge-yellow ml-auto" data-action="closeFollow" data-id="${Number(f.follow_id)}">対応中 → 完了にする</button>`
               : `<span class="badge badge-green ml-auto">完了${f.done_at ? ' ' + esc(dayjs(String(f.done_at).replace(' ', 'T')).format('M/D')) : ''}</span>`}
           </div>
-          <p class="text-sm text-gray-700 whitespace-pre-wrap break-words">${esc(f.content)}</p>
-          ${f.next_action || f.next_action_date ? `<div class="text-xs mt-1.5 rounded-lg px-2.5 py-1.5 flex items-center gap-2 flex-wrap ${due ? 'bg-red-50 text-red-700' : 'bg-blue-50 text-blue-700'}">
+          <p class="text-sm text-neutral-700 whitespace-pre-wrap break-words">${esc(f.content)}</p>
+          ${f.next_action || f.next_action_date ? `<div class="text-xs mt-1.5 rounded-lg px-2.5 py-1.5 flex items-center gap-2 flex-wrap ${due ? 'bg-danger-50 text-danger-700' : 'bg-primary-50 text-primary-700'}">
             <span><i class="fas fa-arrow-right mr-1"></i>次回対応: ${esc(f.next_action || '-')}${f.next_action_date ? `（${day(f.next_action_date)}${due ? '・期日が来ています' : ''}）` : ''}</span>
           </div>` : ''}
           ${f.status === 'open' ? `<div class="flex items-center gap-1 mt-2 text-xs">
-            <label class="text-gray-500" for="follow-date-${Number(f.follow_id)}">次回対応日</label>
+            <label class="text-neutral-500" for="follow-date-${Number(f.follow_id)}">次回対応日</label>
             <input type="date" id="follow-date-${Number(f.follow_id)}" class="inp text-xs w-36" value="${esc(f.next_action_date || '')}">
             <button type="button" class="btn btn-outline text-xs" data-action="followSaveDate" data-id="${Number(f.follow_id)}">変更</button>
           </div>` : ''}
         </section>`
-      }).join('') || '<p class="text-center text-gray-400 py-10">該当するフォロー履歴はありません</p>'}
+      }).join('') || '<p class="text-center text-neutral-400 py-10">該当するフォロー履歴はありません</p>'}
     </div>
     ${pages > 1 ? `<div class="flex items-center justify-center gap-3 mt-4 text-sm">
       <button class="btn btn-outline text-xs" data-action="followPage" data-page="${data.page - 1}" ${data.page <= 1 ? 'disabled' : ''}><i class="fas fa-chevron-left"></i>前へ</button>
-      <span class="text-gray-600">${data.page} / ${pages}ページ（${data.total}件）</span>
+      <span class="text-neutral-600">${data.page} / ${pages}ページ（${data.total}件）</span>
       <button class="btn btn-outline text-xs" data-action="followPage" data-page="${data.page + 1}" ${data.page >= pages ? 'disabled' : ''}>次へ<i class="fas fa-chevron-right"></i></button>
     </div>` : ''}`
   document.getElementById('follow-search').addEventListener('submit', ev => {
@@ -6661,17 +6661,17 @@ const consultTime = (at) => esc(dayjs(String(at || '').replace(' ', 'T')).format
 function consultPhotosHtml(co, messageId) {
   const list = (co.photos || []).filter(p => (p.message_id || null) === (messageId || null))
   return list.length ? `<div class="flex gap-2 flex-wrap mt-2">${list.map(p => `<a href="/api/admin/consultation-photo/${Number(p.attachment_id)}" target="_blank" rel="noopener">
-    <img src="/api/admin/consultation-photo/${Number(p.attachment_id)}" alt="添付の写真" loading="lazy" class="w-20 h-20 object-cover rounded-lg border border-gray-200"></a>`).join('')}</div>` : ''
+    <img src="/api/admin/consultation-photo/${Number(p.attachment_id)}" alt="添付の写真" loading="lazy" class="w-20 h-20 object-cover rounded-lg border border-neutral-200"></a>`).join('')}</div>` : ''
 }
 function consultThreadHtml(co) {
   const msgs = co.messages || []
   // これまでの返信（やり取りに移す前の1件）だけがある場合
-  if (!msgs.length && co.manager_reply) return `<div class="mt-2 bg-blue-50 rounded-lg px-3 py-2 text-sm text-blue-900 whitespace-pre-wrap break-words"><i class="fas fa-reply mr-1"></i>${esc(co.manager_reply)}</div>`
+  if (!msgs.length && co.manager_reply) return `<div class="mt-2 bg-primary-50 rounded-lg px-3 py-2 text-sm text-primary-900 whitespace-pre-wrap break-words"><i class="fas fa-reply mr-1"></i>${esc(co.manager_reply)}</div>`
   return msgs.map(m => m.author_side === 'admin'
-    ? `<div class="mt-2 ml-6 bg-blue-50 rounded-lg px-3 py-2"><p class="text-[11px] text-blue-700 mb-0.5"><i class="fas fa-reply mr-1"></i>${esc(m.author_name || '管理者')}・${consultTime(m.created_at)}</p>
-        <p class="text-sm text-blue-900 whitespace-pre-wrap break-words">${esc(m.body)}</p></div>`
-    : `<div class="mt-2 mr-6 bg-gray-50 rounded-lg px-3 py-2"><p class="text-[11px] text-gray-500 mb-0.5"><i class="fas fa-user mr-1"></i>${esc(co.staff_name)}（追加の連絡）・${consultTime(m.created_at)}</p>
-        <p class="text-sm text-gray-800 whitespace-pre-wrap break-words">${esc(m.body)}</p>${consultPhotosHtml(co, m.message_id)}</div>`).join('')
+    ? `<div class="mt-2 ml-6 bg-primary-50 rounded-lg px-3 py-2"><p class="text-2xs text-primary-700 mb-0.5"><i class="fas fa-reply mr-1"></i>${esc(m.author_name || '管理者')}・${consultTime(m.created_at)}</p>
+        <p class="text-sm text-primary-900 whitespace-pre-wrap break-words">${esc(m.body)}</p></div>`
+    : `<div class="mt-2 mr-6 bg-neutral-50 rounded-lg px-3 py-2"><p class="text-2xs text-neutral-500 mb-0.5"><i class="fas fa-user mr-1"></i>${esc(co.staff_name)}（追加の連絡）・${consultTime(m.created_at)}</p>
+        <p class="text-sm text-neutral-800 whitespace-pre-wrap break-words">${esc(m.body)}</p>${consultPhotosHtml(co, m.message_id)}</div>`).join('')
 }
 
 // #consult/{id} で開いたときは、その相談だけを出して強調する（ダッシュボードの ToDo・未報告の一覧から。#402 #498）
@@ -6682,8 +6682,8 @@ async function renderConsult() {
   try {
     data = (await axios.get('/api/admin/consultations?' + new URLSearchParams(fid ? { id: fid } : { status: CONSULT_VIEW.status, page: String(CONSULT_VIEW.page) }))).data
   } catch (e) {
-    $app.innerHTML = `<h2 class="text-xl font-bold text-gray-900 mb-4">相談対応</h2>
-      <section class="card p-6 text-center"><p class="text-sm text-red-600 mb-3">${esc((e && e.response && e.response.data && e.response.data.error) || '相談を読み込めませんでした')}</p>
+    $app.innerHTML = `<h2 class="text-xl font-bold text-neutral-900 mb-4">相談対応</h2>
+      <section class="card p-6 text-center"><p class="text-sm text-danger-600 mb-3">${esc((e && e.response && e.response.data && e.response.data.error) || '相談を読み込めませんでした')}</p>
       <button class="btn btn-outline" data-action="consultReload"><i class="fas fa-rotate-right"></i>再読み込み</button></section>`
     return
   }
@@ -6692,36 +6692,36 @@ async function renderConsult() {
   const tabCount = { active: (counts.open || 0) + (counts.in_progress || 0), open: counts.open || 0, in_progress: counts.in_progress || 0, done: counts.done || 0, all: (counts.open || 0) + (counts.in_progress || 0) + (counts.done || 0) }
   const pages = Math.max(1, Math.ceil((data.total || 0) / (data.per_page || 50)))
   $app.innerHTML = `
-    <h2 class="text-xl font-bold text-gray-900 mb-4">相談対応</h2>
+    <h2 class="text-xl font-bold text-neutral-900 mb-4">相談対応</h2>
     <div class="flex gap-2 flex-wrap mb-4">
       ${CONSULT_TABS.map(([k, l]) => `<button class="btn ${!fid && data.status === k ? 'btn-primary' : 'btn-outline'} text-xs" data-action="consultTab" data-status="${esc(k)}">${esc(l)}（${tabCount[k]}）</button>`).join('')}
     </div>
-    ${fid ? `<p class="text-sm text-gray-600 mb-3"><i class="fas fa-circle-info text-blue-500 mr-1"></i>選んだ相談だけを表示しています。<button type="button" class="text-blue-700 hover:underline" data-action="consultTab" data-status="${esc(CONSULT_VIEW.status)}">一覧に戻る</button></p>` : ''}
+    ${fid ? `<p class="text-sm text-neutral-600 mb-3"><i class="fas fa-circle-info text-primary-500 mr-1"></i>選んだ相談だけを表示しています。<button type="button" class="text-primary-700 hover:underline" data-action="consultTab" data-status="${esc(CONSULT_VIEW.status)}">一覧に戻る</button></p>` : ''}
     <div class="space-y-3">
       ${CONSULT_VIEW.list.map(co => `
-        <section class="card p-4${fid ? ' ring-2 ring-blue-400' : ''}">
+        <section class="card p-4${fid ? ' ring-2 ring-primary-400' : ''}">
           <div class="flex items-center gap-2 flex-wrap mb-1">
             <span class="badge badge-gray">${esc(CAT_LABELS[co.category] || co.category)}</span>
             ${co.urgency === 'high' ? '<span class="badge badge-red">緊急</span>' : ''}
-            <a href="#staff/${Number(co.staff_id)}" class="font-bold text-blue-700 hover:underline">${esc(co.staff_name)}</a>
-            <span class="text-xs text-gray-400">${esc(dayjs(String(co.created_at || '').replace(' ', 'T')).format('M/D HH:mm'))}</span>
+            <a href="#staff/${Number(co.staff_id)}" class="font-bold text-primary-700 hover:underline">${esc(co.staff_name)}</a>
+            <span class="text-xs text-neutral-400">${esc(dayjs(String(co.created_at || '').replace(' ', 'T')).format('M/D HH:mm'))}</span>
             <span class="ml-auto">${CONSULT_ST_BADGE[co.status] || ''}</span>
           </div>
-          ${co.target_date ? `<p class="text-xs text-gray-600 mb-1"><i class="fas fa-calendar-day mr-1 text-gray-400"></i>対象: ${esc(dayjs(co.target_date).format('M/D'))} ${esc(co.target_project_name || '')}
-            <button class="text-blue-700 hover:underline ml-1" data-action="consultOpenBoard" data-date="${esc(co.target_date)}" data-project-id="${esc(co.target_project_id || '')}">シフトボードで見る</button>
-            ${co.target_project_id && !co.target_shift_id ? '<span class="text-gray-400 ml-1">（該当のシフトは見つかりません）</span>' : ''}</p>` : ''}
-          <p class="text-sm text-gray-700 whitespace-pre-wrap break-words">${esc(co.body)}</p>
+          ${co.target_date ? `<p class="text-xs text-neutral-600 mb-1"><i class="fas fa-calendar-day mr-1 text-neutral-400"></i>対象: ${esc(dayjs(co.target_date).format('M/D'))} ${esc(co.target_project_name || '')}
+            <button class="text-primary-700 hover:underline ml-1" data-action="consultOpenBoard" data-date="${esc(co.target_date)}" data-project-id="${esc(co.target_project_id || '')}">シフトボードで見る</button>
+            ${co.target_project_id && !co.target_shift_id ? '<span class="text-neutral-400 ml-1">（該当のシフトは見つかりません）</span>' : ''}</p>` : ''}
+          <p class="text-sm text-neutral-700 whitespace-pre-wrap break-words">${esc(co.body)}</p>
           ${consultPhotosHtml(co, null)}
           ${consultThreadHtml(co)}
           <div class="flex gap-2 mt-3">
             <button class="btn btn-outline text-xs" data-action="consultReply" data-id="${Number(co.consultation_id)}"><i class="fas fa-reply"></i>返信する</button>
             ${co.status !== 'done' ? `<button class="btn btn-outline text-xs" data-action="consultClose" data-id="${Number(co.consultation_id)}"><i class="fas fa-check"></i>対応済みにする</button>` : ''}
           </div>
-        </section>`).join('') || '<p class="text-center text-gray-400 py-10">該当する相談はありません</p>'}
+        </section>`).join('') || '<p class="text-center text-neutral-400 py-10">該当する相談はありません</p>'}
     </div>
     ${pages > 1 ? `<div class="flex items-center justify-center gap-3 mt-4 text-sm">
       <button class="btn btn-outline text-xs" data-action="consultPage" data-page="${data.page - 1}" ${data.page <= 1 ? 'disabled' : ''}><i class="fas fa-chevron-left"></i>前へ</button>
-      <span class="text-gray-600">${data.page} / ${pages}ページ（${data.total}件）</span>
+      <span class="text-neutral-600">${data.page} / ${pages}ページ（${data.total}件）</span>
       <button class="btn btn-outline text-xs" data-action="consultPage" data-page="${data.page + 1}" ${data.page >= pages ? 'disabled' : ''}>次へ<i class="fas fa-chevron-right"></i></button>
     </div>` : ''}`
 }
@@ -6750,11 +6750,11 @@ window.replyConsult = function (id) {
   if (!co) return
   modal(`
     <h3 class="font-bold text-lg mb-1">相談への返信</h3>
-    <p class="text-xs text-gray-500 mb-2">${esc(co.staff_name)}・${esc(CAT_LABELS[co.category] || co.category)}・${esc(dayjs(String(co.created_at || '').replace(' ', 'T')).format('M/D HH:mm'))}</p>
-    <div class="bg-gray-50 rounded-lg px-3 py-2 max-h-64 overflow-y-auto mb-3"><p class="text-sm text-gray-700 whitespace-pre-wrap break-words">${esc(co.body)}</p>${consultThreadHtml(co)}</div>
-    <label class="text-sm text-gray-600 block mb-1" for="consult-reply">返信</label>
+    <p class="text-xs text-neutral-500 mb-2">${esc(co.staff_name)}・${esc(CAT_LABELS[co.category] || co.category)}・${esc(dayjs(String(co.created_at || '').replace(' ', 'T')).format('M/D HH:mm'))}</p>
+    <div class="bg-neutral-50 rounded-lg px-3 py-2 max-h-64 overflow-y-auto mb-3"><p class="text-sm text-neutral-700 whitespace-pre-wrap break-words">${esc(co.body)}</p>${consultThreadHtml(co)}</div>
+    <label class="text-sm text-neutral-600 block mb-1" for="consult-reply">返信</label>
     <textarea id="consult-reply" class="inp" rows="6" maxlength="2000" placeholder="返信内容を入力してください"></textarea>
-    <p class="text-xs text-gray-400 mt-1">スタッフのアプリに通知され、ホームに『返信があります』と表示されます</p>
+    <p class="text-xs text-neutral-400 mt-1">スタッフのアプリに通知され、ホームに『返信があります』と表示されます</p>
     <div class="flex justify-end gap-2 mt-4">
       <button class="btn btn-outline" onclick="closeModal()">キャンセル</button>
       <button class="btn btn-primary" id="consult-reply-send" data-action="consultReplySend" data-id="${Number(co.consultation_id)}"><i class="fas fa-reply"></i>返信する</button>
@@ -6787,15 +6787,15 @@ async function renderBilling(month) {
   loading()
   month = month || dayjs().format('YYYY-MM')
   let data
-  try { data = (await axios.get('/api/admin/billing-check?month=' + month)).data } catch (e) { $app.innerHTML = `<p class="text-red-600">${esc(showApiError(e))}</p>`; return }
+  try { data = (await axios.get('/api/admin/billing-check?month=' + month)).data } catch (e) { $app.innerHTML = `<p class="text-danger-600">${esc(showApiError(e))}</p>`; return }
   // 月額（固定。#9702）の列は、その月に月額の行があるときだけ出す
   const hasMonthly = (data.monthly_lines || []).length > 0, hasStaffMonthly = (data.monthly_lines || []).some(l => l.staff_id != null)
   // キャンセル料（欠勤・中止。#9931）の列と明細は、その月にキャンセル料の行があるときだけ出す
   const cancelLines = data.cancel_lines || [], hasCancel = cancelLines.length > 0, t = data.totals || {}
-  const cancelCell = (amount, n, badge) => (n ? `${badge ? `<span class="badge badge-red whitespace-nowrap">キャンセル料 ${Number(n)}件</span><span class="block">${yen(amount)}</span>` : `${yen(amount)}<span class="text-[10px] text-gray-400 block">${Number(n)}件</span>`}` : '-')
+  const cancelCell = (amount, n, badge) => (n ? `${badge ? `<span class="badge badge-red whitespace-nowrap">キャンセル料 ${Number(n)}件</span><span class="block">${yen(amount)}</span>` : `${yen(amount)}<span class="text-3xs text-neutral-400 block">${Number(n)}件</span>`}` : '-')
   $app.innerHTML = `
     <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
-      <h2 class="text-xl font-bold text-gray-900">請求前確認</h2>
+      <h2 class="text-xl font-bold text-neutral-900">請求前確認</h2>
       <div class="flex gap-2 items-center">
         <button class="btn btn-outline" data-action="renderBilling" data-month="${esc(dayjs(month + '-01').subtract(1, 'month').format('YYYY-MM'))}"><i class="fas fa-chevron-left"></i></button>
         <span class="font-bold">${dayjs(month + '-01').format('YYYY年M月')}</span>
@@ -6803,17 +6803,17 @@ async function renderBilling(month) {
         <button class="btn btn-primary" onclick="exportBillingCsv()"><i class="fas fa-file-csv"></i>CSV出力</button>
       </div>
     </div>
-    <p class="text-xs text-gray-500 mb-3">今日までの確定・代打のシフトの請求額と、欠勤・中止のキャンセル料です（精算の請求合計と同じ計算: 請求基本額＋請求する交通費＋請求の調整＋キャンセル料）。
+    <p class="text-xs text-neutral-500 mb-3">今日までの確定・代打のシフトの請求額と、欠勤・中止のキャンセル料です（精算の請求合計と同じ計算: 請求基本額＋請求する交通費＋請求の調整＋キャンセル料）。
       精算で期間をこの月の1日〜今日（過去の月は月末）にすると、請求合計が一致します。支払・粗利と確定は「精算」で確認してください。
       ${hasMonthly ? '月額（固定）は、その月に今日までの確定・代打のシフトがあれば、1回だけ請求合計に含めます（スタッフ別の月額は、そのスタッフの行にも出します）。' : ''}
       稼働人数は確定・代打のシフトの人数、日報提出は日報が必要な確定・代打のシフトのうち日報があるものです（欠勤・希望（仮）と、日報を不要にしたシフトは数えません）</p>
     <section class="card p-3 mb-4 flex flex-wrap items-baseline gap-x-6 gap-y-1" id="billing-totals">
-      <span class="text-sm text-gray-600">請求合計（今日まで）<span class="text-lg font-bold text-gray-900 ml-2">${yen(t.bill || 0)}</span></span>
-      ${t.cancel_count ? `<span class="text-xs text-gray-500"><span class="badge badge-red">キャンセル料</span> うち ${yen(t.cancel_bill || 0)}（${Number(t.cancel_count)}件）</span>` : ''}
-      ${t.monthly_bill ? `<span class="text-xs text-gray-500">うち月額 ${yen(t.monthly_bill)}</span>` : ''}
+      <span class="text-sm text-neutral-600">請求合計（今日まで）<span class="text-lg font-bold text-neutral-900 ml-2">${yen(t.bill || 0)}</span></span>
+      ${t.cancel_count ? `<span class="text-xs text-neutral-500"><span class="badge badge-red">キャンセル料</span> うち ${yen(t.cancel_bill || 0)}（${Number(t.cancel_count)}件）</span>` : ''}
+      ${t.monthly_bill ? `<span class="text-xs text-neutral-500">うち月額 ${yen(t.monthly_bill)}</span>` : ''}
     </section>
     <section class="card p-4 mb-4">
-      <h3 class="text-sm font-bold text-gray-700 mb-3">案件別サマリー</h3>
+      <h3 class="text-sm font-bold text-neutral-700 mb-3">案件別サマリー</h3>
       <div class="overflow-x-auto">
         <table class="tbl">
           <thead><tr><th>案件</th><th>クライアント</th><th>稼働日数</th><th>稼働人数</th><th>欠勤</th><th>代打</th><th>日報提出</th><th>請求基本額</th><th>交通費</th><th>調整</th>${hasCancel ? '<th>キャンセル料</th>' : ''}${hasMonthly ? '<th>月額</th>' : ''}<th>請求合計</th></tr></thead>
@@ -6835,13 +6835,13 @@ async function renderBilling(month) {
       </div>
     </section>
     <section class="card p-4">
-      <h3 class="text-sm font-bold text-gray-700 mb-3">スタッフ別明細</h3>
+      <h3 class="text-sm font-bold text-neutral-700 mb-3">スタッフ別明細</h3>
       <div class="overflow-x-auto">
         <table class="tbl" id="billing-detail">
           <thead><tr><th>スタッフ</th><th>案件</th><th>稼働日数</th><th>欠勤</th><th>日報提出</th><th>請求基本額</th><th>交通費</th><th>調整</th>${hasCancel ? '<th>キャンセル料</th>' : ''}${hasStaffMonthly ? '<th>月額</th>' : ''}<th>請求合計</th></tr></thead>
           <tbody>${data.detail.map(d => `
             <tr>
-              <td><a href="#staff/${d.staff_id}" class="text-blue-600 hover:underline">${esc(d.name)}</a></td>
+              <td><a href="#staff/${d.staff_id}" class="text-primary-600 hover:underline">${esc(d.name)}</a></td>
               <td class="text-xs">${esc(d.project_name)}</td>
               <td>${d.work_days}</td><td>${d.absent_days || 0}</td><td>${billingReportCell(d)}</td>
               <td>${yen(d.amount)}</td><td>${yen(d.transport)}</td><td>${d.adjust ? yen(d.adjust) : '-'}</td>
@@ -6855,18 +6855,18 @@ async function renderBilling(month) {
     </section>
     ${hasCancel ? `
     <section class="card p-4 mt-4" id="billing-cancel-lines">
-      <h3 class="text-sm font-bold text-gray-700 mb-1">キャンセル料の明細（欠勤・中止）</h3>
-      <p class="text-xs text-gray-400 mb-3">請求合計に含めています。金額は「精算」の欠勤・中止の行（キャンセル料・補償）で入力・変更します</p>
+      <h3 class="text-sm font-bold text-neutral-700 mb-1">キャンセル料の明細（欠勤・中止）</h3>
+      <p class="text-xs text-neutral-400 mb-3">請求合計に含めています。金額は「精算」の欠勤・中止の行（キャンセル料・補償）で入力・変更します</p>
       <div class="overflow-x-auto">
         <table class="tbl">
           <thead><tr><th>稼働日</th><th>スタッフ</th><th>案件</th><th>区分</th><th>キャンセル料</th></tr></thead>
           <tbody>${cancelLines.map(l => `
             <tr>
               <td class="whitespace-nowrap">${esc(dayjs(l.work_date).format('M/D'))}</td>
-              <td><a href="#staff/${Number(l.staff_id)}" class="text-blue-600 hover:underline">${esc(l.staff_name)}</a></td>
+              <td><a href="#staff/${Number(l.staff_id)}" class="text-primary-600 hover:underline">${esc(l.staff_name)}</a></td>
               <td class="text-xs">${esc(l.project_name)}</td>
-              <td><span class="badge badge-red whitespace-nowrap">${esc(l.reason_label)}</span>${l.note ? `<span class="text-xs text-gray-400 block">${esc(l.note)}</span>` : ''}</td>
-              <td class="whitespace-nowrap">${yen(l.bill_amount)}<span class="text-gray-400 text-xs block">キャンセル料</span></td>
+              <td><span class="badge badge-red whitespace-nowrap">${esc(l.reason_label)}</span>${l.note ? `<span class="text-xs text-neutral-400 block">${esc(l.note)}</span>` : ''}</td>
+              <td class="whitespace-nowrap">${yen(l.bill_amount)}<span class="text-neutral-400 text-xs block">キャンセル料</span></td>
             </tr>`).join('')}
           </tbody>
         </table>
@@ -6878,8 +6878,8 @@ delegate('renderBilling', el => renderBilling(el.dataset.month))
 // 日報提出 n/m（m = 日報が必要な確定・代打のシフト。#448）。日報が必要なシフトがなければ「不要」（稼働がなければ -）
 function billingReportCell(x) {
   const need = Number(x.report_required || 0), done = Number(x.report_count || 0)
-  if (!need) return Number(x.work_days) ? '<span class="text-gray-400">不要</span>' : '-'
-  return `${done}/${need} ${done < need ? `<i class="fas fa-triangle-exclamation text-amber-500" title="日報が未提出のシフトが ${need - done}件 あります"></i>` : '<i class="fas fa-check text-emerald-500"></i>'}`
+  if (!need) return Number(x.work_days) ? '<span class="text-neutral-400">不要</span>' : '-'
+  return `${done}/${need} ${done < need ? `<i class="fas fa-triangle-exclamation text-warning-500" title="日報が未提出のシフトが ${need - done}件 あります"></i>` : '<i class="fas fa-check text-success-500"></i>'}`
 }
 window.exportBillingCsv = function () {
   const data = window._billingData
@@ -6917,8 +6917,8 @@ let ADMIN_USERS = new Map()
 // 仮パスワードを一度だけ表示する（閉じると二度と表示できない）。staff-lifecycle.js のスタッフの再発行でも使う
 window.showTempPassword = function (title, password, lines) {
   modal(`
-    <h3 class="font-bold text-lg mb-2"><i class="fas fa-key text-blue-600 mr-1"></i>${esc(title)}</h3>
-    <p class="text-xs text-red-600 mb-2">この画面を閉じると、仮パスワードは二度と表示できません。本人に伝えてから閉じてください。次回ログインで、本人にパスワードの変更を求めます。</p>
+    <h3 class="font-bold text-lg mb-2"><i class="fas fa-key text-primary-600 mr-1"></i>${esc(title)}</h3>
+    <p class="text-xs text-danger-600 mb-2">この画面を閉じると、仮パスワードは二度と表示できません。本人に伝えてから閉じてください。次回ログインで、本人にパスワードの変更を求めます。</p>
     <textarea id="temp-pw-text" class="inp font-mono text-sm" rows="${(lines || []).length + 1}" readonly>${esc([...(lines || []), '仮パスワード: ' + password].join('\n'))}</textarea>
     <div class="flex gap-2 mt-3">
       <button class="btn btn-outline flex-1" data-action="copyTempPassword"><i class="fas fa-copy"></i>コピー</button>
@@ -6943,79 +6943,79 @@ async function renderAccount() {
       axios.get('/api/admin/assignees', me.role === 'company_admin' ? {} : { params: { user_id: me.user_id } }).then(r => r.data.assignments).catch(() => []),
     ])
     list = l; asg = a || []
-  } catch (e) { $app.innerHTML = '<p class="text-center text-gray-400 py-10">アカウント情報を取得できませんでした</p>'; return }
+  } catch (e) { $app.innerHTML = '<p class="text-center text-neutral-400 py-10">アカウント情報を取得できませんでした</p>'; return }
   ADMIN_USERS = new Map((list ? list.users : []).map(u => [u.user_id, u]))
   ACCOUNT_ASSIGNMENTS = new Map()
   for (const a of asg) { const l = ACCOUNT_ASSIGNMENTS.get(a.user_id) || []; l.push(a); ACCOUNT_ASSIGNMENTS.set(a.user_id, l) }
   const myAsg = ACCOUNT_ASSIGNMENTS.get(me.user_id) || []
   $app.innerHTML = `
-    <h2 class="text-xl font-bold text-gray-900 mb-4">アカウント設定</h2>
-    ${me.must_change_password ? `<div class="card p-3 mb-4 border-red-200 bg-red-50 text-sm text-red-700"><i class="fas fa-triangle-exclamation mr-1"></i>仮パスワードのままです。下の「パスワードの変更」で、自分だけが知っているパスワードに変更してください。</div>` : ''}
-    ${!me.email ? `<div class="card p-3 mb-4 bg-amber-50 text-sm text-amber-800"><i class="fas fa-envelope mr-1"></i>メールアドレスが登録されていません。登録すると、打刻修正の承認依頼などの通知と、パスワードを忘れたときの再設定メールが届きます。</div>` : ''}
+    <h2 class="text-xl font-bold text-neutral-900 mb-4">アカウント設定</h2>
+    ${me.must_change_password ? `<div class="card p-3 mb-4 border-danger-200 bg-danger-50 text-sm text-danger-700"><i class="fas fa-triangle-exclamation mr-1"></i>仮パスワードのままです。下の「パスワードの変更」で、自分だけが知っているパスワードに変更してください。</div>` : ''}
+    ${!me.email ? `<div class="card p-3 mb-4 bg-warning-50 text-sm text-warning-800"><i class="fas fa-envelope mr-1"></i>メールアドレスが登録されていません。登録すると、打刻修正の承認依頼などの通知と、パスワードを忘れたときの再設定メールが届きます。</div>` : ''}
     <section class="card p-3 mb-4 flex items-center gap-3 flex-wrap" id="account-contract-usage">
-      <i class="fas fa-users text-blue-500"></i>
-      <span class="text-sm flex-1">契約ユーザー数: <span id="account-contract-state" class="text-gray-400">…</span>
-        <span class="block text-[11px] text-gray-400">利用中のアカウント（管理者とスタッフ）の数です。ログインのない名簿のみのスタッフと、停止したアカウントは数えません。上限は本部との契約で決まります</span></span>
+      <i class="fas fa-users text-primary-500"></i>
+      <span class="text-sm flex-1">契約ユーザー数: <span id="account-contract-state" class="text-neutral-400">…</span>
+        <span class="block text-2xs text-neutral-400">利用中のアカウント（管理者とスタッフ）の数です。ログインのない名簿のみのスタッフと、停止したアカウントは数えません。上限は本部との契約で決まります</span></span>
     </section>
     <div class="grid lg:grid-cols-2 gap-4 mb-6">
       <section class="card p-4">
-        <h3 class="text-sm font-bold text-gray-700 mb-3"><i class="fas fa-user text-blue-500 mr-1"></i>自分のアカウント</h3>
+        <h3 class="text-sm font-bold text-neutral-700 mb-3"><i class="fas fa-user text-primary-500 mr-1"></i>自分のアカウント</h3>
         <dl class="text-sm mb-3">
-          <div class="flex py-1"><dt class="w-24 text-gray-400">ID</dt><dd>${esc(me.user_code)}</dd></div>
-          <div class="flex py-1"><dt class="w-24 text-gray-400">権限</dt><dd>${esc(ADMIN_ROLE_LABEL[me.role] || me.role)}</dd></div>
+          <div class="flex py-1"><dt class="w-24 text-neutral-400">ID</dt><dd>${esc(me.user_code)}</dd></div>
+          <div class="flex py-1"><dt class="w-24 text-neutral-400">権限</dt><dd>${esc(ADMIN_ROLE_LABEL[me.role] || me.role)}</dd></div>
         </dl>
         <div class="space-y-3">
-          <div><label class="text-sm text-gray-600 block mb-1">氏名</label><input id="ac-name" class="inp" value="${esc(me.name)}" maxlength="60"></div>
-          <div><label class="text-sm text-gray-600 block mb-1">メールアドレス（通知・パスワード再設定の宛先）</label><input id="ac-email" type="email" class="inp" value="${esc(me.email || '')}" data-current="${esc(me.email || '')}" autocomplete="email"></div>
-          <div><label class="text-sm text-gray-600 block mb-1">現在のパスワード（メールアドレスを変更するときだけ）</label><input id="ac-email-pw" type="password" class="inp" autocomplete="current-password"></div>
+          <div><label class="text-sm text-neutral-600 block mb-1">氏名</label><input id="ac-name" class="inp" value="${esc(me.name)}" maxlength="60"></div>
+          <div><label class="text-sm text-neutral-600 block mb-1">メールアドレス（通知・パスワード再設定の宛先）</label><input id="ac-email" type="email" class="inp" value="${esc(me.email || '')}" data-current="${esc(me.email || '')}" autocomplete="email"></div>
+          <div><label class="text-sm text-neutral-600 block mb-1">現在のパスワード（メールアドレスを変更するときだけ）</label><input id="ac-email-pw" type="password" class="inp" autocomplete="current-password"></div>
           <button class="btn btn-primary w-full" data-action="saveMyAccount">保存する</button>
-          <p class="text-[11px] text-gray-400">メールアドレスを変更すると、新しいアドレスに確認のメールを、以前のアドレスに変更のお知らせを送ります。</p>
+          <p class="text-2xs text-neutral-400">メールアドレスを変更すると、新しいアドレスに確認のメールを、以前のアドレスに変更のお知らせを送ります。</p>
         </div>
-        <div class="mt-4 pt-3 border-t border-gray-100" id="my-assignments">
-          <p class="text-xs font-bold text-gray-600 mb-1"><i class="fas fa-handshake text-blue-500 mr-1"></i>自分が担当している会社（社内担当者）</p>
+        <div class="mt-4 pt-3 border-t border-neutral-100" id="my-assignments">
+          <p class="text-xs font-bold text-neutral-600 mb-1"><i class="fas fa-handshake text-primary-500 mr-1"></i>自分が担当している会社（社内担当者）</p>
           ${accountAssignmentsHtml(myAsg)}
         </div>
       </section>
       <section class="card p-4">
-        <h3 class="text-sm font-bold text-gray-700 mb-3"><i class="fas fa-lock text-blue-500 mr-1"></i>パスワードの変更</h3>
+        <h3 class="text-sm font-bold text-neutral-700 mb-3"><i class="fas fa-lock text-primary-500 mr-1"></i>パスワードの変更</h3>
         <div class="space-y-3">
-          <div><label class="text-sm text-gray-600 block mb-1">現在のパスワード</label><input id="pw-current" type="password" class="inp" autocomplete="current-password"></div>
-          <div><label class="text-sm text-gray-600 block mb-1">新しいパスワード（8文字以上）</label><input id="pw-new" type="password" class="inp" autocomplete="new-password"></div>
-          <div><label class="text-sm text-gray-600 block mb-1">新しいパスワード（確認）</label><input id="pw-new2" type="password" class="inp" autocomplete="new-password"></div>
+          <div><label class="text-sm text-neutral-600 block mb-1">現在のパスワード</label><input id="pw-current" type="password" class="inp" autocomplete="current-password"></div>
+          <div><label class="text-sm text-neutral-600 block mb-1">新しいパスワード（8文字以上）</label><input id="pw-new" type="password" class="inp" autocomplete="new-password"></div>
+          <div><label class="text-sm text-neutral-600 block mb-1">新しいパスワード（確認）</label><input id="pw-new2" type="password" class="inp" autocomplete="new-password"></div>
           <button class="btn btn-primary w-full" data-action="changeMyPassword">変更する</button>
-          <p class="text-[11px] text-gray-400">変更すると、ほかの端末のログインは終了します。</p>
+          <p class="text-2xs text-neutral-400">変更すると、ほかの端末のログインは終了します。</p>
         </div>
       </section>
     </div>
     <section class="card p-3 mb-6 flex items-center gap-3 flex-wrap">
-      <i class="fas fa-shield-halved text-blue-500"></i>
+      <i class="fas fa-shield-halved text-primary-500"></i>
       <span class="text-sm flex-1">二段階認証・ログイン中の端末・スタッフのログインの終了${me.role === 'company_admin' ? '・ログインの履歴・接続元の制限' : ''}は「セキュリティ」の画面で行います。</span>
       <a href="#security" class="btn btn-outline text-sm">セキュリティへ</a>
     </section>
     <section class="card p-3 mb-6 flex items-center gap-3 flex-wrap">
-      <i class="fas fa-phone text-blue-500"></i>
+      <i class="fas fa-phone text-primary-500"></i>
       <span class="text-sm flex-1">スタッフ向けの緊急連絡先（アプリと報告用URLに出す電話番号）と、入店の位置が現場から離れているとみなす距離を設定します。</span>
       <button class="btn btn-outline text-sm" data-action="showSiteContactSetting">緊急連絡先・入店の位置</button>
     </section>
     <section class="card p-3 mb-6 flex items-center gap-3 flex-wrap" id="account-photo-setting">
-      <i class="fas fa-camera text-blue-500"></i>
-      <span class="text-sm flex-1">入店/退店報告の写真添付（会社全体）: <span id="account-photo-state" class="text-gray-400">…</span>
-        <span class="block text-[11px] text-gray-400">変更すると、写真の設定を案件ごとに決めていない案件のすべてのスタッフに反映されます。変更の前に影響する案件の数と変更の記録を確かめられます</span></span>
+      <i class="fas fa-camera text-primary-500"></i>
+      <span class="text-sm flex-1">入店/退店報告の写真添付（会社全体）: <span id="account-photo-state" class="text-neutral-400">…</span>
+        <span class="block text-2xs text-neutral-400">変更すると、写真の設定を案件ごとに決めていない案件のすべてのスタッフに反映されます。変更の前に影響する案件の数と変更の記録を確かめられます</span></span>
       <button class="btn btn-outline text-sm" data-action="photoSkipSetting">写真を送れないときの扱い</button>
       <button class="btn btn-outline text-sm" data-action="photoRequiredSetting">写真添付の設定</button>
     </section>
     <section class="card p-3 mb-6 flex items-center gap-3 flex-wrap" id="account-shift-notify">
-      <i class="fas fa-bell text-blue-500"></i>
-      <span class="text-sm flex-1">シフトを確定・削除したときのスタッフへの通知（会社全体）: <span id="account-shift-notify-state" class="text-gray-400">…</span>
-        <span class="block text-[11px] text-gray-400">確認の画面の「スタッフに通知を送る」のチェックの初めの値です。操作のたびに変えられます</span></span>
+      <i class="fas fa-bell text-primary-500"></i>
+      <span class="text-sm flex-1">シフトを確定・削除したときのスタッフへの通知（会社全体）: <span id="account-shift-notify-state" class="text-neutral-400">…</span>
+        <span class="block text-2xs text-neutral-400">確認の画面の「スタッフに通知を送る」のチェックの初めの値です。操作のたびに変えられます</span></span>
       <button class="btn btn-outline text-sm" data-action="shiftNotifySetting">通知の設定</button>
     </section>
-    ${list ? adminUsersHtml(list.users, list.me) : '<p class="text-xs text-gray-400">管理者アカウントの追加・権限の変更・停止は、会社管理者が行います。</p>'}`
+    ${list ? adminUsersHtml(list.users, list.me) : '<p class="text-xs text-neutral-400">管理者アカウントの追加・権限の変更・停止は、会社管理者が行います。</p>'}`
   // 写真添付の今の状態（読めなければ欄はそのまま。設定の画面を開けば読み直す）
   axios.get('/api/admin/settings/photo-required').then(({ data: d }) => {
     const el = document.getElementById('account-photo-state'); if (!el) return
     const last = (d.history || [])[0]
-    el.outerHTML = `<span id="account-photo-state"><span class="badge ${d.enabled ? 'badge-green' : 'badge-gray'}">${d.enabled ? '必須' : '無効'}</span>${last ? `<span class="text-[11px] text-gray-400 ml-1">最終変更 ${esc(dashDateTime(last.at))} ${esc(last.name || '')}</span>` : ''}</span>`
+    el.outerHTML = `<span id="account-photo-state"><span class="badge ${d.enabled ? 'badge-green' : 'badge-gray'}">${d.enabled ? '必須' : '無効'}</span>${last ? `<span class="text-2xs text-neutral-400 ml-1">最終変更 ${esc(dashDateTime(last.at))} ${esc(last.name || '')}</span>` : ''}</span>`
   }).catch(() => { })
   showShiftNotifyState()
   showContractUsage()
@@ -7033,17 +7033,17 @@ function showContractUsage() {
     const head = `<span class="font-bold">登録 ${n} 人 ／ ${lim == null ? '上限なし' : `上限 ${lim} 人`}</span>`
     if (lim == null) return draw(head)
     if (d.over_limit) return draw(`${head} <span class="badge badge-red">上限超過</span>
-      <span class="block text-xs text-red-700 mt-1"><i class="fas fa-triangle-exclamation mr-1"></i>契約ユーザー数の上限を ${n - lim} 人超えています。上限を増やすには本部にご相談ください</span>`, 'border-red-200 bg-red-50')
+      <span class="block text-xs text-danger-700 mt-1"><i class="fas fa-triangle-exclamation mr-1"></i>契約ユーザー数の上限を ${n - lim} 人超えています。上限を増やすには本部にご相談ください</span>`, 'border-danger-200 bg-danger-50')
     if (d.near_limit) return draw(`${head} <span class="badge badge-yellow">${n >= lim ? '上限に達しています' : `残り ${lim - n} 人`}</span>
-      <span class="block text-xs text-amber-800 mt-1"><i class="fas fa-circle-exclamation mr-1"></i>${n >= lim ? '上限に達しました。これより多く登録すると上限を超えます' : '上限に近づいています'}。上限を増やすには本部にご相談ください</span>`, 'border-amber-200 bg-amber-50')
-    draw(`${head} <span class="text-[11px] text-gray-400 ml-1">残り ${lim - n} 人</span>`)
-  }).catch(() => draw('<span class="text-gray-400">読み込めませんでした</span>'))
+      <span class="block text-xs text-warning-800 mt-1"><i class="fas fa-circle-exclamation mr-1"></i>${n >= lim ? '上限に達しました。これより多く登録すると上限を超えます' : '上限に近づいています'}。上限を増やすには本部にご相談ください</span>`, 'border-warning-200 bg-warning-50')
+    draw(`${head} <span class="text-2xs text-neutral-400 ml-1">残り ${lim - n} 人</span>`)
+  }).catch(() => draw('<span class="text-neutral-400">読み込めませんでした</span>'))
 }
 // シフトの確定・削除の通知の会社の設定（#9906。設定の画面は shift-board.js の shiftNotifySetting）
 function showShiftNotifyState(d) {
   const draw = (x) => {
     const el = document.getElementById('account-shift-notify-state'); if (!el || !x) return
-    el.outerHTML = `<span id="account-shift-notify-state"><span class="badge ${x.enabled ? 'badge-green' : 'badge-gray'}">${x.enabled ? '送る' : '送らない'}</span>${x.updated_at ? `<span class="text-[11px] text-gray-400 ml-1">最終変更 ${esc(dashDateTime(x.updated_at))} ${esc(x.updated_by_name || '')}</span>` : ''}</span>`
+    el.outerHTML = `<span id="account-shift-notify-state"><span class="badge ${x.enabled ? 'badge-green' : 'badge-gray'}">${x.enabled ? '送る' : '送らない'}</span>${x.updated_at ? `<span class="text-2xs text-neutral-400 ml-1">最終変更 ${esc(dashDateTime(x.updated_at))} ${esc(x.updated_by_name || '')}</span>` : ''}</span>`
   }
   if (d) return draw(d)
   axios.get('/api/admin/settings/shift-notify').then(({ data }) => draw(data)).catch(() => { })
@@ -7055,26 +7055,26 @@ function adminUsersHtml(users, meId) {
     <section class="card p-4">
       <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
         <div>
-          <h3 class="text-sm font-bold text-gray-700"><i class="fas fa-user-shield text-blue-500 mr-1"></i>管理者アカウント</h3>
-          <p class="text-[11px] text-gray-400">営業・現場・事務の担当者ごとにアカウントを作ると、承認・確定した人が正しく記録されます。退職した担当者は「停止」にしてください。</p>
+          <h3 class="text-sm font-bold text-neutral-700"><i class="fas fa-user-shield text-primary-500 mr-1"></i>管理者アカウント</h3>
+          <p class="text-2xs text-neutral-400">営業・現場・事務の担当者ごとにアカウントを作ると、承認・確定した人が正しく記録されます。退職した担当者は「停止」にしてください。</p>
         </div>
         <button class="btn btn-primary text-sm" data-action="showAddAdminUser"><i class="fas fa-plus"></i>管理者を追加</button>
       </div>
       <div class="overflow-x-auto">
         <table class="w-full text-sm">
-          <thead><tr class="text-gray-400 text-xs border-b border-gray-100">
+          <thead><tr class="text-neutral-400 text-xs border-b border-neutral-100">
             <th class="text-left py-2">ID</th><th class="text-left py-2">氏名</th><th class="text-left py-2">メール</th><th class="text-left py-2">権限</th><th class="text-left py-2">状態</th><th class="text-left py-2 whitespace-nowrap">担当している会社</th><th class="text-left py-2">最終ログイン</th><th></th>
           </tr></thead>
           <tbody>
             ${users.map(u => `
-              <tr class="border-b border-gray-50">
-                <td class="py-2 text-gray-500">${esc(u.user_code)}</td>
+              <tr class="border-b border-neutral-50">
+                <td class="py-2 text-neutral-500">${esc(u.user_code)}</td>
                 <td class="py-2">${esc(u.name)}${u.user_id === meId ? ' <span class="badge badge-blue">自分</span>' : ''}</td>
-                <td class="py-2 text-xs">${u.email ? esc(u.email) : '<span class="text-amber-600">未登録</span>'}</td>
+                <td class="py-2 text-xs">${u.email ? esc(u.email) : '<span class="text-warning-600">未登録</span>'}</td>
                 <td class="py-2">${esc(ADMIN_ROLE_LABEL[u.role] || u.role)}</td>
                 <td class="py-2">${u.status === 'active' ? '<span class="badge badge-green">利用中</span>' : '<span class="badge badge-gray">停止</span>'}${u.must_change_password ? ' <span class="badge badge-yellow">仮パスワード</span>' : ''}</td>
                 <td class="py-2 text-xs whitespace-nowrap">${accountAssignmentCountHtml(u)}</td>
-                <td class="py-2 text-xs text-gray-400">${u.last_login_at ? esc(dayjs(u.last_login_at).format('M/D HH:mm')) : '-'}</td>
+                <td class="py-2 text-xs text-neutral-400">${u.last_login_at ? esc(dayjs(u.last_login_at).format('M/D HH:mm')) : '-'}</td>
                 <td class="py-2 text-right whitespace-nowrap">
                   <button class="btn btn-outline text-xs" data-action="editAdminUser" data-id="${u.user_id}">編集</button>
                   ${u.user_id === meId ? '' : `
@@ -7117,13 +7117,13 @@ delegate('showAddAdminUser', () => {
     <h3 class="font-bold text-lg mb-4">管理者を追加</h3>
     <div class="space-y-3">
       <div class="grid grid-cols-2 gap-3">
-        <div><label class="text-sm text-gray-600 block mb-1">ID *</label><input id="au-code" class="inp" placeholder="sales02"></div>
-        <div><label class="text-sm text-gray-600 block mb-1">氏名 *</label><input id="au-name" class="inp" maxlength="60"></div>
+        <div><label class="text-sm text-neutral-600 block mb-1">ID *</label><input id="au-code" class="inp" placeholder="sales02"></div>
+        <div><label class="text-sm text-neutral-600 block mb-1">氏名 *</label><input id="au-name" class="inp" maxlength="60"></div>
       </div>
-      <div><label class="text-sm text-gray-600 block mb-1">メールアドレス（通知・パスワード再設定の宛先）</label><input id="au-email" type="email" class="inp"></div>
-      <div><label class="text-sm text-gray-600 block mb-1">権限 *</label><select id="au-role" class="inp">${adminRoleOptions('field_manager')}</select></div>
-      <div><label class="text-sm text-gray-600 block mb-1">初期パスワード（空欄なら自動で作ります）</label><input id="au-pass" class="inp" autocomplete="new-password" placeholder="8文字以上"></div>
-      <p class="text-[11px] text-gray-400">初回ログインで、本人にパスワードの変更を求めます。ログインの会社コードは自社の会社コードです。</p>
+      <div><label class="text-sm text-neutral-600 block mb-1">メールアドレス（通知・パスワード再設定の宛先）</label><input id="au-email" type="email" class="inp"></div>
+      <div><label class="text-sm text-neutral-600 block mb-1">権限 *</label><select id="au-role" class="inp">${adminRoleOptions('field_manager')}</select></div>
+      <div><label class="text-sm text-neutral-600 block mb-1">初期パスワード（空欄なら自動で作ります）</label><input id="au-pass" class="inp" autocomplete="new-password" placeholder="8文字以上"></div>
+      <p class="text-2xs text-neutral-400">初回ログインで、本人にパスワードの変更を求めます。ログインの会社コードは自社の会社コードです。</p>
       <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="addAdminUser">追加する</button></div>
     </div>`)
 })
@@ -7142,10 +7142,10 @@ delegate('editAdminUser', (el) => {
   modal(`
     <h3 class="font-bold text-lg mb-4">管理者の編集（${esc(u.user_code)}）</h3>
     <div class="space-y-3">
-      <div><label class="text-sm text-gray-600 block mb-1">氏名 *</label><input id="eu-name" class="inp" value="${esc(u.name)}" maxlength="60"></div>
-      <div><label class="text-sm text-gray-600 block mb-1">メールアドレス</label><input id="eu-email" type="email" class="inp" value="${esc(u.email || '')}"></div>
-      <div><label class="text-sm text-gray-600 block mb-1">権限</label><select id="eu-role" class="inp" ${isMe ? 'disabled' : ''}>${adminRoleOptions(u.role)}</select>
-        ${isMe ? '<p class="text-[11px] text-gray-400 mt-1">自分の権限は変更できません。自分のメールアドレスは「自分のアカウント」から変更してください。</p>' : ''}</div>
+      <div><label class="text-sm text-neutral-600 block mb-1">氏名 *</label><input id="eu-name" class="inp" value="${esc(u.name)}" maxlength="60"></div>
+      <div><label class="text-sm text-neutral-600 block mb-1">メールアドレス</label><input id="eu-email" type="email" class="inp" value="${esc(u.email || '')}"></div>
+      <div><label class="text-sm text-neutral-600 block mb-1">権限</label><select id="eu-role" class="inp" ${isMe ? 'disabled' : ''}>${adminRoleOptions(u.role)}</select>
+        ${isMe ? '<p class="text-2xs text-neutral-400 mt-1">自分の権限は変更できません。自分のメールアドレスは「自分のアカウント」から変更してください。</p>' : ''}</div>
       <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="saveAdminUser" data-id="${u.user_id}">保存する</button></div>
     </div>`)
   if (isMe) document.getElementById('eu-email').disabled = true
@@ -7175,7 +7175,7 @@ delegate('resetAdminUserPassword', (el) => {
   const u = ADMIN_USERS.get(Number(el.dataset.id)); if (!u) return
   modal(`
     <h3 class="font-bold text-lg mb-2">パスワードの再発行（${esc(u.name)}）</h3>
-    <p class="text-xs text-gray-500 mb-3">今のパスワードは使えなくなり、ログイン中の画面もログアウトされます。</p>
+    <p class="text-xs text-neutral-500 mb-3">今のパスワードは使えなくなり、ログイン中の画面もログアウトされます。</p>
     <div class="space-y-2">
       ${u.email ? `<button class="btn btn-outline w-full" data-action="doResetAdminUserPassword" data-id="${u.user_id}" data-mode="email"><i class="fas fa-envelope"></i>再設定メールを送る（${esc(u.email)}）</button>` : ''}
       <button class="btn btn-primary w-full" data-action="doResetAdminUserPassword" data-id="${u.user_id}" data-mode="temp"><i class="fas fa-key"></i>仮パスワードを発行する</button>
@@ -7194,20 +7194,20 @@ delegate('doResetAdminUserPassword', (el) => withSubmitLock(el, async () => {
 
 // 担当している会社（#9910）: 主担当・副担当に分け、クライアント・協力会社の詳細へのリンクにする
 function accountAssignmentsHtml(list) {
-  if (!list.length) return '<p class="text-xs text-gray-400">担当している会社はありません（クライアント・協力会社の会社基本情報で、社内担当者に選ばれると出ます）</p>'
-  const link = a => `<a href="#${a.target_type === 'client' ? 'clients' : 'partners'}/${Number(a.target_id)}" class="text-blue-600 hover:underline" data-action="accountAssignmentLink">${esc(a.target_name)}</a><span class="text-[11px] text-gray-400 ml-0.5">（${a.target_type === 'client' ? 'クライアント' : '協力会社'}）</span>`
+  if (!list.length) return '<p class="text-xs text-neutral-400">担当している会社はありません（クライアント・協力会社の会社基本情報で、社内担当者に選ばれると出ます）</p>'
+  const link = a => `<a href="#${a.target_type === 'client' ? 'clients' : 'partners'}/${Number(a.target_id)}" class="text-primary-600 hover:underline" data-action="accountAssignmentLink">${esc(a.target_name)}</a><span class="text-2xs text-neutral-400 ml-0.5">（${a.target_type === 'client' ? 'クライアント' : '協力会社'}）</span>`
   const main = list.filter(a => a.is_primary), subs = list.filter(a => !a.is_primary)
   return `<dl class="text-xs space-y-1">
-    <div class="flex gap-2"><dt class="w-12 text-gray-400 shrink-0">主担当</dt><dd class="min-w-0">${main.length ? main.map(link).join('、') : '<span class="text-gray-400">-</span>'}</dd></div>
-    <div class="flex gap-2"><dt class="w-12 text-gray-400 shrink-0">副担当</dt><dd class="min-w-0">${subs.length ? subs.map(link).join('、') : '<span class="text-gray-400">-</span>'}</dd></div>
+    <div class="flex gap-2"><dt class="w-12 text-neutral-400 shrink-0">主担当</dt><dd class="min-w-0">${main.length ? main.map(link).join('、') : '<span class="text-neutral-400">-</span>'}</dd></div>
+    <div class="flex gap-2"><dt class="w-12 text-neutral-400 shrink-0">副担当</dt><dd class="min-w-0">${subs.length ? subs.map(link).join('、') : '<span class="text-neutral-400">-</span>'}</dd></div>
   </dl>`
 }
 function accountAssignmentCountHtml(u) {
   const list = ACCOUNT_ASSIGNMENTS.get(u.user_id) || []
-  if (!list.length) return '<span class="text-gray-300">-</span>'
+  if (!list.length) return '<span class="text-neutral-300">-</span>'
   const main = list.filter(a => a.is_primary).length
-  return `<button type="button" class="text-blue-600 hover:underline" data-action="showAccountAssignments" data-id="${Number(u.user_id)}">主 ${main}社・副 ${list.length - main}社</button>`
-    + (u.status !== 'active' ? '<span class="block text-[11px] text-amber-700">停止中のため担当から外れています</span>' : '')
+  return `<button type="button" class="text-primary-600 hover:underline" data-action="showAccountAssignments" data-id="${Number(u.user_id)}">主 ${main}社・副 ${list.length - main}社</button>`
+    + (u.status !== 'active' ? '<span class="block text-2xs text-warning-700">停止中のため担当から外れています</span>' : '')
 }
 // モーダルの中のリンクで移るときは、モーダルを閉じる（移動はリンクのまま）
 delegate('accountAssignmentLink', () => { if (document.getElementById('modal-root').innerHTML) closeModal() })
@@ -7215,7 +7215,7 @@ delegate('showAccountAssignments', el => {
   const u = ADMIN_USERS.get(Number(el.dataset.id)); if (!u) return
   modal(`
     <h3 class="font-bold text-lg mb-1">担当している会社（${esc(u.name)}）</h3>
-    ${u.status !== 'active' ? '<p class="text-xs text-amber-700 mb-2">このアカウントは停止中のため、各社の社内担当者から外れています（会社の画面で別の人を選んでください）</p>' : ''}
+    ${u.status !== 'active' ? '<p class="text-xs text-warning-700 mb-2">このアカウントは停止中のため、各社の社内担当者から外れています（会社の画面で別の人を選んでください）</p>' : ''}
     <div class="mt-2">${accountAssignmentsHtml(ACCOUNT_ASSIGNMENTS.get(u.user_id) || [])}</div>
     <div class="flex justify-end mt-4"><button class="btn btn-outline" onclick="closeModal()">閉じる</button></div>`)
 })
@@ -7223,7 +7223,7 @@ delegate('showAccountAssignments', el => {
 // ダッシュボード: メールアドレスのない管理者に登録を案内する（#25）
 function accountEmailNotice() {
   if (!ME || ME.email || document.getElementById('account-email-notice')) return
-  $app.insertAdjacentHTML('afterbegin', `<div id="account-email-notice" class="card p-3 mb-4 bg-amber-50 text-sm text-amber-800 flex items-center gap-2 flex-wrap">
+  $app.insertAdjacentHTML('afterbegin', `<div id="account-email-notice" class="card p-3 mb-4 bg-warning-50 text-sm text-warning-800 flex items-center gap-2 flex-wrap">
     <i class="fas fa-envelope"></i><span class="flex-1">通知メール（打刻修正の承認依頼など）を受け取るには、メールアドレスを登録してください。</span>
     <a href="#account" class="btn btn-outline text-xs">アカウント設定へ</a></div>`)
 }
@@ -7259,7 +7259,7 @@ function route() {
   // 社員の詳細へのリンク（スタッフマスタの登録後・未入力の一覧など）は、スタッフ詳細で開く
   if (tab === 'employees' && ME && !ME.can_manage_hr) {
     if (id) { history.replaceState(null, '', '#staff/' + id); return route() }
-    $app.innerHTML = '<div class="card p-6 text-center text-sm text-gray-500"><i class="fas fa-lock mr-1"></i>従業員管理（給与・口座・保険番号などの労務情報）は、会社管理者と事務担当のみ利用できます。</div>'; return
+    $app.innerHTML = '<div class="card p-6 text-center text-sm text-neutral-500"><i class="fas fa-lock mr-1"></i>従業員管理（給与・口座・保険番号などの労務情報）は、会社管理者と事務担当のみ利用できます。</div>'; return
   }
   if (tab === 'staff' && id) return renderStaffDetail(id)
   if (tab === 'projects' && id) return renderProjectDetail(id)
@@ -7280,7 +7280,7 @@ document.getElementById('mobile-nav').addEventListener('change', e => { location
 
 // ============ 出勤可能日（#171 #availability）: 締切・未提出の人への通知・日付×スタッフの一覧。API は src/staff-schedule.ts ============
 // メニューの項目は src/admin-menu.ts（『シフト管理』の下）
-const AVB_MARK = { o: ['○', 'text-emerald-600'], p: ['△', 'text-amber-600'], x: ['×', 'text-gray-400'] }
+const AVB_MARK = { o: ['○', 'text-success-600'], p: ['△', 'text-warning-600'], x: ['×', 'text-neutral-400'] }
 const AVB_FILTERS = [['all', 'すべて'], ['unsubmitted', '未提出'], ['submitted', '提出済み'], ['exempt', '提出しない人']]
 // 出勤可能日の提出（#9907 #9918）: exempt の人（スタッフマスタで「しない」にした人）は、未提出の数・通知に数えない
 const avbIsTarget = (s) => s.has_login && !s.exempt
@@ -7294,8 +7294,8 @@ async function renderAvailabilityBoard(month) {
   loading()
   let data
   try { data = (await axios.get('/api/admin/availability', { params: month ? { month } : {} })).data } catch (e) {
-    $app.innerHTML = `<h2 class="text-xl font-bold text-gray-900 mb-4">出勤可能日</h2>
-      <section class="card p-6 text-center"><p class="text-sm text-red-600 mb-3">${esc((e && e.response && e.response.data && e.response.data.error) || '出勤可能日を読み込めませんでした')}</p>
+    $app.innerHTML = `<h2 class="text-xl font-bold text-neutral-900 mb-4">出勤可能日</h2>
+      <section class="card p-6 text-center"><p class="text-sm text-danger-600 mb-3">${esc((e && e.response && e.response.data && e.response.data.error) || '出勤可能日を読み込めませんでした')}</p>
       <button class="btn btn-outline" data-action="avbReload"><i class="fas fa-rotate-right"></i>再読み込み</button></section>`
     return
   }
@@ -7318,7 +7318,7 @@ function drawAvailabilityBoard() {
   for (const x of d.details || []) detail[`${x.staff_id}:${Number(String(x.work_date).slice(8, 10))}`] = [x.status === 'partial' ? `${String(x.start_time).slice(0, 5)}〜${String(x.end_time).slice(0, 5)}` : '', x.note || ''].filter(Boolean).join(' ')
   const dayHead = Array.from({ length: d.days }, (_, i) => {
     const wd = first.date(i + 1).day()
-    return `<th class="px-1 py-1 text-center font-normal ${wd === 0 ? 'text-red-500' : wd === 6 ? 'text-blue-500' : 'text-gray-500'}">${i + 1}<br><span class="text-[10px]">${'日月火水木金土'[wd]}</span></th>`
+    return `<th class="px-1 py-1 text-center font-normal ${wd === 0 ? 'text-danger-500' : wd === 6 ? 'text-primary-500' : 'text-neutral-500'}">${i + 1}<br><span class="text-3xs">${'日月火水木金土'[wd]}</span></th>`
   }).join('')
   // 日ごとの ○・△ の人数
   const avail = Array(d.days).fill(0)
@@ -7331,51 +7331,51 @@ function drawAvailabilityBoard() {
     const m = AVB_MARK[s.marks[i]]
     const hasShift = s.shift_days.includes(String(i + 1).padStart(2, '0'))
     const tip = [detail[`${s.staff_id}:${i + 1}`] || '', hasShift ? 'シフトあり' : ''].filter(Boolean).join(' / ')
-    return `<td class="px-1 py-1 text-center ${hasShift ? 'bg-blue-50' : ''}"${tip ? ` title="${escAttr(tip)}"` : ''}><span class="font-bold ${m ? m[1] : ''}">${m ? m[0] : ''}</span>${tip && !hasShift ? '<sup class="text-[9px] text-gray-400">*</sup>' : ''}</td>`
+    return `<td class="px-1 py-1 text-center ${hasShift ? 'bg-primary-50' : ''}"${tip ? ` title="${escAttr(tip)}"` : ''}><span class="font-bold ${m ? m[1] : ''}">${m ? m[0] : ''}</span>${tip && !hasShift ? '<sup class="text-4xs text-neutral-400">*</sup>' : ''}</td>`
   }
   $app.innerHTML = `
     <div class="flex items-center gap-2 flex-wrap mb-4">
-      <h2 class="text-xl font-bold text-gray-900">出勤可能日</h2>
+      <h2 class="text-xl font-bold text-neutral-900">出勤可能日</h2>
       <div class="flex items-center gap-1 ml-auto">
         <button class="btn btn-outline text-xs" data-action="avbMonth" data-month="${esc(first.subtract(1, 'month').format('YYYY-MM'))}" aria-label="前の月"><i class="fas fa-chevron-left"></i></button>
-        <span class="font-bold text-gray-800 px-2">${esc(avbMonthLabel(d.month))}</span>
+        <span class="font-bold text-neutral-800 px-2">${esc(avbMonthLabel(d.month))}</span>
         <button class="btn btn-outline text-xs" data-action="avbMonth" data-month="${esc(first.add(1, 'month').format('YYYY-MM'))}" aria-label="次の月"><i class="fas fa-chevron-right"></i></button>
       </div>
     </div>
     <div class="grid md:grid-cols-2 gap-4 mb-4">
       <section class="card p-4">
-        <h3 class="font-bold text-gray-800 mb-2">提出の締切と案内</h3>
+        <h3 class="font-bold text-neutral-800 mb-2">提出の締切と案内</h3>
         <div class="space-y-2 text-sm">
-          <label class="flex items-center gap-2"><span class="text-gray-600 w-16 shrink-0">締切日</span><input type="date" id="avb-deadline" class="inp w-44" value="${esc(d.deadline || '')}"><span class="text-xs text-gray-400">空欄で締切なし</span></label>
-          <label class="block"><span class="text-gray-600 text-xs">スタッフへの案内（提出画面に出ます）</span><textarea id="avb-note" class="inp" rows="2" maxlength="300" placeholder="例: 土日に入れる方は特に歓迎です">${esc(d.note || '')}</textarea></label>
+          <label class="flex items-center gap-2"><span class="text-neutral-600 w-16 shrink-0">締切日</span><input type="date" id="avb-deadline" class="inp w-44" value="${esc(d.deadline || '')}"><span class="text-xs text-neutral-400">空欄で締切なし</span></label>
+          <label class="block"><span class="text-neutral-600 text-xs">スタッフへの案内（提出画面に出ます）</span><textarea id="avb-note" class="inp" rows="2" maxlength="300" placeholder="例: 土日に入れる方は特に歓迎です">${esc(d.note || '')}</textarea></label>
           <button class="btn btn-primary text-sm" data-action="avbSavePeriod"><i class="fas fa-floppy-disk"></i>保存</button>
         </div>
       </section>
       <section class="card p-4">
-        <h3 class="font-bold text-gray-800 mb-2">提出状況</h3>
-        <p class="text-sm text-gray-700">提出済み <b>${targets.length - unsubmitted.length}</b> / ${targets.length}人${lateCount ? `（うち締切後 ${lateCount}人）` : ''}・未提出 <b class="${unsubmitted.length ? 'text-red-600' : ''}">${unsubmitted.length}</b>人</p>
-        ${d.staff.length > loginStaff.length ? `<p class="text-xs text-gray-400 mt-1">ログインのないスタッフ ${d.staff.length - loginStaff.length}人は、アプリから提出できないため数えていません</p>` : ''}
-        ${exemptCount ? `<p class="text-xs text-gray-400 mt-1" id="avb-exempt-note">出勤可能日の提出を「しない」にしているスタッフ ${exemptCount}人は数えていません（<a href="#staff" class="text-blue-600 hover:underline">スタッフマスタ</a>の各スタッフの「出勤可能日の提出」で、する／しないを変えられます）</p>` : ''}
+        <h3 class="font-bold text-neutral-800 mb-2">提出状況</h3>
+        <p class="text-sm text-neutral-700">提出済み <b>${targets.length - unsubmitted.length}</b> / ${targets.length}人${lateCount ? `（うち締切後 ${lateCount}人）` : ''}・未提出 <b class="${unsubmitted.length ? 'text-danger-600' : ''}">${unsubmitted.length}</b>人</p>
+        ${d.staff.length > loginStaff.length ? `<p class="text-xs text-neutral-400 mt-1">ログインのないスタッフ ${d.staff.length - loginStaff.length}人は、アプリから提出できないため数えていません</p>` : ''}
+        ${exemptCount ? `<p class="text-xs text-neutral-400 mt-1" id="avb-exempt-note">出勤可能日の提出を「しない」にしているスタッフ ${exemptCount}人は数えていません（<a href="#staff" class="text-primary-600 hover:underline">スタッフマスタ</a>の各スタッフの「出勤可能日の提出」で、する／しないを変えられます）</p>` : ''}
         ${unsubmitted.length ? `<div class="flex flex-wrap gap-1 mt-2 max-h-24 overflow-y-auto">${unsubmitted.map(s => `<a href="#staff/${Number(s.staff_id)}" class="badge badge-gray hover:underline">${esc(s.name)}</a>`).join('')}</div>` : ''}
         <div class="flex items-center gap-2 flex-wrap mt-3">
           <button class="btn btn-outline text-sm" data-action="avbRemind" ${unsubmitted.length ? '' : 'disabled'}><i class="fas fa-bell"></i>未提出の人に通知する（${unsubmitted.length}人）</button>
-          ${d.last_reminded_at ? `<span class="text-xs text-gray-400">前回の通知 ${esc(avbAt(d.last_reminded_at))}</span>` : ''}
+          ${d.last_reminded_at ? `<span class="text-xs text-neutral-400">前回の通知 ${esc(avbAt(d.last_reminded_at))}</span>` : ''}
         </div>
-        <p class="text-[11px] text-gray-400 mt-1">スタッフのアプリの「通知」に届きます</p>
+        <p class="text-2xs text-neutral-400 mt-1">スタッフのアプリの「通知」に届きます</p>
       </section>
     </div>
     <div class="flex gap-2 flex-wrap items-center mb-2">
       ${AVB_FILTERS.map(([k, l]) => `<button class="btn ${AVB.filter === k ? 'btn-primary' : 'btn-outline'} text-xs" data-action="avbFilter" data-filter="${k}">${l}</button>`).join('')}
-      <span class="text-xs text-gray-500 ml-auto"><span class="text-emerald-600 font-bold">○</span> 終日OK <span class="text-amber-600 font-bold ml-1">△</span> 時間帯 <span class="text-gray-400 font-bold ml-1">×</span> 不可 <span class="inline-block w-3 h-3 bg-blue-50 border border-blue-200 align-middle ml-1"></span> シフトあり <sup>*</sup> 時間帯・メモあり（セルに合わせると表示）</span>
+      <span class="text-xs text-neutral-500 ml-auto"><span class="text-success-600 font-bold">○</span> 終日OK <span class="text-warning-600 font-bold ml-1">△</span> 時間帯 <span class="text-neutral-400 font-bold ml-1">×</span> 不可 <span class="inline-block w-3 h-3 bg-primary-50 border border-primary-200 align-middle ml-1"></span> シフトあり <sup>*</sup> 時間帯・メモあり（セルに合わせると表示）</span>
     </div>
     <div class="card overflow-x-auto">
       <table class="text-xs whitespace-nowrap">
-        <thead class="bg-gray-50"><tr><th class="px-2 py-1 text-left sticky left-0 bg-gray-50">スタッフ</th><th class="px-2 py-1 text-left">提出</th>${dayHead}</tr></thead>
-        <tbody class="divide-y divide-gray-100">${rows.map(s => `<tr${s.exempt ? ' class="text-gray-500"' : ''}>
-          <td class="px-2 py-1 sticky left-0 bg-white"><a href="#staff/${Number(s.staff_id)}" class="text-blue-700 hover:underline">${esc(s.name)}</a></td>
+        <thead class="bg-neutral-50"><tr><th class="px-2 py-1 text-left sticky left-0 bg-neutral-50">スタッフ</th><th class="px-2 py-1 text-left">提出</th>${dayHead}</tr></thead>
+        <tbody class="divide-y divide-neutral-100">${rows.map(s => `<tr${s.exempt ? ' class="text-neutral-500"' : ''}>
+          <td class="px-2 py-1 sticky left-0 bg-surface"><a href="#staff/${Number(s.staff_id)}" class="text-primary-700 hover:underline">${esc(s.name)}</a></td>
           <td class="px-2 py-1">${statusCell(s)}</td>
-          ${Array.from({ length: d.days }, (_, i) => cell(s, i)).join('')}</tr>`).join('') || `<tr><td colspan="${d.days + 2}" class="text-center text-gray-400 py-8">該当するスタッフはいません</td></tr>`}</tbody>
-        <tfoot class="bg-gray-50"><tr><td class="px-2 py-1 sticky left-0 bg-gray-50 font-bold" colspan="2">○・△ の人数</td>${avail.map(n => `<td class="px-1 py-1 text-center font-bold ${n ? 'text-emerald-700' : 'text-gray-300'}">${n}</td>`).join('')}</tr></tfoot>
+          ${Array.from({ length: d.days }, (_, i) => cell(s, i)).join('')}</tr>`).join('') || `<tr><td colspan="${d.days + 2}" class="text-center text-neutral-400 py-8">該当するスタッフはいません</td></tr>`}</tbody>
+        <tfoot class="bg-neutral-50"><tr><td class="px-2 py-1 sticky left-0 bg-neutral-50 font-bold" colspan="2">○・△ の人数</td>${avail.map(n => `<td class="px-1 py-1 text-center font-bold ${n ? 'text-success-700' : 'text-neutral-300'}">${n}</td>`).join('')}</tr></tfoot>
       </table>
     </div>`
 }
