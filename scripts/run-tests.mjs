@@ -11,7 +11,7 @@
 //   npm test -- --no-build            … ビルドを省く
 //   npm test -- --no-retry            … 落ちたテストを流し直さない（下の「機械が混んでいるとき」）
 // 環境変数: TEST_DB_DIR（テスト用 D1 の置き場所。既定は OS の一時フォルダの mbsaas-test-<作業フォルダごとの記号>）、TEST_PORT（既定 8899。使われていれば次の空いている番号）、
-//   TEST_MAX_SERVERS（この機械で同時に動かすテスト用サーバーの数。既定 2。0 で制限なし）、TEST_TIMEOUT_MIN（1本の上限の分。既定 60）
+//   TEST_MAX_SERVERS（この機械で同時に動かすテスト用サーバーの数。既定 2。0 で制限なし）、TEST_TIMEOUT_MIN（1本の上限の分。既定 90。混んでいると w23-menus は 45 分ほどかかる）
 //
 // 機械が混んでいるとき（Sprint 26 #9980。ほかの作業フォルダでも同時に npm test を流すと、ECONNRESET・D1 の internal error・EPERM で落ちていた）:
 //   - テストの置き場所は作業フォルダごとに分け、同じ置き場所を2つの npm test で使わない（ロック）。ポートが使われていれば別の番号にする。
@@ -33,7 +33,7 @@ const filters = argv.filter(a => !a.startsWith('--'))
 const DB_ROOT = process.env.TEST_DB_DIR || join(tmpdir(), `mbsaas-test-${createHash('sha1').update(ROOT.toLowerCase()).digest('hex').slice(0, 8)}`)
 const TEMPLATE = join(DB_ROOT, 'template')
 const MAX_SERVERS = Number(process.env.TEST_MAX_SERVERS ?? 2)
-const TIMEOUT_MS = Number(process.env.TEST_TIMEOUT_MIN || 60) * 60000
+const TIMEOUT_MS = Number(process.env.TEST_TIMEOUT_MIN || 90) * 60000
 const RETRY = !flags.has('--no-retry')
 const isWin = process.platform === 'win32'
 const wait = ms => new Promise(r => setTimeout(r, ms))
