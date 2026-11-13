@@ -89,23 +89,34 @@ npm test                          # すべて（約100本）
 npm test -- w12-shift w3-board    # ファイル名に含まれる文字で絞る
 npm test -- --reuse-db            # 前回のテスト用 D1 を使い回す（マイグレーションを足したときは使わない）
 npm test -- --no-build            # ビルドを省く
+npm test -- --no-retry            # 落ちたテストを流し直さない
 ```
 
 `scripts/run-tests.mjs` の流れ（`scripts/run-tests.mjs:3`〜`5`）:
 1. `npm run build`。
 2. テスト用のローカル D1 を1回だけ作る（`scripts/setup-test-db.sh`。0001〜0026 → `seed.sql` → 0027 以降の順に適用し、既存のデータに後のマイグレーションを当てる本番の状況を再現する）。
-3. テストのファイルごとに、その D1 を複製して `wrangler dev --local` を起動し、テストを流してサーバーを止める。テストの先頭のコメントに書いた `--var 名前:値` と `--test-scheduled` を読み取って起動に付ける（`scripts/run-tests.mjs:48`〜`52`）。
+3. テストのファイルごとに、その D1 を複製して `wrangler dev --local` を起動し、テストを流してサーバーを止める。起動のオプションはテストの先頭のコメントから読む（2.4。`scripts/run-tests.mjs:70`）。`// run-tests:` の行が複数あるテストは、同じ DB の写しで上から順に起動し直して流す（`scripts/run-tests.mjs:188`）。
+4. 落ちたテストは、新しい DB の写しでもう1回だけ流す。2回目で通ったものは結果に「PASS（再試行で合格）」と分けて出す（`scripts/run-tests.mjs:167`）。2回とも落ちたものが FAIL です。
 
-環境変数: `TEST_DB_DIR`（テスト用 D1 の置き場所。既定は OS の一時フォルダの `mbsaas-test`）、`TEST_PORT`（既定 8899）。テストは本番に接続しません。
+環境変数: `TEST_DB_DIR`（テスト用 D1 の置き場所。既定は OS の一時フォルダの `mbsaas-test-<作業フォルダごとの記号>`）、`TEST_PORT`（既定 8899。使われていれば次の空いている番号）、`TEST_MAX_SERVERS`（この機械で同時に動かすテスト用サーバーの数。既定 2。0 で制限なし）、`TEST_TIMEOUT_MIN`（1本の上限。既定 60 分）。テストは本番に接続しません。
 
-### 2.2 既知の失敗（2本）
+**機械が混んでいるとき**（Sprint 26。#9980）: 作業フォルダを分けて何本も同時に `npm test` を流すと、ECONNRESET・`wrangler d1 execute` の「internal error」・作業フォルダの EPERM でテストが途中で止まっていました（アプリの不具合ではない）。今は次のようにしています。
+- テスト用 D1 の置き場所を作業フォルダごとに分け、同じ置き場所を2つの `npm test` で使わない（ロック）。ポートが使われていれば別の番号にし、止めたサーバーのポートが空くまで待ってから次へ進む。
+- この機械のすべての `npm test` を合わせて、テスト用サーバーを `TEST_MAX_SERVERS` 本までにする（空くまで待つ。印は OS の一時フォルダの `mbsaas-test-slots`）。
+- 各テストは `scripts/lib/test-preload.mjs` を読み込んで起動する。開発サーバーが閉じた接続を使い回したときの ECONNRESET は、要求が届いていないので少し待って送り直す（2回まで）。テストが DB を直接読み書きする `wrangler d1 execute --local` が、開発サーバーと同じファイルを取り合って「internal error」・database is locked・EBUSY・EPERM になったときは、少し待ってやり直す（3回まで。1回の実行は1つのトランザクションなので、失敗した回は何も書いていない）。やり直したときは「（再試行）」と出る。原因を調べるときは `TEST_RETRY=0` でやめられる。
+- DB の写しを消すときの EPERM・EBUSY（止めた直後の workerd がファイルを持っている）は待ってやり直し、消せなければ次の `npm test` で消す。
 
-`npm test` では次の2本が落ちます。アプリの不具合ではないので直さないと決めています（[decisions.md](decisions.md) の D-33）。この2本以外がすべて通れば合格です。
+### 2.2 以前の既知の失敗（Sprint 26 で直した）
 
-| テスト | 落ちる理由 | 手で確かめる方法 |
+Sprint 25 までは次の3本が `npm test` で必ず落ちていました（[decisions.md](decisions.md) の D-33）。Sprint 26（#9980）で、テストの道具の側を直して `npm test` で通るようにしました。今は、いつも落ちるテストはありません。
+
+| テスト | 落ちていた理由 | 直し方 |
 |---|---|---|
-| `test-history.mjs` | `test-report-settings` → `test-corrections` → `test-notifications` が同じ DB に作ったデータを前提にしているが、`npm test` はテストごとに DB を作り直す | 先頭のコメント（`scripts/test-history.mjs:2`〜`8`）の順に、同じ DB・同じサーバーで流す |
-| `test-w4-notifications-mail.mjs` | 先頭のコメントの `<WEBHOOK_SECRET と同じ値>` が起動のオプションとして読み取られ、`<` がシェルのリダイレクトになってサーバーが起動しない | 先頭のコメント（`scripts/test-w4-notifications-mail.mjs:2`〜`7`）のとおりに、Webhook の秘密の値（テストの既定値）を `--var` で渡して起動して流す |
+| `test-history.mjs` | `test-report-settings` → `test-corrections` → `test-notifications` が同じ DB に作ったデータを前提にしているが、`npm test` はテストごとに DB を作り直す | 先頭のコメントの `// run-tests:` の4行で、前提のテストから同じ DB で順に流す（`scripts/test-history.mjs:9`〜`13`） |
+| `test-w4-notifications-mail.mjs` | 先頭のコメントの `<WEBHOOK_SECRET と同じ値>` が起動のオプションとして読み取られ、`<` がシェルのリダイレクトになってサーバーが起動しない | `// run-tests:` の行に、Webhook の秘密の値（テストの既定値）を書いた（`scripts/test-w4-notifications-mail.mjs:9`）。`< >` や日本語を含む値は、起動に使わないようにした |
+| `test-notifications.mjs` | 先頭のコメントの `--var MAIL_ENABLED:false（既定）` も読み取られ、後の値でメールが無効のまま起動していた | `// run-tests:` の2行で、メールを有効にした回と `--mail-disabled` の回を同じ DB で順に流す（`scripts/test-notifications.mjs:11`〜`12`）。同じ名前の `--var` が2回あるときは最初の値を使う |
+
+ヘッドレス Chrome を使う画面の確認が、2026-11-12 に CDN の axios を読めずに落ちた件は 2.7 にあります。
 
 ### 2.3 1本だけ手で流す
 
@@ -113,7 +124,7 @@ npm test -- --no-build            # ビルドを省く
 bash scripts/setup-test-db.sh "<短いパスの保存先>"          # Windows ではパスが長いと失敗する
 npm run build
 npx wrangler dev --local --port 8810 --persist-to "<保存先>"   # テストの先頭のコメントにある --var・--test-scheduled も付ける
-BASE=http://127.0.0.1:8810 PERSIST="<保存先>" node --import ./scripts/fetch-origin.mjs scripts/test-xxx.mjs   # 書き込みに Origin を付ける（2.4）
+BASE=http://127.0.0.1:8810 PERSIST="<保存先>" node --import ./scripts/fetch-origin.mjs --import ./scripts/lib/test-preload.mjs scripts/test-xxx.mjs   # 書き込みに Origin を付ける（2.4）・混んでいるときのやり直し（2.1）
 ```
 
 終わったら `wrangler dev` を止めます。
@@ -121,8 +132,9 @@ BASE=http://127.0.0.1:8810 PERSIST="<保存先>" node --import ./scripts/fetch-o
 ### 2.4 テストの書き方
 - `scripts/test-<作業単位>.mjs` に、API を呼んで確かめるテストを書きます。1件ごとに `PASS` / `FAIL` を出し、最後に `n/m passed` を出して、失敗があれば終了コード 1 にします（例: `scripts/test-w12-shift.mjs`）。
 - ログインは `POST /api/auth/login` に会社コード・ID・パスワードを送り、`set-cookie` の `session` を次の要求に付けます。サーバーはセッションの Cookie を付けた書き込みに `Origin` を求める（CSRF の対策。#9943）ので、`npm test` は各テストを `node --import ./scripts/fetch-origin.mjs` で起動し、Node の `fetch` の書き込みに宛先と同じ `Origin` を付けます（テストの中で付ける必要はありません）。
-- 起動のオプションが要るときは、先頭25行のコメントに `--var 名前:値` / `--test-scheduled` と書きます（`npm test` がそれを読みます）。値に `<` `>` を書かないでください（2.2 の理由）。
-- 画面の確認が要るときは、ヘッドレスの Chrome を使い、Chrome がない環境では省くようにします（`scripts/test-w12-shift.mjs:9`）。
+- 起動のオプションが要るときは、先頭25行のコメントに `// run-tests: --var 名前:値 --test-scheduled` の行を書きます（`npm test` はこの行があればこの行だけを読む）。1行が1回の起動で、行が複数あれば同じ DB の写しで上から順に流します。別のテストのファイル名（`test-xxx.mjs`）を書くとそのテストを、`--arg 値` を書くとテストに引数を渡して流せます（例: `scripts/test-history.mjs:9`〜`13`、`scripts/test-notifications.mjs:11`〜`12`）。値には英数字と `_ . : / + = @ -` だけを使います（`<` `>` や日本語はシェルに渡せない）。
+- `// run-tests:` の行がない前からのテストは、コメントの中の `--var 名前:値` と `--test-scheduled` を読みます（同じ名前は最初の値を使い、使えない文字を含む値は使わない）。
+- 画面の確認が要るときは、ヘッドレスの Chrome を使い、Chrome がない環境では省くようにします（`scripts/test-w12-shift.mjs:9`）。Chrome は `scripts/lib/chrome.mjs` の `freePort` と `launchChrome` で起動します（2.7）。
 
 ### 2.5 時刻に依存するテスト（いつ流しても通るようにする）
 
@@ -150,6 +162,23 @@ BASE=http://127.0.0.1:8810 PERSIST="<保存先>" node --import ./scripts/fetch-o
 
 テストを足すときは、外に接続しない・数分で終わる・くり返し流しても落ちないものだけを `test:ci` に足します（ヘッドレスの Chrome を使う確認は、Chrome がない CI では省かれます）。
 
+### 2.7 ヘッドレス Chrome と CDN（外のネットワークに頼らない）
+
+画面の CDN のファイル（axios・dayjs・Font Awesome・Chart.js・flatpickr・SortableJS・qrcode-generator・jsQR。`src/index.tsx` の `SRI`）は、テストのヘッドレス Chrome では CDN から読まず、手元の同じ版のファイルで返します（Sprint 26。#9980）。
+
+- `scripts/lib/chrome.mjs` の `launchChrome` が Chrome を起動し、CDP の `Fetch` で `https://cdn.jsdelivr.net/npm/<名前>@<版>/<ファイル>` の要求を横取りして、`node_modules/<名前>/<ファイル>`（`package.json` の版が同じときだけ）を返します。そのため、これらの包みを devDependencies に同じ版で入れています（`npm ci` で入る）。
+- jsDelivr がその場で縮めて作る `.min.js`（`qrcode-generator@1.4.4/qrcode.min.js`・`jsqr@1.4.0/dist/jsQR.min.js`）は npm の包みに無いので、CDN から取った写しを `scripts/lib/cdn-min/` に置いています（`/` を `__` にした名前。例: `jsqr@1.4.0__dist__jsQR.min.js`）。
+- SRI（`integrity`）は Chrome がそのまま確かめます。返すファイルのハッシュが `src/index.tsx` の `SRI` と合うことは `scripts/test-w26-ops.mjs` で確かめます。CDN の版を上げたときは、`package.json` の devDependencies の版（と `cdn-min` の写し）も合わせます。
+- 同じ版が手元に無いときだけ CDN から読みます（最初に1回「（注意）CDN を node_modules で返せないので…」と出る）。`CDN_OFFLINE=0` で横取りをやめられます。
+- デバッグ用のポートは `freePort` で空いているものを使います（以前は 9300〜9700 の乱数で、ほかのテスト・開発サーバーと取り合うことがあった）。
+
+**2026-11-12 に CDN が読めなかった件の調べ**（Sprint 26）: ヘッドレス Chrome の画面の確認 8 本が「axios is not defined」で落ち、同じ時に curl では CDN から取れていた。2026-11-13 に調べた結果:
+- プロキシ: Windows の設定は使っていない（`ProxyEnable=0`）。環境変数のプロキシも無い。
+- 証明書・中身: CDN の axios 1.21.0・dayjs 1.11.10 の sha384 は `src/index.tsx` の値と一致。CDN が別の中身を返していたのではない。
+- Chrome の版: 157.0.8103.52。同じ Chrome で、2026-11-13 には CDN から読めた（ヘッドレスで 127.0.0.1 のページから `integrity`・`crossorigin` 付きで読み込み、`axios` と `dayjs` ができた。HTTP/2・IPv6）。
+- ネットワーク: 再現しなかったので、原因は特定できていない。Chrome は自分の DNS を使うので、curl と Chrome でつながる先が違うことがある（curl は Fastly の `2a04:4e42::`、Chrome は Cloudflare の `2606:4700::` につながった）。同じ時に機械が混んでいた（fork の失敗・テストの同時実行）ことも分かっている。どちらにしても、テストは CDN に頼らない形にした。
+- 本番の利用者の画面は今までどおり CDN から読みます（読めないときは `LIB_FALLBACK` の案内が出る。#409）。
+
 ---
 
 ## 3. 本番リリース 🔴 本番
@@ -162,7 +191,7 @@ BASE=http://127.0.0.1:8810 PERSIST="<保存先>" node --import ./scripts/fetch-o
 
 | # | 作業 | 本番 |
 |---|---|---|
-| 0 | PR のテストを確かめる（PR の **CI** が緑（2.6）・手元の `npm test` で既知の2本以外が合格） | |
+| 0 | PR のテストを確かめる（PR の **CI** が緑（2.6）・手元の `npm test` がすべて合格（「再試行で合格」があれば、そのテストを1本だけ流し直して確かめる）） | |
 | 1 | 新しいマイグレーションがあるか確かめる | |
 | 2 | 本番 D1 のバックアップを取る（`d1 export`）と、Time Travel の戻し先を控える | 🔴 |
 | 3 | バックアップから作った**本番のコピー（ローカル）**でマイグレーションを試し、主な画面が動くか確かめる | |
@@ -304,32 +333,97 @@ npx wrangler rollback <Version ID> --env production
 ダッシュボードの Worker `mbsaas` の Deployments からも戻せます。戻した後、`main` にも戻す変更（revert の PR）を入れます。入れないと、次のマージで問題のある版がまた出ます。
 マイグレーションは追加だけなので、前の版のコードは新しい列・テーブルがあっても動きます。
 
+D1 を戻すときは、どちらの方法でも 4.5 の流れ（止める → 戻す時点を決める → 今の状態を残す → 戻す → 確かめる → 知らせる）で行います。
+
 ### 4.2 D1 を過去の時点に戻す（Time Travel。まずこれを使う）
 
 ```bash
-npx wrangler d1 time-travel info mbsaas-production --env production                       # 今のブックマーク
+# 今のブックマーク（戻したことを取り消すときの戻し先。必ず控える）
+npx wrangler d1 time-travel info mbsaas-production --env production
+# 戻したい時点のブックマーク（時刻は Unix 時刻（秒）か RFC3339。UTC で書く: 日本時間 - 9 時間）
+npx wrangler d1 time-travel info mbsaas-production --env production --timestamp=2026-11-01T18:00:00Z
+# 戻す（どちらか一方を指定。実行すると確認を聞かれる）
 npx wrangler d1 time-travel restore mbsaas-production --env production --bookmark=<控えたブックマーク>
-# 時刻で戻すときは --timestamp=<UNIX 時刻 または RFC3339>
+npx wrangler d1 time-travel restore mbsaas-production --env production --timestamp=2026-11-01T18:00:00Z
 ```
 
-- **DB 全体**がその時点に戻ります。その後に入った勤怠・日報・応募なども消えるので、戻す範囲と影響を確かめてから行います。
-- restore を実行すると、戻す前の状態のブックマークが表示されます。控えておけば、戻したことを取り消せます。
-- 戻せる期間には上限があります（Free プランでは過去7日まで。Cloudflare の D1 の制限で、変わることがあるので Cloudflare のドキュメントで確かめてください）。それより前は、バックアップのファイルから戻します。
+- 使えるコマンドは `time-travel info`（`--timestamp`・`--json`）と `time-travel restore`（`--bookmark`・`--timestamp`・`--json`）の2つです（wrangler 4.127.1 の `--help` で確認。Sprint 26）。どちらも `--remote` を付けなくても本番に対して動きます。別の DB に戻す（fork・copy）コマンドはまだ無いので、戻す前の中身を確かめたいときは、4.3 の方法でバックアップをローカルに入れて見ます。
+- **DB 全体**がその時点に戻ります（表や行を選べない）。その後に入った勤怠・日報・応募・シフトの変更・ログイン（セッション）も消えます。一部の行だけを戻したいときは 4.3 の「一部の行だけを戻す」を使います。
+- restore の出力に、戻す直前の状態のブックマークが出ます。控えておけば、そのブックマークでもう一度 restore して、戻したことを取り消せます（4.5 の 3 で控えたブックマークでも同じ）。
+- 戻せる期間: 無料プランは過去7日まで、有料プラン（Workers Paid）は30日まで（`--help` の「within the last 30 days」は有料プランの上限）。それより前は、R2 の毎日のバックアップ（[backup.md](backup.md)）か `d1 export` のファイルから戻します。
+- 本番の D1 では試しません。ローカルの D1 には Time Travel が無いので、訓練は 4.3 の方法で行います（4.7）。
 
 ### 4.3 バックアップのファイル（`d1 export` の SQL）から戻す
 
+書き出しのファイルは、`PRAGMA defer_foreign_keys=TRUE;` のあと、表ごとに定義（CREATE TABLE）とデータ（INSERT）が並び、索引とトリガーは最後に作られます（4.7 の訓練で確認）。`sqlite_sequence`（AUTOINCREMENT の番号）も入るので、戻した後の新しい行の番号は続きから振られます。
+
 **一部の行だけを戻す**（誤って消した・書き換えた行など。ふつうはこちら）:
-1. 3.2 の 3 と同じように、バックアップをローカルに流し込む（`--local --persist-to`）。
-2. ローカルで、戻したい行を `SELECT` で確かめ、`INSERT` / `UPDATE` の SQL を作る。
-3. 本番に流す: `npx wrangler d1 execute mbsaas-production --remote --env production --file=<作った SQL>`。
+1. 3.2 の 3 と同じように、バックアップをローカルの空の D1 に流し込む（`--local --persist-to <空のフォルダ>`）。
+2. ローカルで、戻したい行を `SELECT` で確かめ、主キーで突き合わせて `INSERT`（消えた行）/ `UPDATE`（書き換わった行）の SQL を作る（作り方の例: `scripts/restore-drill.mjs` の `repairSql`）。バックアップの後に増えた行は消さない。外部キーの親の表から先に入れる。
+3. 作った SQL を、本番の今の DB の写し（3.2 の 3 のローカルのコピー）に流して、行数と中身が思ったとおりになるか確かめる。
+4. 本番に流す: `npx wrangler d1 execute mbsaas-production --remote --env production --file=<作った SQL>`。
+- 書き換えると別の表が変わるトリガーがあります。`shifts`（日時・担当などの変更で更新日時、欠勤を戻すとキャンセルの記録を消す）、`notices`（対象の表を作り直す）、`daily_reports.manager_comment`（コメントの表に1行足す）、`user_notifications` の INSERT（プッシュの送信待ちに積む）、`staff_profiles` の匿名化・削除（関係する記録を消す）。これらの表を戻すときは、流した後に関係する表も確かめます（`migrations/` の `CREATE TRIGGER`）。
+- `daily_reports` を戻したら、日報一覧の件数の控えも消します（5.4 の注意）。
 
 **DB 全体を戻す**（Time Travel で戻せない場合だけ）:
 1. 新しい D1 を作る: `npx wrangler d1 create <新しい名前>`。
-2. バックアップを流し込む: `npx wrangler d1 execute <新しい名前> --remote --file=<バックアップ>.sql`。
+2. バックアップを流し込む: `npx wrangler d1 execute <新しい名前> --remote --file=<バックアップ>.sql`。今の本番の DB に上書きで流さない（同じ表があるので失敗するか、二重になる）。
 3. `wrangler.jsonc` の D1 の `database_id`（と `database_name`）を、トップレベルと `env.production` の両方で新しい DB に変え、マージしてデプロイする。`package.json` の `db:*` のスクリプトと `scripts/check-migrations.mjs:10` も DB の名前を使っているので合わせて直す。
+4. バックアップの後に足したマイグレーションだけを当てる（[backup.md](backup.md) の 4-3 の 3）。古い DB は確認が終わるまで消さない。
+- 書き出し（`d1 export --remote`）の間は、その DB へのほかの要求が待たされます。利用の少ない時間に行います。
 
 ### 4.4 R2 のファイル
 入店・退店の写真、履歴書・入社時書類、契約書は R2 にあり、**D1 のバックアップと Time Travel には入りません**。R2 のファイルは**バックアップの対象外**です（[decisions.md](decisions.md) の D-48）。誤って消した・上書きしたファイルは戻せません。詳しくは [backup.md](backup.md) を見てください。
+
+D1 を過去に戻したときの R2 の扱い（写真は戻らない・消えない）:
+- **戻した時点より後に撮った写真**は R2 に残りますが、D1 の打刻の記録が消えるので、どの打刻の写真か分からなくなります（本部画面の「勤怠に紐づかない写真」に出る）。**戻した後しばらくは、本部画面で「紐づかない写真」を削除しない**でください。打刻を入れ直すときの確かめに使えます（キーは `attendance/会社/スタッフ/シフト/報告の種類_時刻` なので、会社・スタッフ・シフト・時刻が分かる）。入れ直しが終わり、要らないと決めてから削除します。
+- **戻した時点より後に消した写真・書類**（定期削除・退職・解約・本人の削除）は、D1 には記録が戻りますが R2 のファイルはもう無いので、画面では写真・書類が開けません。戻した後の定期削除で記録も消えます。開けない件数は、戻した後に `photo_key` のある行と R2 を突き合わせて数え、利用者に知らせます（4.6）。
+- 戻した時点より後にアップロードした履歴書・契約書なども同じく「どこからも参照されないファイル」になります。必要なら管理者に入れ直してもらいます。
+
+### 4.5 D1 を戻すときの流れ
+
+| # | やること | 方法 |
+|---|---|---|
+| 1 | 書き込みを止める・知らせる | 被害が広がっているときは、本部画面で該当の企業を停止する（全社なら全社）。利用者にはメンテナンスの告知を出す（4.6） |
+| 2 | どの時点に戻すかを決める | 誤った操作・デプロイ・マイグレーションの時刻を、操作履歴（`operation_logs`・本部の監査記録）、`wrangler deployments list`、Workers Logs（5.1）で調べ、**その直前**（1分ほど前）にする。後のデータを失う量（その間の打刻・日報の件数）と比べ、Time Travel で全体を戻すか（4.2）、一部の行だけを戻すか（4.3）を決める。戻すと消えるデータの範囲（何時から何時まで）を控える |
+| 3 | 戻す前に今の状態を残す | `npx wrangler d1 time-travel info mbsaas-production --env production` のブックマークを控える（取り消すときの戻し先）。加えて `d1 export --remote --env production`（3.2 の 2）か、GitHub の **D1 backup** を手で動かして今の中身を残す（戻した後に、消えた期間のデータを取り出すのに使う） |
+| 4 | 戻す | 4.2 か 4.3 |
+| 5 | 戻した後に確かめる | (1) 主な表の行数（`SELECT COUNT(*)`）と、戻した時点の前後の最新の行（`MAX(created_at)` など）が思ったとおりか。(2) `d1_migrations` の最後の番号が、デプロイしているコードの必要なマイグレーションまであるか（`npm run db:migrations:check`）。足りなければ当てる。(3) ログイン・打刻・日報・シフト表を本番の画面で開く（スモーク）。(4) 本部画面の「障害」「データ保持・定期処理」に新しい警告がないか。(5) 戻した後に消えたセッションの利用者は、もう一度ログインが要る |
+| 6 | R2 の写真・書類の扱い | 4.4 |
+| 7 | 消えた期間のデータを入れ直す | 3 で残した今の状態から、消えた期間の打刻・日報などを取り出し、管理者に代理入力をお願いする（または 4.3 の一部の行の戻し方で入れる） |
+| 8 | 止めた企業を再開して、知らせる | 4.6 の「終わったとき」の告知 |
+| 9 | 記録する | 起きたこと・戻した時点・消えた範囲・入れ直した内容を残す（6章の 10）。3 で書き出したファイルは、作業が終わったら端末から消す（個人情報） |
+
+### 4.6 利用者への告知（文例）
+
+本部画面のお知らせ（重要度「メンテナンス」。掲載終了の日時が必須）と、必要に応じて各社の管理者へのメールで知らせます。
+
+**戻す前**:
+> 【メンテナンスのお知らせ】○月○日 ○:○○〜○:○○ ごろ、システムの不具合への対応のため、データを ○月○日 ○:○○ の時点に戻します。作業の間は画面を開けない、または保存できないことがあります。○:○○ 以降に入力された打刻・日報・シフトの変更などは消えるため、作業が終わった後に入れ直しをお願いします（対象の方には個別にご連絡します）。
+
+**終わったとき**:
+> 【復旧のお知らせ】○月○日 ○:○○ にメンテナンスが終わりました。データは ○月○日 ○:○○ の時点に戻っています。○:○○〜○:○○ に入力された打刻・日報などは、お手数ですが入れ直してください。この間に撮影した打刻の写真は、システムに残っていますが打刻とのひも付けが外れています（必要な場合はご連絡ください）。もう一度ログインが必要な場合があります。
+
+### 4.7 戻す訓練（ローカル）と記録
+
+`scripts/restore-drill.mjs` で、ローカルのテスト用 DB だけを使って「書き出す → 壊す → 戻す → 行数と中身が元と同じか」を確かめます（本番・mbsaas-stg・本番のバックアップのファイルは使いません。wrangler はすべて `--local`）。
+
+```bash
+bash scripts/setup-test-db.sh "<短いパスの保存先>"                 # テスト用 DB（seed のデータ）
+node scripts/restore-drill.mjs "<保存先>" --json drill.json      # 保存先の中身は変えない（写しで行う）
+```
+
+流れ: (1) すべての表の行数と、行の並びによらない中身のハッシュを控える (2) `wrangler d1 export --local` (3) 日報の半分を消す・打刻の時刻を書き換える・1人分の評価を消す (4) A: 空の D1 に書き出しを流し込み（`d1 execute --local --file`）、全部の表・索引・トリガーが元と同じか (5) B: 戻した D1 から、壊れた D1 に足りない行・違う行を戻す SQL を作って流し、元と同じか。`scripts/test-w26-ops.mjs` でも流しています。
+
+| 日付 | DB | 書き出し | A: 全体を戻す | B: 一部の行を戻す | 結果 |
+|---|---|---|---|---|---|
+| 2026-11-13 | テスト用 DB（134 表・1,517 行・表と索引とトリガー 401） | 22 秒・1,087 KB・INSERT 1,539 | 57 秒。全部の表の行数・中身・スキーマが一致 | 28 秒。267 文（日報 68 行を足す・打刻 198 行を直す・評価 1 行を足す）。一致 | 成功 |
+
+気づいたこと（2026-11-13）:
+- `wrangler d1 export` には `--persist-to` が無く、ローカルの書き出しは設定ファイルの場所の `.wrangler/state` の DB を読みます。訓練のスクリプトは、作業用のフォルダに D1 の設定だけの `wrangler.json` を作り、`--config` で向けています。
+- 流し込みは、行数に比例して時間がかかります（ローカルで 1,500 行に約1分）。本番の行数では、書き出し・流し込みとも長くなるので、時間に余裕を見ます（本番で試した時間ではありません）。
+- 書き出しの SQL は、索引とトリガーをデータの後に作るので、流し込みの途中でトリガーは動きません。一部の行を戻す SQL は今の DB に流すので、トリガーが動きます（4.3 の注意）。
+- 戻したデータが元と同じかは、行数だけでなく中身のハッシュで比べると、書き換えられた行（行数は同じ）も見つけられます。
 
 ---
 

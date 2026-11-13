@@ -194,9 +194,9 @@ async function browserChecks() {
   const W3 = addDays(W, 14)
   const pt = must(await admin.post('/api/admin/slot-patterns', { project_id: P2, start_time: '08:00', end_time: '12:00', roles: [{ role_name: '販売', headcount: 1 }], weekdays: [1, 3], date_from: W3, date_to: addDays(W3, 9) }), 'pattern 2')
 
-  const PORT = 9300 + Math.floor(Math.random() * 400)
+  const PORT = await (await import('./lib/chrome.mjs')).freePort()  // 空いているポート（#9980）
   const prof = mkdtempSync(join(tmpdir(), 'w15s-'))
-  const chrome = spawn(CHROME, ['--headless=new', `--remote-debugging-port=${PORT}`, `--user-data-dir=${prof}`, '--window-size=1900,1100', '--no-first-run', 'about:blank'], { stdio: 'ignore' })
+  const chrome = await (await import('./lib/chrome.mjs')).launchChrome(CHROME, ['--headless=new', `--remote-debugging-port=${PORT}`, `--user-data-dir=${prof}`, '--window-size=1900,1100', '--no-first-run', 'about:blank'], { stdio: 'ignore' })
   let ws
   try {
     let list

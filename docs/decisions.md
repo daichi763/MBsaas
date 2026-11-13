@@ -41,7 +41,7 @@
 | D-30 | — | Workers の Free プランで動かす・PBKDF2 は 10,000 回 | 運用・技術 |
 | D-31 | — | メール送信（Resend）は保留・パスワードの再設定は管理者が再発行 | 運用 |
 | D-32 | — | GitHub の main へのマージで Workers Builds が本番にデプロイする | 運用・技術 |
-| D-33 | — | `test-history` と `test-w4-notifications-mail` は直さない | 開発 |
+| D-33 | — | `test-history` と `test-w4-notifications-mail` は直さない（Sprint 26 でテストの道具の側を直し、通るようにした） | 開発 |
 | D-34 | — | 修正の進め方の呼び方は「Sprint N」 | 開発 |
 | D-40 | 2026-11-02 | 設計資料は repo の `docs/` に置き、Sprint ごとに更新する（Sprint 13） | 開発 |
 | D-41 | 2026-11-03 | 割増は週40時間を超えた分・国民の祝日を計算しない（手で調整。設定画面に注記。#167。Sprint 14） | 精算 |
@@ -337,7 +337,8 @@
 
 ### D-33 `test-history` と `test-w4-notifications-mail` は直さない
 - **決定**: `npm test` でこの2本が落ちるのは、アプリの不具合ではないので直さない。
-- **理由**: `test-history` は、別のテスト（`test-report-settings` → `test-corrections` → `test-notifications`）が同じ DB に作ったデータを前提にしているが、`npm test` はテストごとに DB を作り直す（`scripts/test-history.mjs:2`、`scripts/run-tests.mjs:72`〜`73`）。`test-w4-notifications-mail` は、先頭のコメントの `<WEBHOOK_SECRET と同じ値>` が起動のオプションとして読み取られ、シェルのリダイレクトになってサーバーが起動しない（`scripts/test-w4-notifications-mail.mjs:4`、`scripts/run-tests.mjs:50`）。どちらも、[operations.md](operations.md) の手順で手で流せば確かめられる。
+- **理由**: `test-history` は、別のテスト（`test-report-settings` → `test-corrections` → `test-notifications`）が同じ DB に作ったデータを前提にしているが、`npm test` はテストごとに DB を作り直す（Sprint 25 までの `scripts/run-tests.mjs`）。`test-w4-notifications-mail` は、先頭のコメントの `<WEBHOOK_SECRET と同じ値>` が起動のオプションとして読み取られ、シェルのリダイレクトになってサーバーが起動しない（Sprint 25 までの `scripts/run-tests.mjs` の読み取り）。どちらも、[operations.md](operations.md) の手順で手で流せば確かめられる。
+- **変更（Sprint 26。#9980。利用者 11/11 承認）**: アプリのコードは変えず、テストの道具の側で直して、この2本と `test-notifications` が `npm test` で通るようにした。テストの先頭のコメントに `// run-tests:` の行（1行が1回の起動。複数行は同じ DB で順に流す）を書けるようにし、`test-history` は前提のテストから順に流す。起動のオプションの値に `< >` や日本語を含むものは使わない。詳しくは [operations.md](operations.md) の 2.2・2.4。
 
 ### D-34 修正の進め方の呼び方は「Sprint N」
 - **決定**: 修正のまとまりは「Sprint N」と呼ぶ（以前は「波」と呼んでいた）。ブランチ名・作業単位の名前の `w9`〜`w12` などは Sprint の番号。コードのコメントの `9xxx` の要望番号も、2桁目が Sprint の番号。

@@ -6,6 +6,11 @@
 //   注意: 現状のビルド設定（cloudflare-pages）は scheduled を出力しないため、定期削除の確認は
 //   vite.config.ts を @hono/vite-build/cloudflare-workers（output: '_worker.js'）にしたビルドで行う（別 PR で修正予定）
 // 実行: PERSIST=<保存先> node scripts/test-history.mjs
+// npm test は、前提のテストから同じ DB で順に流す（scripts/run-tests.mjs。#9980）:
+// run-tests: test-report-settings.mjs
+// run-tests: test-corrections.mjs
+// run-tests: test-notifications.mjs --var MAIL_ENABLED:true
+// run-tests: --var RETENTION_ENABLED:true --test-scheduled
 import { execFileSync } from 'child_process'
 import { fileURLToPath } from 'url'
 const BASE = process.env.BASE || 'http://127.0.0.1:8799'

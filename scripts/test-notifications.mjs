@@ -7,6 +7,9 @@
 //      node scripts/test-notifications.mjs                     （通知・送信失敗の記録・再送の失敗）
 //   2) wrangler dev を --var MAIL_ENABLED:false（既定）で起動し直して
 //      node scripts/test-notifications.mjs --mail-disabled     （再送の成功・送信済みの再送拒否）
+// npm test は次の2回を同じ DB で順に流す（scripts/run-tests.mjs。#9980）:
+// run-tests: --var MAIL_ENABLED:true
+// run-tests: --arg --mail-disabled
 const BASE = process.env.BASE || 'http://127.0.0.1:8799'
 const MAIL_DISABLED = process.argv.includes('--mail-disabled')
 const results = []
