@@ -104,7 +104,7 @@ ok('案件ごと: 左の列は決まった幅、日の列は最小の幅だけ�
 ok('人ごと: 名前・稼働の列は決まった幅、日の列は最小の幅だけを決める',
   personDay > 0 && person.includes('<table class="board-table board-fit" style="min-width:${BOARD_RH_W + 56 + days.length * dayW}px">') && person.includes('style="width:${BOARD_RH_W}px">スタッフ</th><th class="board-th" style="width:56px">稼働</th>') && !person.includes('118'), { personDay })
 ok('左の列の文字は省略し、title で全部を出す（案件ごと・枠なし・人ごと）',
-  slot.includes('<td class="board-rowhead sticky left-0 bg-surface z-10" title="${esc(`${r.site || \'（場所未設定）\'}\\n${r.start}〜${r.end}・${r.role}`)}">') && slot.includes('<p class="text-[11px] text-gray-500 truncate">${esc(r.start)}')
+  slot.includes('<td class="board-rowhead sticky left-0 bg-surface z-10" title="${esc(`${r.site || \'（場所未設定）\'}\\n${r.start}〜${r.end}・${r.role}`)}">') && slot.includes('<p class="text-2xs text-neutral-500 truncate">${esc(r.start)}')
   && slot.includes('title="${esc(`${p.project_name || \'\'}\\n${r.site || \'\'}`)}"') && person.includes('<td class="board-rowhead sticky left-0 bg-surface z-10" title="${esc(`${r.name || \'\'} ') && person.includes('<p class="truncate"><a href="#staff/'))
 // 週の表がメニューを畳んだ 1366px で収まる幅か（本文の幅の計算。スクロールバー 15px、本文の左右の余白 48px、右の候補の欄 340px と間 12px、表の枠 2px）
 const inner = (vw, side) => vw - 15 - side - 48
