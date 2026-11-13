@@ -98,7 +98,7 @@ npm test -- --no-retry            # 落ちたテストを流し直さない
 3. テストのファイルごとに、その D1 を複製して `wrangler dev --local` を起動し、テストを流してサーバーを止める。起動のオプションはテストの先頭のコメントから読む（2.4。`scripts/run-tests.mjs:70`）。`// run-tests:` の行が複数あるテストは、同じ DB の写しで上から順に起動し直して流す（`scripts/run-tests.mjs:201`）。
 4. 落ちたテストは、新しい DB の写しでもう1回だけ流す。2回目で通ったものは結果に「PASS（再試行で合格）」と分けて出す（`scripts/run-tests.mjs:180`）。2回とも落ちたものが FAIL です。
 
-環境変数: `TEST_DB_DIR`（テスト用 D1 の置き場所。既定は OS の一時フォルダの `mbsaas-test-<作業フォルダごとの記号>`）、`TEST_PORT`（既定 8899。使われていれば次の空いている番号）、`TEST_MAX_SERVERS`（この機械で同時に動かすテスト用サーバーの数。既定 2。0 で制限なし）、`TEST_TIMEOUT_MIN`（1本の上限。既定 90 分）。テストは本番に接続しません。
+環境変数: `TEST_DB_DIR`（テスト用 D1 の置き場所。既定は OS の一時フォルダの `mbsaas-test-<作業フォルダごとの記号>`）、`TEST_PORT`（既定 8899。2本目の枠は +50 から探す。使われていれば次の空いている番号）、`TEST_MAX_SERVERS`（この機械で同時に動かすテスト用サーバーの数。既定 2。0 で制限なし）、`TEST_TIMEOUT_MIN`（1本の上限。既定 90 分）。テストは本番に接続しません。
 
 作業フォルダの `.dev.vars`・`.env`（`wrangler dev` が読む）に `RESEND_API_KEY` を書いたままだと、`npm test` は始めずに止まります。テストは鍵が無い前提（送ると「送信失敗（mail_not_configured）」）で `MAIL_ENABLED:true` の回があるので、鍵があるとテストのメールが Resend から実際に送られるためです。手元でメールを試したあとは、鍵の行を消してから `npm test` を流します。
 

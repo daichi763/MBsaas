@@ -10,7 +10,7 @@
 //   npm test -- --reuse-db            … 前回作ったテスト用 D1 を使い回す（マイグレーションを足したときは使わない）
 //   npm test -- --no-build            … ビルドを省く
 //   npm test -- --no-retry            … 落ちたテストを流し直さない（下の「機械が混んでいるとき」）
-// 環境変数: TEST_DB_DIR（テスト用 D1 の置き場所。既定は OS の一時フォルダの mbsaas-test-<作業フォルダごとの記号>）、TEST_PORT（既定 8899。使われていれば次の空いている番号）、
+// 環境変数: TEST_DB_DIR（テスト用 D1 の置き場所。既定は OS の一時フォルダの mbsaas-test-<作業フォルダごとの記号>）、TEST_PORT（既定 8899。2本目の枠は +50 から探す。使われていれば次の空いている番号）、
 //   TEST_MAX_SERVERS（この機械で同時に動かすテスト用サーバーの数。既定 2。0 で制限なし）、TEST_TIMEOUT_MIN（1本の上限の分。既定 90。混んでいると w23-menus は 45 分ほどかかる）
 //
 // 機械が混んでいるとき（Sprint 26 #9980。ほかの作業フォルダでも同時に npm test を流すと、ECONNRESET・D1 の internal error・EPERM で落ちていた）:
@@ -207,7 +207,7 @@ async function runOnce(steps) {
   for (const step of steps) {
     await waitPastJstMidnight()
     await acquireSlot()
-    const port = await pickPort(Number(process.env.TEST_PORT || 8899))
+    const port = await pickPort(Number(process.env.TEST_PORT || 8899) + 50 * Number(/slot-(\d+)$/.exec(slotHeld || '')?.[1] || 0))  // 枠ごとに探し始めを分ける（2つの npm test が同時に同じ空きポートを選び、ほかのサーバーにつながないように）
     const base = `http://127.0.0.1:${port}`
     const devArgs = ['wrangler', 'dev', '--local', '--port', String(port), '--persist-to', persist,
       ...step.vars.flatMap(([k, v]) => ['--var', `${k}:${v}`]), ...(step.scheduled ? ['--test-scheduled'] : [])]
