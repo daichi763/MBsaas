@@ -386,8 +386,9 @@ async function cleanupDailyReports(db: D1Database, dryRun: boolean): Promise<Ret
 
   let deleted = 0
   try {
-    // 日報の月ごとの集計（#9972。migrations/0111）の、基準日の月までの分（日報から作り直せる控え）
-    await db.batch(summaryRowsBeforeStmts(db, cutoff))
+    // 日報の月ごとの集計（#9972。migrations/0111）の、基準日の月までの分（日報から作り直せる控え）。
+    // 印も同じ batch で消す（行だけ消えて印が残る間に開くと、空の集計を集計済みとして読むため）
+    await db.batch([summaryMarksBeforeStmt(db, cutoff), ...summaryRowsBeforeStmts(db, cutoff)])
     // 消す日報の実績の修正の履歴（daily_report_edits。#9707）も、同じ batch で先に消す。
     // 2つの文で同じ日報を選ぶよう、番号の順に選ぶ
     const pick = `SELECT daily_report_id FROM daily_reports WHERE work_date < ? AND ${DR_NOT_HELD} ORDER BY daily_report_id LIMIT ?`
