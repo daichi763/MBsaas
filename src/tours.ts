@@ -7,6 +7,7 @@
 // /api/admin/* と /api/staff/* の権限のミドルウェア（api.ts）を通ってから呼ばれる。本部の閲覧中（読み取り専用）は書き込まない
 import { Hono } from 'hono'
 import { nowJST } from './lib/time'
+import { can } from './lib/permissions'
 
 type Bindings = { DB: D1Database }
 type Variables = { user: any }
@@ -37,7 +38,7 @@ export const CHECKLIST_ITEMS = ['clients', 'projects', 'staff', 'shifts', 'login
  *   （本人のログインを待つと案内の中で終われないため。items.logins は今までどおり、スタッフが1人でもログインしたら済み）
  */
 export async function loadChecklist(db: D1Database, u: any) {
-  if (u.role !== 'company_admin') return { show: false, items: null, setup: null, completed_now: false }
+  if (!can(u, 'tour.setup')) return { show: false, items: null, setup: null, completed_now: false }
   const cid = Number(u.company_id), uid = Number(u.user_id)
   const r = await db.prepare(`SELECT
       EXISTS(SELECT 1 FROM clients WHERE company_id = ?) AS clients,

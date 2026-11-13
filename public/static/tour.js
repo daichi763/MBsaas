@@ -714,7 +714,7 @@
   }
   // ダッシュボードを描いた後に呼ぶ（admin.js の renderDashboardPage）
   async function dashboard() {
-    if (!isAdmin() || S.readonly || !S.me || S.me.role !== 'company_admin') return
+    if (!isAdmin() || S.readonly || !S.me || !hasPerm('tour.setup', S.me)) return
     let d
     try { d = await getChecklist(true) } catch (e) { return }
     S.checklist = d
@@ -754,7 +754,7 @@
   const SETUP_KEY = 'admin-setup'
   // made: この画面で作ったもの（名前は次の項目の案内に出す。login はログイン案内を出し直すため。案内を終えたら消す）
   const SU = { list: [], idx: 0, setup: null, items: null, made: {}, hintKey: '', refreshTimer: null, visited: new Set(), seq: 0, noTargetSince: 0 }
-  const isCompanyAdmin = () => isAdmin() && !!S.me && S.me.role === 'company_admin'
+  const isCompanyAdmin = () => isAdmin() && !!S.me && hasPerm('tour.setup', S.me)
   const fieldVal = (sel) => { const el = $(sel); return el ? String(el.value || '').trim() : '' }
   const tabOf = (route) => String(route || '').split('/')[0]
   // 選べるものが1つだけなら、その名前（さっき作ったものの名前が分からないとき。開き直した後など）

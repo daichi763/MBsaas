@@ -135,7 +135,7 @@ flowchart LR
   - `#attendance-history` 履歴・CSV
 - **人材**
   - `#staff` スタッフマスタ
-  - `#employees` 従業員管理（会社管理者・事務担当だけに出す）
+  - `#employees` 従業員管理（権限の表の `hr.manage` を持つロールだけに出す）
   - `#partners` 協力会社
   - `#recruit` 募集・応募
   - `#consult` 相談対応
@@ -213,7 +213,7 @@ flowchart LR
 | `#report` | 日報入力 | `renderReportWithHistory` [static/staff.js:1741](../public/static/staff.js#L1741) | POST `/api/staff/daily-report`<br>GET `/api/staff/daily-report/:shiftId`<br>GET `/api/staff/handover/:shiftId`<br>GET `/api/staff/home`<br>GET `/api/staff/my-reports`<br>GET `/api/staff/pending-daily-reports` |
 | `#shift` | シフト | `renderShifts` [static/staff.js:1286](../public/static/staff.js#L1286) | GET `/api/staff/availability/summary`<br>GET `/api/staff/shifts` |
 
-### `/admin`（ルートの表: [admin-menu.ts:36](../src/admin-menu.ts#L36)）
+### `/admin`（ルートの表: [admin-menu.ts:37](../src/admin-menu.ts#L37)）
 
 | ハッシュ | 画面 | 描画する関数（定義） | 使う API（描画する関数と、そこから呼ぶ関数を2段まで。ボタンの操作で呼ぶものを含む） |
 |---|---|---|---|

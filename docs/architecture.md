@@ -334,7 +334,9 @@ docs/                     この資料と機能ごとの仕様
 | `roster_only` | ログインなし（名簿のみ） | ログインできない（スタッフマスタ・仮登録の行） |
 | `system_admin` | 本部（システム管理者） | `/hq` と `/api/hq/*`。各社の `/admin` は、企業が許可した期限付きの閲覧（読み取り専用）のときだけ |
 
-根拠: `src/api.ts:178`〜`182`（`ADMIN_ROLES`・`HR_ROLES`）、`src/lib/auth.ts:17`、`src/lib/auth.ts:145`（ロールごとの最初の画面）。
+ロールごとにできる操作は、権限の表（`src/lib/permissions.ts`。一覧は [permissions.md](permissions.md)）にまとめてあり、API と画面のメニュー・ボタンは同じ表を見ます。
+
+根拠: `src/lib/permissions.ts:8`〜`11`（`ADMIN_ROLES`）・`36`（権限の表 `PERMISSIONS`）、`src/lib/auth.ts:17`、`src/lib/auth.ts:145`（ロールごとの最初の画面）。
 
 ## 11. マルチテナント（会社ごとのデータの分離）
 

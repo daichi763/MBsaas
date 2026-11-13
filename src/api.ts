@@ -84,6 +84,7 @@ import { toursAdminApi, toursStaffApi } from './tours'
 import { nowJST, todayJST, addDays } from './lib/time'
 import { sha256, randomHex } from './lib/hash'
 import { readJson, recordSwallowedError, appBaseUrl } from './lib/http'
+import { ADMIN_ROLES, can, requirePerm, permissionsFor } from './lib/permissions'
 
 type Bindings = {
   DB: D1Database; PHOTOS: R2Bucket; DOCUMENTS: R2Bucket; CONTRACTS: R2Bucket
@@ -175,11 +176,9 @@ function resolvePhotoRequired(u: any, projectOverride: number | null | undefined
   const companyDefault = getCompanySetting(u, 'photo_required_attendance', true)
   return projectOverride === null || projectOverride === undefined ? companyDefault : !!projectOverride
 }
-// system_admin（SaaS本部）は含めない。本部ユーザーは本部専用の企業行（0033。active_status='internal'）に所属し、
+// 管理画面の4ロール（ADMIN_ROLES）と、ロールごとにできる操作は src/lib/permissions.ts の権限の表に書く（#9978）。
+// system_admin（SaaS本部）は管理画面の4ロールに含めない。本部ユーザーは本部専用の企業行（0033。active_status='internal'）に所属し、
 // /admin を操作できると本部の操作がその企業のデータとして登録されてしまう。本部は /hq のみを使う。
-const ADMIN_ROLES = ['company_admin', 'sales_manager', 'field_manager', 'office_staff']
-// 従業員管理（給与・口座・保険番号・緊急連絡先・入社時書類）を扱えるロール（#205）。現場管理者・営業管理者は扱えない
-const HR_ROLES = ['company_admin', 'office_staff']
 
 // ============ 勤怠の自動振り分け（フェーズH） ============
 // 同一人物が複数企業に所属する場合、シフトの所有企業（shifts.company_id / staff_id）に基づいて
@@ -849,30 +848,23 @@ api.get('/auth/me', async (c) => {
     if (v) u = hqViewUser(u, v)
   }
   return c.json({ user_id: u.user_id, name: u.name, role: u.role, company_name: u.company_name, staff_id: u.staff_id, company_id: u.company_id,
-    company_code: u.role === 'system_admin' ? '' : (u.company_code || ''), can_manage_hr: HR_ROLES.includes(u.role),
+    company_code: u.role === 'system_admin' ? '' : (u.company_code || ''), can_manage_hr: can(u, 'hr.manage'),
     user_code: u.user_code, email: u.email || null, must_change_password: !!u.must_change_password,
     // 二段階認証の登録待ちは、本人（本部ユーザー）のアカウントと会社の設定で判定する（閲覧先の企業の設定で、閲覧の画面が登録の画面へ移らないように）
-    mfa_enabled: !!u.totp_enabled_at, mfa_setup_required: mfaSetupPending(self, self.settings_json), hq_view: u.hq_view || null })
+    mfa_enabled: !!u.totp_enabled_at, mfa_setup_required: mfaSetupPending(self, self.settings_json), hq_view: u.hq_view || null,
+    // 自分ができる操作の一覧（権限の表 src/lib/permissions.ts。画面のメニュー・ボタンの出し分けは hasPerm でこれを見る）
+    permissions: permissionsFor(u.role) })
 })
 
 // 権限チェックミドルウェア
 // 本部ユーザーは、企業が許可した期限付きの閲覧（読み取り専用）のときだけ /admin/* の GET を使える（#293。src/hq-support.ts）
 api.use('/admin/*', hqViewAdminGuard)
-api.use('/admin/*', async (c, next) => {
-  if (!ADMIN_ROLES.includes(c.get('user')?.role)) return c.json({ error: '権限がありません' }, 403)
-  return next()
-})
+api.use('/admin/*', requirePerm('admin.access'))
 // 従業員管理（社員名簿・入社時書類）は会社管理者・事務担当のみ（#205）
-const hrOnly = async (c: any, next: any) => {
-  if (!HR_ROLES.includes(c.get('user')?.role)) return c.json({ error: '従業員管理（給与・口座・保険番号などの労務情報）は、会社管理者と事務担当のみ利用できます', code: 'hr_forbidden' }, 403)
-  return next()
-}
+const hrOnly = requirePerm('hr.manage', '従業員管理（給与・口座・保険番号などの労務情報）は、会社管理者と事務担当のみ利用できます', 'hr_forbidden')
 api.use('/admin/employees', hrOnly)
 api.use('/admin/employees/*', hrOnly)
-api.use('/hq/*', async (c, next) => {
-  if (c.get('user')?.role !== 'system_admin') return c.json({ error: '権限がありません' }, 403)
-  return next()
-})
+api.use('/hq/*', requirePerm('hq.access'))
 // 本部の操作の履歴（#542）: 本部の書き込み（GET 以外）が成功したら、だれが・いつ・どのパスを操作したかを残す。
 // 変更前後の値を残すエンドポイントは hqAuditStmt で記録して hqAudited を立てるので、ここでは重ねて記録しない。
 // 送られた内容（パスワードなど）は残さない
@@ -896,10 +888,7 @@ function hqAuditStmt(c: any, e: { action: string; company_id?: number | null; ta
     .bind(c.get('user')?.user_id ?? null, e.action, e.company_id ?? null, e.target ?? null, j(e.before), j(e.after), e.reason ?? null, nowJST())
 }
 // スタッフ本人向け API（/api/staff/*）はスタッフのロールだけ（管理者・本部のセッションでは使えない）
-api.use('/staff/*', async (c, next) => {
-  if (c.get('user')?.role !== 'staff') return c.json({ error: '権限がありません' }, 403)
-  return next()
-})
+api.use('/staff/*', requirePerm('staff_app.access'))
 // ============ セキュリティ: 二段階認証・ログイン中の端末・ログインの履歴（作業単位 w4-auth-features: #544 #453 #552） ============
 const LOGIN_HISTORY_PAGE = 50
 // 直近24時間で、この回数以上ログインに失敗した ID を画面の上に出す（総当たり・パスワードの使い回しに気づけるように）
@@ -1102,10 +1091,7 @@ api.post('/auth/logout-all', async (c) => {
 
 // ---------- 会社の管理画面（/api/admin/security・/api/admin/login-history・/api/admin/staff/:id/sessions） ----------
 // 設定・管理者アカウントの二段階認証・ログインの履歴は会社管理者だけ。スタッフのログイン中の端末は管理系のロール全員（スマホの紛失にその場で対応できるように）
-const securityAdminOnly = async (c: any, next: any) => {
-  if (c.get('user')?.role !== 'company_admin') return c.json({ error: 'この操作は会社管理者だけが行えます' }, 403)
-  return next()
-}
+const securityAdminOnly = requirePerm('security.manage', 'この操作は会社管理者だけが行えます')
 api.use('/admin/security/settings', securityAdminOnly)
 api.use('/admin/security/users', securityAdminOnly)
 api.use('/admin/security/users/*', securityAdminOnly)
@@ -1195,7 +1181,7 @@ api.get('/admin/staff/:id/sessions', async (c) => {
   if (!su) return c.json({ error: '見つかりません' }, 404)
   const sessions = (await personSessions(c.env.DB, su.user_id, su.scope_company_id)).map(s => ({ ...sessionView(s), company_id: undefined, other_company: s.company_id !== u.company_id }))
   const where = ['e.company_id = ?', 'e.user_id = ?']; const binds: any[] = [u.company_id, su.user_id]
-  const history = u.role === 'company_admin' ? (await loadLoginHistory(c, where, binds)).events.slice(0, 20) : []
+  const history = can(u, 'security.manage') ? (await loadLoginHistory(c, where, binds)).events.slice(0, 20) : []
   return c.json({ staff: { name: su.name, user_code: su.user_code, linked: su.linked }, sessions, history })
 })
 // スタッフのログインを強制的に終了する（スマホの紛失・共用端末のログアウト忘れ）。自社雇用の行では、同じ人の他社の行のセッションも消す。
@@ -2827,7 +2813,7 @@ api.get('/admin/dashboard', async (c) => {
   const waitSince = addMinutes(now, -DASH_CONSULT_WAIT_DAYS * 1440)
   const dayBefore = dayBeforeSettings(u.settings_json)
   const tomorrow = addDays(today, 1)
-  const isHr = HR_ROLES.includes(u.role)
+  const isHr = can(u, 'hr.manage')
   const docLimit = addDays(today, DASH_DOC_EXPIRY_DAYS)
   // 本日と前日の確定・代打のシフト（報告の設定を決める対象。欠勤は除く）
   const workingIdsSql = `SELECT w.shift_id FROM shifts w WHERE w.company_id = ? AND w.work_date IN (?, ?) AND w.status IN ('confirmed','substitute')`
@@ -3989,7 +3975,7 @@ async function applyApprovedProfileChange(c: any, sid: string, changes: Record<s
   if (roster.merged_into_staff_id) return { error: '統合済みのスタッフのため反映できません（統合先のスタッフで編集してください）', status: 409 }
   if (roster.affiliation_type === 'linked_external' || !roster.can_edit_base) return { error: '基本項目は所属元企業のみ編集できます', status: 403 }
   // 自社雇用の最寄駅は従業員管理（会社管理者・事務担当のみ）で直す項目なので、承認も同じロールに限る
-  if (roster.affiliation_type === 'own_employee' && !HR_ROLES.includes(u.role) && (changes.nearest_station_line !== undefined || changes.nearest_station !== undefined)) {
+  if (roster.affiliation_type === 'own_employee' && !can(u, 'hr.manage') && (changes.nearest_station_line !== undefined || changes.nearest_station !== undefined)) {
     return { error: '自社雇用スタッフの最寄駅の変更は、会社管理者・事務担当が承認してください', status: 403 }
   }
   const body: Record<string, any> = {}
@@ -4650,7 +4636,7 @@ api.get('/admin/employees/export', async (c) => {
   const status = String(c.req.query('status') || '')
   if (status && !['working', 'leave', 'preboarding', 'retired', 'ended'].includes(status)) return c.json({ error: '在籍状況の指定が正しくありません' }, 400)
   const includePay = c.req.query('include_pay') === '1'
-  if (includePay && u.role !== 'company_admin') return c.json({ error: '口座・給与を含めた出力は、会社管理者のみ行えます' }, 403)
+  if (includePay && !can(u, 'roster_export.pay')) return c.json({ error: '口座・給与を含めた出力は、会社管理者のみ行えます' }, 403)
   await ensureRosterIdentity(db, u.company_id)
   const where = status === 'ended'
     ? `er.company_id = ? AND er.employment_ended_at IS NOT NULL AND (COALESCE(sp.affiliation_type,'own_employee') != 'own_employee' OR sp.merged_into_staff_id IS NOT NULL)`
@@ -6008,11 +5994,11 @@ const STAFF_VIEW_KEYS = ['ranking_visible', 'ranking_anonymous', 'show_coworkers
 api.get('/admin/settings/staff-view', async (c) => {
   const u = c.get('user')
   const row = await c.env.DB.prepare('SELECT settings_json FROM companies WHERE company_id = ?').bind(u.company_id).first() as any
-  return c.json({ ...staffViewSettings(row?.settings_json), can_edit: u.role === 'company_admin' })
+  return c.json({ ...staffViewSettings(row?.settings_json), can_edit: can(u, 'settings.staff_view') })
 })
 api.put('/admin/settings/staff-view', async (c) => {
   const u = c.get('user')
-  if (u.role !== 'company_admin') return c.json({ error: 'この設定は会社管理者だけが変更できます' }, 403)
+  if (!can(u, 'settings.staff_view')) return c.json({ error: 'この設定は会社管理者だけが変更できます' }, 403)
   const b = await c.req.json().catch(() => ({})) as any
   const keys = STAFF_VIEW_KEYS.filter(k => b && typeof b === 'object' && Object.prototype.hasOwnProperty.call(b, k))
   if (!keys.length) return c.json({ error: '変更する項目がありません' }, 400)
@@ -6034,11 +6020,11 @@ const shiftNotifySettingView = async (db: D1Database, companyId: number) => {
 }
 api.get('/admin/settings/shift-notify', async (c) => {
   const u = c.get('user')
-  return c.json({ ...await shiftNotifySettingView(c.env.DB, u.company_id), can_edit: u.role === 'company_admin' })
+  return c.json({ ...await shiftNotifySettingView(c.env.DB, u.company_id), can_edit: can(u, 'settings.shift_notify') })
 })
 api.put('/admin/settings/shift-notify', async (c) => {
   const u = c.get('user')
-  if (u.role !== 'company_admin') return c.json({ error: 'この設定は会社管理者だけが変更できます', code: 'role_forbidden' }, 403)
+  if (!can(u, 'settings.shift_notify')) return c.json({ error: 'この設定は会社管理者だけが変更できます', code: 'role_forbidden' }, 403)
   const b = await c.req.json().catch(() => ({})) as any
   if (typeof b?.enabled !== 'boolean') return c.json({ error: '設定の値が正しくありません' }, 400)
   await c.env.DB.prepare(`UPDATE companies SET shift_notify_default = ?, shift_notify_updated_at = ?, shift_notify_updated_by = ?

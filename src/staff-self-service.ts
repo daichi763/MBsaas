@@ -17,14 +17,15 @@ import { isISODate, parseJsonOr } from './lib/validate'
 import { storeUploads, STAFF_SELF_DOC_RULES } from './lib/documents'
 import { canSendMail } from './services/email'
 import { nowJST, todayJST, addDays } from './lib/time'
+import { ADMIN_ROLES, can, rolesFor, requirePerm } from './lib/permissions'
 
 type Bindings = { DB: D1Database; DOCUMENTS: R2Bucket; RESEND_API_KEY?: string; MAIL_FROM?: string; MAIL_ENABLED?: string }
 type Variables = { user: any }
 
-// 通知を受け取る管理ロール（notifications.ts の NOTIFY_ADMIN_ROLES と同じ）と、労務情報を扱えるロール（api.ts の HR_ROLES と同じ）
-const ADMIN_NOTIFY_ROLES = ['company_admin', 'sales_manager', 'field_manager', 'office_staff']
-const HR_ROLES = ['company_admin', 'office_staff']
-const isHr = (u: any) => HR_ROLES.includes(u?.role)
+// 通知を受け取る管理ロール（4ロール）と、労務情報を扱えるロール（権限の表 src/lib/permissions.ts の hr.manage）
+const ADMIN_NOTIFY_ROLES = [...ADMIN_ROLES]
+const HR_ROLES = rolesFor('hr.manage')
+const isHr = (u: any) => can(u, 'hr.manage')
 
 const idParam = (v: string | undefined) => /^\d{1,12}$/.test(String(v || '')) ? Number(v) : null
 
@@ -528,8 +529,8 @@ export function staffRequestsAdminApi(applyProfileChange: ApplyProfileChange) {
   })
 
   // ---------- 休暇（会社管理者・事務担当のみ） ----------
-  app.use('/leave', async (c, next) => isHr(c.get('user')) ? next() : c.json({ error: '休暇の申請は、会社管理者と事務担当のみ扱えます', code: 'hr_forbidden' }, 403))
-  app.use('/leave/*', async (c, next) => isHr(c.get('user')) ? next() : c.json({ error: '休暇の申請は、会社管理者と事務担当のみ扱えます', code: 'hr_forbidden' }, 403))
+  app.use('/leave', requirePerm('hr.manage', '休暇の申請は、会社管理者と事務担当のみ扱えます', 'hr_forbidden'))
+  app.use('/leave/*', requirePerm('hr.manage', '休暇の申請は、会社管理者と事務担当のみ扱えます', 'hr_forbidden'))
 
   app.get('/leave', async (c) => {
     const u = c.get('user'); const db = c.env.DB

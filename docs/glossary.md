@@ -11,7 +11,7 @@
 | 会社コード | ログインで入れる、導入企業の識別子 | `companies.company_code` |
 | 本部・SaaS本部・システム管理者 | Field OS を運営する側。`/hq` を使う | `users.role = 'system_admin'`。所属は本部専用の企業行 `companies.active_status = 'internal'`（`migrations/0033_account_admin.sql`） |
 | 停止（企業） | 本部が企業の利用を止めた状態。ログイン・API・報告用URLが使えなくなる | `companies.active_status = 'inactive'`（`src/lib/auth.ts:98`） |
-| 管理者 | 導入企業の社員で、管理画面を使う人 | `users.role` が `company_admin`（会社管理者）・`office_staff`（事務担当）・`sales_manager`（営業管理者）・`field_manager`（現場管理者）。まとめて `ADMIN_ROLES`（`src/api.ts:180`） |
+| 管理者 | 導入企業の社員で、管理画面を使う人 | `users.role` が `company_admin`（会社管理者）・`office_staff`（事務担当）・`sales_manager`（営業管理者）・`field_manager`（現場管理者）。まとめて `ADMIN_ROLES`（`src/lib/permissions.ts:11`）。できることの違いは権限の表（[permissions.md](permissions.md)） |
 | スタッフ | 導入企業から現場に出る人。スタッフアプリを使う | `users.role = 'staff'` と `staff_profiles` の行 |
 | ID・スタッフ番号・ユーザーID | ログインで入れる、会社の中での利用者の識別子 | `users.user_code` |
 | ログインなし（名簿のみ） | ログインを持たない人（スタッフマスタだけの行・仮登録） | `users.role = 'roster_only'` |

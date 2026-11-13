@@ -378,7 +378,7 @@
     const $app = app(); $app.innerHTML = loadingHtml
     let mine
     try { mine = await loadMine() } catch (e) { $app.innerHTML = `<p class="text-center text-gray-400 py-10">読み込めませんでした <button class="btn btn-outline text-xs ml-2" data-action="secReload">再読み込み</button></p>`; return }
-    const isCA = typeof ME !== 'undefined' && ME && ME.role === 'company_admin'
+    const isCA = hasPerm('security.manage')
     const pending = mine.mfa.setup_required
     $app.innerHTML = `
       <h2 class="text-xl font-bold text-gray-900 mb-4">セキュリティ</h2>
