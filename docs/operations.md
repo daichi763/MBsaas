@@ -100,6 +100,8 @@ npm test -- --no-retry            # 落ちたテストを流し直さない
 
 環境変数: `TEST_DB_DIR`（テスト用 D1 の置き場所。既定は OS の一時フォルダの `mbsaas-test-<作業フォルダごとの記号>`）、`TEST_PORT`（既定 8899。使われていれば次の空いている番号）、`TEST_MAX_SERVERS`（この機械で同時に動かすテスト用サーバーの数。既定 2。0 で制限なし）、`TEST_TIMEOUT_MIN`（1本の上限。既定 90 分）。テストは本番に接続しません。
 
+作業フォルダの `.dev.vars`・`.env`（`wrangler dev` が読む）に `RESEND_API_KEY` を書いたままだと、`npm test` は始めずに止まります。テストは鍵が無い前提（送ると「送信失敗（mail_not_configured）」）で `MAIL_ENABLED:true` の回があるので、鍵があるとテストのメールが Resend から実際に送られるためです。手元でメールを試したあとは、鍵の行を消してから `npm test` を流します。
+
 **機械が混んでいるとき**（Sprint 26。#9980）: 作業フォルダを分けて何本も同時に `npm test` を流すと、ECONNRESET・`wrangler d1 execute` の「internal error」・作業フォルダの EPERM でテストが途中で止まっていました（アプリの不具合ではない）。今は次のようにしています。
 - テスト用 D1 の置き場所を作業フォルダごとに分け、同じ置き場所を2つの `npm test` で使わない（ロック）。ポートが使われていれば別の番号にし、止めたサーバーのポートが空くまで待ってから次へ進む。
 - この機械のすべての `npm test` を合わせて、テスト用サーバーを `TEST_MAX_SERVERS` 本までにする（空くまで待つ。印は OS の一時フォルダの `mbsaas-test-slots`）。

@@ -17,7 +17,7 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 await import('./lib/test-preload.mjs')   // npm test は先に読み込んでいる。手で流したときも同じにする（2回読んでも1回分だけ効く）
-const { devSteps, tryLock } = await import('./run-tests.mjs')
+const { devSteps, tryLock, mailKeyFiles } = await import('./run-tests.mjs')
 const chromeLib = await import('./lib/chrome.mjs')
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -145,6 +145,15 @@ else {
   ok('#9980 npm test: 落ちたテストは新しい DB でもう1回流し、「再試行で合格」を分けて出す', /ok = await runOnce\(steps\)/.test(rt) && /再試行で合格/.test(rt))
   ok('#9980 npm test: 置き場所は作業フォルダごと・同時に動かすサーバーの数・ポートが空くまで待つ', /mbsaas-test-\$\{createHash/.test(rt) && /TEST_MAX_SERVERS/.test(rt) && /portFree\(port\)/.test(rt))
   ok('#9980 npm test: 各テストを test-preload.mjs 付きで起動する', /'--import', '\.\/scripts\/lib\/test-preload\.mjs'/.test(rt))
+  // 手元の .dev.vars・.env に本物のメールの鍵があれば、npm test を始めない（テストのメールが実際に送られるため）
+  const keyDir = join(TMP, 'keys'); mkdirSync(keyDir)
+  const none = mailKeyFiles(keyDir)
+  writeFileSync(join(keyDir, '.dev.vars'), 'RESEND_API_KEY=\nMAIL_FROM=x@example.com\n# RESEND_API_KEY=re_old\n')
+  const empty = mailKeyFiles(keyDir)
+  writeFileSync(join(keyDir, '.dev.vars'), 'MAIL_FROM=x@example.com\r\nRESEND_API_KEY = re_test123\r\n')
+  writeFileSync(join(keyDir, '.env'), 'RESEND_API_KEY="re_test456"\n')
+  const both = mailKeyFiles(keyDir)
+  ok('#9980 npm test: .dev.vars・.env に RESEND_API_KEY があれば始めない（空の値・無いときは始める）', none.length === 0 && empty.length === 0 && JSON.stringify(both) === '[".dev.vars",".env"]' && /mailKeyFiles\(ROOT\)/.test(rt), { none, empty, both })
 }
 
 // ============ 5) CDN を手元で返す ============

@@ -82,6 +82,14 @@ export function devSteps(file, text) {
   return [{ file, vars, scheduled: /--test-scheduled/.test(joined), args: [] }]
 }
 
+// wrangler dev が読む手元の秘密のファイル（.dev.vars・.env）に、本物のメールの鍵（RESEND_API_KEY）があるか。
+// テストは鍵が無い前提（送ると mail_not_configured）で、MAIL_ENABLED:true の回があるので、鍵があるとテストのメールが実際に送られる
+export function mailKeyFiles(root) {
+  return ['.dev.vars', '.env'].filter(f => {
+    try { return /^[ \t]*RESEND_API_KEY[ \t]*=[ \t]*["']?[^\s"'#]/m.test(readFileSync(join(root, f), 'utf8')) } catch { return false }
+  })
+}
+
 // ---- ポート・同時に動かすサーバーの数 ----
 const portFree = (port) => new Promise(res => { const s = createServer(); s.once('error', () => res(false)); s.listen(port, '127.0.0.1', () => s.close(() => res(true))) })
 async function pickPort(from) {
@@ -145,6 +153,11 @@ async function main() {
   const tests = readdirSync(join(ROOT, 'scripts')).filter(f => /^test-.*\.mjs$/.test(f))
     .filter(f => !filters.length || filters.some(q => f.includes(q))).sort()
   if (!tests.length) { console.error('対象のテストがありません'); process.exit(1) }
+  const keyFiles = mailKeyFiles(ROOT)
+  if (keyFiles.length) {
+    console.error(`${keyFiles.join('・')} に RESEND_API_KEY があります。テストのメールが実際に送られるので、テストの間は消すか、作業フォルダの外に移してください`)
+    process.exit(1)
+  }
 
   mkdirSync(DB_ROOT, { recursive: true })
   const LOCK = join(DB_ROOT, 'lock')
