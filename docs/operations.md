@@ -242,7 +242,7 @@ Cloudflare のダッシュボードの Workers Builds のビルドのログに�
 
 | 名前 | 本番の値 |
 |---|---|
-| `APP_BASE_URL` | 本番の URL（`wrangler.jsonc:84`） |
+| `APP_BASE_URL` | 本番の URL（`wrangler.jsonc:86`） |
 | `MAIL_ENABLED` | `true` |
 | `RETENTION_ENABLED` | `true` |
 | `DEMO_MODE` | `false` |
@@ -339,7 +339,7 @@ npx wrangler d1 time-travel restore mbsaas-production --env production --bookmar
 
 ### 5.1 Workers Logs（本番の console の出力）
 
-本番だけ有効です（`wrangler.jsonc:92`〜`95`）。Cloudflare のダッシュボードで Worker `mbsaas` の Logs（Observability）を開き、文字で検索します。保存される期間はプランによります。
+本番だけ有効です（`wrangler.jsonc:94`〜`97`）。Cloudflare のダッシュボードで Worker `mbsaas` の Logs（Observability）を開き、文字で検索します。保存される期間はプランによります。
 
 | 探すもの | 検索する文字 | 出す所 |
 |---|---|---|
@@ -349,7 +349,7 @@ npx wrangler d1 time-travel restore mbsaas-production --env production --bookmar
 | プッシュ通知の送信の失敗 | `push flush failed` | `src/index.tsx:137` |
 | Turnstile の問い合わせの失敗 | `turnstile siteverify failed` | `src/recruit.ts:286` |
 | 応募の回数制限の塩がない | `RATE_LIMIT_SALT が未設定` | `src/recruit.ts:378` |
-| メールの送信元がテスト用 | `mail warning` | `src/services/email.ts:125` |
+| メールの送信元がテスト用 | `mail warning` | `src/services/email.ts:127` |
 
 予期しないエラーの1行は JSON で、`ref`（参照番号）・`method`・`path`・`company_id`・`user_id`・`role`・`message`・`stack`（6行まで）を持ちます（[architecture.md](architecture.md) の 4.3）。利用者から「参照番号: xxxx」と聞いたら、その文字で検索します。
 
@@ -436,7 +436,7 @@ Cloudflare の API トークンなど、自動バックアップ・通知の仕�
 
 ### 8.1 定期削除
 - 毎日 3:00 の `retention` と 3:30 の `retention_in_service` が、保存期間を過ぎた個人情報を消します（`src/services/retention.ts:6`〜`60` に対象と基準の一覧）。主な基準: 日報は勤務日から3年、退職したスタッフのデータは退職日（と最終稼働日の遅い方）から7年（本人情報の行は消さずに匿名化）、送信のメール記録は1年、操作履歴は7年、在職中でも位置情報・写真は報告から1年など。
-- 本番は `RETENTION_ENABLED = 'true'` なので、実際に消します（`wrangler.jsonc:86`）。`'true'` 以外は dry-run（数えるだけ）です。
+- 本番は `RETENTION_ENABLED = 'true'` なので、実際に消します（`wrangler.jsonc:88`）。`'true'` 以外は dry-run（数えるだけ）です。
 - 安全策: 退職日のない人は消さない、退職日より後にシフトがある人は対象外、初めて対象になってから7日は猶予（本部画面に「次回削除予定」と出る）、1回の処理の人数・ファイル数に上限（`src/services/retention.ts:49`〜`60`）。
 - 本部画面「データ保持・定期処理」で、dry-run の実行・削除の予定・結果・在職中の保存期間の設定（`src/services/retention.ts:125`）・削除の保留ができます。
 - **削除の保留**: 調査や訴訟などで残す必要があるスタッフ・企業は、本部画面で保留にします（`staff_profiles.retention_hold_at`・`companies.retention_hold_at`）。保留中はどの削除でも消しません。
@@ -501,7 +501,7 @@ Cloudflare の API トークンなど、自動バックアップ・通知の仕�
 ### 10.3 メールの送信を始めるとき（任意）
 メールの送信は保留しています（D-31）。ローンチで始めるときだけ行います。始めないときは、パスワードを忘れた人には今までどおり管理者が仮パスワードを再発行します。
 1. Resend で独自ドメインを認証する（Resend の Domains で DNS のレコードを足す）。
-2. `wrangler.jsonc` の `env.production` の `MAIL_FROM`（`wrangler.jsonc:83`）を、認証したドメインの送信元に変えて、マージする（`vars` なので、ダッシュボードで変えても次のデプロイで戻る。7章）。
+2. `wrangler.jsonc` の `env.production` の `MAIL_FROM`（`wrangler.jsonc:84`。2026-11-13 に `Mobital <notify@notify.mobital.jp>` に変えた）を、認証したドメインの送信元に変えて、マージする（`vars` なので、ダッシュボードで変えても次のデプロイで戻る。7章）。
 3. `RESEND_API_KEY` と `RESEND_WEBHOOK_SECRET` をシークレットに登録する（7章の `secret put`）。
 4. 管理者の画面からパスワードの再設定のメールなどを1通送り、届くこと、本部画面「メール送信」に送信の記録が出ることを確かめる。
 5. [decisions.md](decisions.md) の D-31 に、再開した日を書き足す。

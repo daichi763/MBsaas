@@ -5,7 +5,7 @@
 
 - **番号の読み方**: `#123` はレビューで見つかった指摘の番号、`#9101` のような4桁の 9xxx は利用者の要望の番号（9 の次の桁が Sprint。`91xx` は Sprint 9）です。どちらもコードのコメントに書いてあるので、`grep -rn "#9101" src public` で該当する所を探せます。
 - **日付**: 利用者が決めた日。決めた日の記録がないものは、反映した PR のマージの日（GitHub）です。
-- **根拠のコード**: `ファイル:行` は 2026-11-12 時点（コミット `c708b12`）のものです。
+- **根拠のコード**: `ファイル:行` は 2026-11-13 時点（コミット `109b9a9`）のものです。
 
 ## 一覧
 
@@ -326,8 +326,8 @@
 
 ### D-31 メール送信（Resend）は保留・パスワードの再設定は管理者が再発行
 - **決定**: 利用者の Resend のアカウントの準備ができるまで、メール送信は保留にする。本番には `RESEND_API_KEY` を登録しないので、本番からメールは送られない（送信の記録には「送信失敗（設定なし）」で残る）。パスワードを忘れた人には、管理者が仮パスワードを再発行する。
-- **根拠のコード**: `src/services/email.ts:110`〜`113`（`mailMode`）、`src/accounts.ts:326`（管理者の再発行）、`src/accounts.ts:358`（本部の再発行）
-- **再開するとき**: [operations.md](operations.md) の「シークレット」の手順で `RESEND_API_KEY` と `RESEND_WEBHOOK_SECRET` を登録し、`MAIL_FROM` を Resend で認証した独自ドメインの送信元に変える（`wrangler.jsonc:80`）。
+- **根拠のコード**: `src/services/email.ts:112`〜`115`（`mailMode`）、`src/accounts.ts:326`（管理者の再発行）、`src/accounts.ts:358`（本部の再発行）
+- **再開するとき**: [operations.md](operations.md) の「シークレット」の手順で `RESEND_API_KEY` と `RESEND_WEBHOOK_SECRET` を登録し、`MAIL_FROM` を Resend で認証した独自ドメインの送信元に変える（`wrangler.jsonc:84`。2026-11-13 に notify.mobital.jp に変えた）。
 
 ### D-32 GitHub の main へのマージで Workers Builds が本番にデプロイする
 - **決定**: 本番へのデプロイは、GitHub（`daichi763/MBsaas`）の `main` へのマージで Cloudflare Workers Builds が行う。ビルドのとき `scripts/ci-wrangler-config.mjs` が `wrangler.jsonc` の `env.production` を `wrangler.json` の最上位に展開する。マイグレーションは自動では適用されないので、マージより先に手で適用する。
