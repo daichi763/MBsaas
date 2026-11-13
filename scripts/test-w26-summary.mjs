@@ -312,8 +312,12 @@ ok('スキルシートの通算の稼働日（日報の数）が、日報の表�
 
 // ---------- 0111 の索引・トリガー ----------
 {
-  const plan = (await sql(`EXPLAIN QUERY PLAN SELECT reports FROM report_month_summaries WHERE staff_id = ${A.staff_id} AND company_id = 1 AND ym IN ('${LAST_SUM}')`)).map(r => r.detail).join(' / ')
-  ok('スキルシートの集計はスタッフの索引で引く（会社の行をすべて読まない）', /idx_report_month_summaries_staff/.test(plan), plan)
+  // api.ts の skill-sheet と同じ形（値の行と、案件の一覧の行）。案件の一覧は主キーの索引だけで足りるので、+company_id が無いと主キー（会社・月）で引いてしまう
+  const msFrom = `FROM report_month_summaries WHERE staff_id = ${A.staff_id} AND +company_id = 1 AND ym IN (SELECT value FROM json_each('["${LAST_SUM}","${ymAdd(LAST_SUM, -1)}"]'))`
+  for (const cols of ['reports, values_json, legacy_json', 'project_id, company_id']) {
+    const plan = (await sql(`EXPLAIN QUERY PLAN SELECT ${cols} ${msFrom}`)).map(r => r.detail).join(' / ')
+    ok(`スキルシートの集計（${cols}）はスタッフの索引で引く（会社の行をすべて読まない）`, /idx_report_month_summaries_staff/.test(plan) && !/autoindex_report_month_summaries/.test(plan), plan)
+  }
   const trg = (await sql(`SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'daily_reports' AND name LIKE 'trg_daily_reports_summary_%' ORDER BY name`)).map(r => r.name)
   ok('日報のトリガー（追加・削除・更新）がある', trg.length === 3, trg)
   // 解約企業の削除（retention.ts）は rowid で消すので、新しい表に rowid があること（WITHOUT ROWID だと消せない）。

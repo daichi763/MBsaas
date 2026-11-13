@@ -4227,7 +4227,8 @@ api.get('/admin/staff/:id/skill-sheet', async (c) => {
   const freshList = JSON.stringify(fresh)
   const drWhere = fresh.length ? 'dr.staff_id = ? AND NOT (dr.company_id = ? AND substr(dr.work_date, 1, 7) IN (SELECT value FROM json_each(?)))' : 'dr.staff_id = ?'
   const drBinds = fresh.length ? [sid, u.company_id, freshList] : [sid]
-  const msFrom = `FROM ${RS_MONTH} WHERE staff_id = ? AND company_id = ? AND ym IN (SELECT value FROM json_each(?))`
+  // +company_id: 主キー（会社・月）で引くと、その月の会社のすべての行を読むので、スタッフの索引（staff_id, ym）で引かせる
+  const msFrom = `FROM ${RS_MONTH} WHERE staff_id = ? AND +company_id = ? AND ym IN (SELECT value FROM json_each(?))`
   const msRows = fresh.length ? (await c.env.DB.prepare(`SELECT reports, values_json, legacy_json ${msFrom}`).bind(sid, u.company_id, freshList).all()).results as any[] : []
   // JSON でない日報（壊れた値）は 0 として数える（json_extract が失敗して 500 になっていた）
   const perf = await c.env.DB.prepare(`
