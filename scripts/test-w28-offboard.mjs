@@ -331,6 +331,33 @@ const SRC = readFileSync(join(ROOT, 'src/services/retention.ts'), 'utf8').split(
   ok('読み取りの行数: A のファイルの一覧の合計が offset より少ない', sumRead(f.after.map(read => ({ read }))) < sumRead(f.before.map(read => ({ read }))), f)
 }
 
+// ---------- (6) 画面（hq.js）の続きの読み方（vm。空のページの扱い） ----------
+{
+  const vm = await import('node:vm')
+  const HQ = readFileSync(join(ROOT, 'public/static/hq.js'), 'utf8').split('\r\n').join('\n')
+  const fn = (name) => { const i = HQ.indexOf(`async function ${name}(`); return i < 0 ? '' : HQ.slice(i, HQ.indexOf('\n}\n', i) + 2) }
+  const srcs = [fn('obFetchTableCsv'), fn('obFetchFilesPage')]
+  ok('hq.js: obFetchTableCsv・obFetchFilesPage がある', srcs.every(Boolean))
+  const run = async (pages, call) => {
+    const calls = []
+    const ctx = { axios: { get: async (url, opt) => { calls.push(opt.params.cursor); return pages[calls.length - 1] } } }
+    vm.createContext(ctx); vm.runInContext(srcs.join('\n'), ctx)
+    return { out: await vm.runInContext(call, ctx), calls }
+  }
+  const csvPage = (text, rows, next) => ({ data: '﻿' + text, headers: { 'x-export-rows': String(rows), 'x-export-next': next } })
+  // 最初のページが 0 行（読む量の上限）で、その後に行がある: 先頭に空の行を足さない・見出しは1つ
+  const r1 = await run([csvPage('\r\n', 0, 'c1'), csvPage('id,x\r\n1,a\r\n', 1, 'c2'), csvPage('\r\n', 0, 'c3'), csvPage('id,x\r\n2,b\r\n', 1, '')], `obFetchTableCsv(1, 'attendance_reports')`)
+  ok('hq.js: 最初のページが 0 行でも CSV の先頭に空の行を入れない', r1.out === '﻿id,x\r\n1,a\r\n2,b\r\n' && r1.calls.join() === 'start,c1,c2,c3', r1)
+  const r2 = await run([csvPage('\r\n', 0, 'c1'), csvPage('\r\n', 0, '')], `obFetchTableCsv(1, 'attendance_reports')`)
+  ok('hq.js: 行の無い表は空の CSV', r2.out === '﻿\r\n', r2)
+  // ファイルの一覧: 0 件で次のあるページは続けて読む
+  const fp = (files, next_cursor) => ({ data: { files, next_cursor } })
+  const r3 = await run([fp([], 'c1'), fp([], 'c2'), fp([{ id: 1 }], 'c3')], `obFetchFilesPage(1, 'start')`)
+  ok('hq.js: ファイルの一覧で 0 件のページを飛ばす（ファイルのあるページまで読む）', r3.out.files.length === 1 && r3.out.next_cursor === 'c3' && r3.calls.join() === 'start,c1,c2', r3)
+  const r4 = await run([fp([], null)], `obFetchFilesPage(1, 'start')`)
+  ok('hq.js: ファイルの無い企業は1回で終わる', r4.out.files.length === 0 && r4.calls.length === 1, r4)
+}
+
 const failed = results.filter(r => !r.pass)
 console.log(`\n${results.length - failed.length}/${results.length} passed`)
 if (failed.length) process.exit(1)
