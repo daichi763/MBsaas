@@ -1398,6 +1398,153 @@ export async function exportOffboardingTablePage(db: D1Database, companyId: numb
   return { header, rows: got.map(r => header.map(h => r[h])), label: t.label }
 }
 
+// ---- 続きの位置（キーセット）で区切る書き出し・ファイルの一覧（Sprint 28 w28-offboard）----
+// OFFSET で区切ると、ページごとにその企業の行を先頭から読み直す（打刻は企業の索引を 0112 で消したので、企業の打刻を全部読んで並べ替える）。
+// 続きの位置（前のページの最後の行のキー）から読むと、1ページで読む行はそのページの分だけになる。
+// 位置は JSON を base64url にした文字列（画面はそのまま次の要求に渡す）。古い画面の offset による取得も残す（上の exportOffboardingTablePage）
+export type ObAttCursor = { p: 's'; d?: string; ss?: string | null; id?: number; a?: number } | { p: 't'; st: number; a: number }
+type ObAttRow = { row: Record<string, unknown>; cur: ObAttCursor }
+const OB_ATT_SHIFT_WINDOW_MIN = 16
+const OB_ATT_SHIFT_WINDOW_MAX = 500   // 1回に読むシフトの数の上限（打刻はシフトごとに種類の数まで）
+const OB_ATT_STAFF_WINDOW = 10        // 2段目で1回に読むスタッフの数（2段目はそのスタッフの打刻を全部読んで、企業のシフトに付かないものだけを返す）
+const OB_ATT_ROUNDS = 6               // 1回の要求で読む回数の上限（足りなければ途中の位置を返し、次の要求で続ける）
+const OB_ATT_READ_BUDGET = 2000       // 1回の要求で読む行（D1 の rows_read）の目安。超えたら途中の位置を返し、次の要求で続ける
+
+export function encodeObCursor(v: unknown): string {
+  const bytes = new TextEncoder().encode(JSON.stringify(v))
+  let s = ''
+  for (const b of bytes) s += String.fromCharCode(b)
+  return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
+function decodeObCursorRaw(s: string): any {
+  if (!/^[A-Za-z0-9_-]{1,400}$/.test(s)) return null
+  try {
+    const bin = atob(s.replace(/-/g, '+').replace(/_/g, '/'))
+    return JSON.parse(new TextDecoder().decode(Uint8Array.from(bin, ch => ch.charCodeAt(0))))
+  } catch { return null }
+}
+const isId = (v: unknown) => Number.isSafeInteger(v) && (v as number) >= 0
+function validAttCursor(v: any): ObAttCursor | null {
+  if (!v || typeof v !== 'object') return null
+  if (v.p === 't') return isId(v.st) && isId(v.a) ? { p: 't', st: v.st, a: v.a } : null
+  if (v.p !== 's') return null
+  if (v.id === undefined) return { p: 's' }
+  if (!isId(v.id) || typeof v.d !== 'string' || v.d.length > 40 || !(v.ss === null || (typeof v.ss === 'string' && v.ss.length <= 40))) return null
+  if (v.a !== undefined && !isId(v.a)) return null
+  return { p: 's', d: v.d, ss: v.ss, id: v.id, ...(v.a !== undefined ? { a: v.a } : {}) }
+}
+
+// シフトを（勤務日・精算の状態・シフト ID）の順に、位置から読む条件。索引 idx_shifts_company_date_settle(company_id, work_date, settle_status) の順と同じ
+// （索引の末尾はシフト ID）。精算の状態の NULL は索引でも ORDER BY でも先頭。a があるときはそのシフトから（そのシフトの打刻は a より後）、無いときはそのシフトの次から
+function obShiftAfter(cur: ObAttCursor & { p: 's' }): { sql: string; binds: unknown[] } {
+  if (cur.id === undefined) return { sql: '', binds: [] }
+  const op = cur.a !== undefined ? '>=' : '>'
+  const rest = cur.ss == null
+    ? `(settle_status IS NOT NULL OR shift_id ${op} ?)`
+    : `(settle_status > ? OR (settle_status = ? AND shift_id ${op} ?))`
+  return { sql: ` AND work_date >= ? AND (work_date > ? OR ${rest})`, binds: [cur.d, cur.d, ...(cur.ss == null ? [cur.id] : [cur.ss, cur.ss, cur.id])] }
+}
+
+/**
+ * 解約企業の打刻（OB_ATTENDANCE と同じ行）を、続きの位置から want 行まで読む。
+ * 1段目: その企業のシフトに付く打刻（シフトの順、シフトの中は attendance_id の順）。シフトを窓の数ずつ索引の順に読み、その打刻を一意制約（shift_id, report_type）で引く。
+ * 2段目: その企業のスタッフの打刻のうち、その企業のシフトに付かないもの（スタッフ ID・attendance_id の順。idx_attendance_staff で引く）。
+ * 2つの段は重ならず、合わせると OB_ATTENDANCE の行と同じになる。resume は続きの位置（null なら最後まで読んだ）
+ */
+async function readObAttendance(db: D1Database, cid: number, start: ObAttCursor, want: number, cols: string, extra: string, density0: number): Promise<{ rows: ObAttRow[]; resume: ObAttCursor | null }> {
+  const out: ObAttRow[] = []
+  let cur: ObAttCursor | null = start
+  let shifts = 0, got = 0, read = 0
+  for (let round = 0; cur && out.length < want && round < OB_ATT_ROUNDS && read < OB_ATT_READ_BUDGET; round++) {
+    if (cur.p === 's') {
+      const c: ObAttCursor & { p: 's' } = cur
+      const density = shifts ? Math.max(got / shifts, 0.02) : density0
+      const w = Math.min(OB_ATT_SHIFT_WINDOW_MAX, Math.max(OB_ATT_SHIFT_WINDOW_MIN, Math.ceil((want - out.length) / density) + 1))
+      const after = obShiftAfter(c)
+      const win = `SELECT shift_id FROM shifts WHERE company_id = ?${after.sql} ORDER BY work_date, settle_status, shift_id LIMIT ?`
+      const [ws, ps]: D1Result[] = await db.batch([
+        db.prepare(`SELECT shift_id, work_date, settle_status FROM shifts WHERE company_id = ?${after.sql} ORDER BY work_date, settle_status, shift_id LIMIT ?`).bind(cid, ...after.binds, w),
+        db.prepare(`SELECT ${cols} FROM attendance_reports a WHERE a.shift_id IN (${win}) AND a.company_id = ?${extra}`).bind(cid, ...after.binds, w, cid),
+      ])
+      const wins = (ws.results || []) as { shift_id: number; work_date: string; settle_status: string | null }[]
+      const byShift = new Map<number, Record<string, unknown>[]>()
+      for (const r of (ps.results || []) as Record<string, unknown>[]) {
+        const k = Number(r.shift_id)
+        if (!byShift.has(k)) byShift.set(k, [])
+        byShift.get(k)!.push(r)
+      }
+      shifts += wins.length; got += (ps.results || []).length
+      read += (Number(ws.meta?.rows_read) || 0) + (Number(ps.meta?.rows_read) || 0)
+      let last: typeof wins[number] | null = null
+      for (const s of wins) {
+        const list = (byShift.get(s.shift_id) || []).sort((x, y) => Number(x.attendance_id) - Number(y.attendance_id))
+          .filter(r => !(c.a !== undefined && s.shift_id === c.id && Number(r.attendance_id) <= c.a))
+        for (const r of list) {
+          if (out.length >= want) break
+          out.push({ row: r, cur: { p: 's', d: s.work_date, ss: s.settle_status, id: s.shift_id, a: Number(r.attendance_id) } })
+        }
+        if (out.length >= want) break
+        last = s
+      }
+      if (out.length >= want) return { rows: out, resume: out[out.length - 1].cur }
+      cur = wins.length < w ? { p: 't', st: 0, a: 0 } : { p: 's', d: last!.work_date, ss: last!.settle_status, id: last!.shift_id }
+    } else {
+      const c: ObAttCursor & { p: 't' } = cur
+      const win = `SELECT staff_id FROM staff_profiles WHERE company_id = ? AND staff_id >= ? ORDER BY staff_id LIMIT ?`
+      const [ws, ps]: D1Result[] = await db.batch([
+        db.prepare(win).bind(cid, c.st, OB_ATT_STAFF_WINDOW),
+        db.prepare(`SELECT ${cols} FROM attendance_reports a WHERE a.staff_id IN (${win}) AND a.company_id = ?
+          AND NOT EXISTS (SELECT 1 FROM shifts s WHERE s.shift_id = a.shift_id AND s.company_id = ?)${extra}`).bind(cid, c.st, OB_ATT_STAFF_WINDOW, cid, cid),
+      ])
+      const staff: number[] = ((ws.results || []) as { staff_id: number }[]).map(r => r.staff_id)
+      read += (Number(ws.meta?.rows_read) || 0) + (Number(ps.meta?.rows_read) || 0)
+      const list = ((ps.results || []) as Record<string, unknown>[])
+        .filter(r => !(Number(r.staff_id) === c.st && Number(r.attendance_id) <= c.a))
+        .sort((x, y) => Number(x.staff_id) - Number(y.staff_id) || Number(x.attendance_id) - Number(y.attendance_id))
+      for (const r of list) {
+        if (out.length >= want) break
+        out.push({ row: r, cur: { p: 't', st: Number(r.staff_id), a: Number(r.attendance_id) } })
+      }
+      if (out.length >= want) return { rows: out, resume: out[out.length - 1].cur }
+      cur = staff.length < OB_ATT_STAFF_WINDOW ? null : { p: 't', st: staff[staff.length - 1] + 1, a: 0 }
+    }
+  }
+  return { rows: out, resume: cur }
+}
+
+/**
+ * 書き出し（続きの位置で区切る）: cursor が null なら最初から。next は次の位置（空なら最後のページ）。位置が正しくないときは 'bad'、書き出さない表は null。
+ * 打刻（attendance_reports）はシフトの順（上の readObAttendance）、ほかの表は rowid の順（offset の取得と同じ順・同じ行）。
+ * 打刻は1回の要求で読む量に上限があるので、行が OFFBOARDING_EXPORT_PAGE より少なくても next が付くことがある（0行のこともある）
+ */
+export async function exportOffboardingTableKeyset(db: D1Database, companyId: number, target: string, cursor: string | null):
+  Promise<{ header: string[]; rows: unknown[][]; label: string; next: string } | null | 'bad'> {
+  const t = OFFBOARDING_TABLES.find(x => x.target === target && !x.noExport)
+  if (!t) return null
+  const raw = cursor ? decodeObCursorRaw(cursor) : null
+  if (cursor && !raw) return 'bad'
+  const page = OFFBOARDING_EXPORT_PAGE
+  let got: Record<string, unknown>[], next = ''
+  if (t.table === 'attendance_reports') {
+    const start = raw ? validAttCursor(raw) : { p: 's' as const }
+    if (!start) return 'bad'
+    const r = await readObAttendance(db, companyId, start, page + 1, 'a.*', '', 8)
+    got = r.rows.slice(0, page).map(x => x.row)
+    // 1行多く読めたら、そのページの最後の行の位置から続ける。読めなかったら、最後まで読んだ（resume が null）か、上限で止まった位置から続ける
+    next = r.rows.length > page ? encodeObCursor(r.rows[page - 1].cur) : r.resume ? encodeObCursor(r.resume) : ''
+  } else {
+    const after = raw ? raw.r : 0
+    if (!isId(after)) return 'bad'
+    const w = obWhere(t.where, companyId)
+    const rows = (await db.prepare(`SELECT rowid AS __ob_rowid, * FROM ${t.table} WHERE ${w.sql} AND rowid > ? ORDER BY rowid LIMIT ?`)
+      .bind(...w.binds, after, page + 1).all()).results as Record<string, unknown>[]
+    got = rows.slice(0, page)
+    if (rows.length > page) next = encodeObCursor({ r: Number(got[page - 1].__ob_rowid) })
+  }
+  const header = got.length ? Object.keys(got[0]).filter(k => k !== '__ob_rowid' && !OFFBOARDING_SECRET_COL_RE.test(k)) : []
+  return { header, rows: got.map(r => header.map(h => r[h])), label: t.label, next }
+}
+
 export type OffboardingFile = { source: string; bucket: string; id: number; r2_key: string; file_name: string | null; created_at: string | null; ref_id: number | null }
 /** R2 のファイルの一覧（offset から limit 件） */
 export async function listOffboardingFiles(db: D1Database, companyId: number, offset: number, limit: number): Promise<OffboardingFile[]> {
@@ -1419,6 +1566,43 @@ export async function listOffboardingFiles(db: D1Database, companyId: number, of
     out.push(...rows); want -= rows.length; skip = 0
   }
   return out
+}
+
+/**
+ * R2 のファイルの一覧（続きの位置で区切る。Sprint 28 w28-offboard）。順は元の表の名前の順、表の中は ID の順（打刻の写真だけはシフトの順。readObAttendance）。
+ * cursor が null なら最初から。next は次の位置（null なら最後）。位置が正しくないときは 'bad'。
+ * 件数を数えずに、続きの位置の表から読む（offset の一覧は、ページごとに表ごとの件数を数え、打刻の写真をその企業の分すべて読んでいた）
+ */
+export async function listOffboardingFilesKeyset(db: D1Database, companyId: number, cursor: string | null, limit: number): Promise<{ files: OffboardingFile[]; next: string | null } | 'bad'> {
+  const sources = [...OFFBOARDING_FILE_SOURCES].sort((x, y) => x.source < y.source ? -1 : x.source > y.source ? 1 : 0)
+  const raw = cursor ? decodeObCursorRaw(cursor) : { i: 0 }
+  if (!raw || !isId(raw.i) || raw.i > sources.length || (raw.k !== undefined && !isId(raw.k))) return 'bad'
+  const want = Math.max(1, limit) + 1
+  const out: { f: OffboardingFile; pos: unknown }[] = []
+  let stop: unknown = null
+  for (let i = raw.i; i < sources.length && out.length < want; i++) {
+    const f = sources[i]
+    const first = i === raw.i
+    if (f.source === 'attendance_reports') {
+      const start = first && raw.c !== undefined ? validAttCursor(raw.c) : { p: 's' as const }
+      if (!start) return 'bad'
+      const r = await readObAttendance(db, companyId, start, want - out.length,
+        'a.attendance_id, a.shift_id, a.staff_id, a.photo_key, a.reported_at', ' AND a.photo_key IS NOT NULL', 1)
+      for (const x of r.rows) out.push({ f: { source: f.source, bucket: f.bucket, id: Number(x.row.attendance_id), r2_key: String(x.row.photo_key), file_name: null,
+        created_at: (x.row.reported_at ?? null) as string | null, ref_id: (x.row.staff_id ?? null) as number | null }, pos: { i, c: x.cur } })
+      // 読む量の上限で止まったときは、その位置を次の位置にする（このページは limit 件より少ない）
+      if (out.length < want && r.resume) { stop = { i, c: r.resume }; break }
+    } else {
+      const w = obWhere(fileWhere(f), companyId)
+      const after = first && raw.k !== undefined ? raw.k : 0
+      const rows = (await db.prepare(`SELECT '${f.source}' AS source, '${f.bucket}' AS bucket, ${f.idCol} AS id, ${f.keyCol} AS r2_key,
+          ${f.nameCol || 'NULL'} AS file_name, ${f.whenCol} AS created_at, ${f.refCol} AS ref_id
+        FROM ${f.source} WHERE ${w.sql} AND ${f.keyCol} IS NOT NULL AND ${f.idCol} > ? ORDER BY ${f.idCol} LIMIT ?`).bind(...w.binds, after, want - out.length).all()).results as OffboardingFile[]
+      for (const x of rows) out.push({ f: x, pos: { i, k: Number(x.id) } })
+    }
+  }
+  if (out.length > limit) return { files: out.slice(0, limit).map(x => x.f), next: encodeObCursor(out[limit - 1].pos) }
+  return { files: out.map(x => x.f), next: stop ? encodeObCursor(stop) : null }
 }
 
 /** R2 のファイル1件（元の表と行の ID で、その企業のものだけ） */
