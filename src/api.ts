@@ -9,7 +9,7 @@ import { cronStatus } from './services/cron'
 import { RETENTION_MAINTENANCE_TARGETS, RETENTION_SETTING_DEFS, dailyReportRetentionInfo, getRetentionSettings, locationPhotoSql, scanOrphanPhotos, setRetentionHold } from './services/retention'
 import { csvLimitHeaders, csvLimitNote, loadLatestForCsv } from './csv'
 import { OFFBOARDING_TABLES, OFFBOARDING_GRACE_DAYS, OFFBOARDING_GRACE_MIN, OFFBOARDING_GRACE_MAX, OFFBOARDING_EXPORT_PAGE, OFFBOARDING_TOTAL_STEPS,
-  countOffboardingData, findUnknownOffboardingTables, exportOffboardingTablePage, listOffboardingFiles, findOffboardingFile, offboardingBucket, runOffboardingDeletion } from './services/retention'
+  countOffboardingData, findUnknownOffboardingTables, exportOffboardingTablePage, exportOffboardingTableKeyset, listOffboardingFiles, listOffboardingFilesKeyset, findOffboardingFile, offboardingBucket, runOffboardingDeletion } from './services/retention'
 import { buildUpdate } from './lib/update-builder'
 import chatApi from './roster-chat'
 import shiftBoardApi, { MONEY_MAX, applyPricingToShift, rangeError, stripMoney } from './shift-board'
@@ -8766,11 +8766,25 @@ async function offboardingExportable(db: D1Database, cid: number | null): Promis
 }
 
 // 表ごとの CSV（offset から OFFBOARDING_EXPORT_PAGE 行。次があれば X-Export-Next に次の offset を入れる）。最初の取得を記録する
+// cursor を付けると続きの位置で区切る（X-Export-Next は次の位置。空なら最後。cursor=start が最初。w28-offboard）。cursor の無い取得は古い画面のため残す
 api.get('/hq/offboarding/:cid/export/:target', async (c) => {
   const db = c.env.DB
   const cid = toInt(c.req.param('cid'), 1)
   const ok = await offboardingExportable(db, cid)
   if ('error' in ok) return c.json({ error: ok.error }, ok.status)
+  const cursorQ = c.req.query('cursor')
+  if (cursorQ !== undefined) {
+    const first = cursorQ === '' || cursorQ === 'start'
+    const page = await exportOffboardingTableKeyset(db, cid!, c.req.param('target'), first ? null : cursorQ)
+    if (page === 'bad') return c.json({ error: 'cursor が正しくありません' }, 400)
+    if (!page) return c.json({ error: '書き出せない表です' }, 404)
+    if (first) {
+      await offboardingEventStmt(db, { offboarding_id: ok.ob?.status === 'scheduled' ? ok.ob.offboarding_id : null, company_id: cid!, action: 'export', actor: c.get('user').user_id,
+        detail: { target: c.req.param('target') } }).run()
+    }
+    return csvResponse(`${ok.company.company_code}_${c.req.param('target')}_${first ? '0' : 'next'}.csv`, toCsv(page.header, page.rows),
+      { 'X-Export-Rows': String(page.rows.length), 'X-Export-Next': page.next })
+  }
   const offset = toInt(c.req.query('offset') ?? '0', 0, 100000000)
   if (offset === null) return c.json({ error: 'offset が正しくありません' }, 400)
   const page = await exportOffboardingTablePage(db, cid!, c.req.param('target'), offset)
@@ -8784,12 +8798,19 @@ api.get('/hq/offboarding/:cid/export/:target', async (c) => {
     { 'X-Export-Rows': String(page.rows.length), 'X-Export-Next': next })
 })
 
-// R2 の写真・書類の一覧（offset から OFFBOARDING_FILES_PAGE 件）
+// R2 の写真・書類の一覧（offset から OFFBOARDING_FILES_PAGE 件。cursor を付けると続きの位置で区切る）
 api.get('/hq/offboarding/:cid/files', async (c) => {
   const db = c.env.DB
   const cid = toInt(c.req.param('cid'), 1)
   const ok = await offboardingExportable(db, cid)
   if ('error' in ok) return c.json({ error: ok.error }, ok.status)
+  const cursorQ = c.req.query('cursor')
+  if (cursorQ !== undefined) {
+    // 続きの位置で区切る（next_cursor が次の位置。null なら最後。cursor=start が最初。w28-offboard）
+    const got = await listOffboardingFilesKeyset(db, cid!, cursorQ === '' || cursorQ === 'start' ? null : cursorQ, OFFBOARDING_FILES_PAGE)
+    if (got === 'bad') return c.json({ error: 'cursor が正しくありません' }, 400)
+    return c.json({ files: got.files, cursor: cursorQ || 'start', next_cursor: got.next })
+  }
   const offset = toInt(c.req.query('offset') ?? '0', 0, 100000000)
   if (offset === null) return c.json({ error: 'offset が正しくありません' }, 400)
   const files = await listOffboardingFiles(db, cid!, offset, OFFBOARDING_FILES_PAGE + 1)

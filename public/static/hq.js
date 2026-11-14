@@ -2457,7 +2457,7 @@ function obTablesHtml(d) {
       </table></div>
       <div class="mt-4 text-sm">
         <p><i class="fas fa-images text-hq-accent-400 mr-1"></i>写真・書類（R2）: ${files}</p>
-        ${canExport ? `<button class="text-hq-accent-400 text-xs hover:underline mt-1" data-action="obFiles" data-cid="${cid}" data-offset="0">ファイルの一覧を表示して取得する</button>` : ''}
+        ${canExport ? `<button class="text-hq-accent-400 text-xs hover:underline mt-1" data-action="obFiles" data-cid="${cid}" data-page="0">ファイルの一覧を表示して取得する</button>` : ''}
         <div id="ob-files" class="mt-2"></div>
       </div>
     </section>`
@@ -2595,16 +2595,19 @@ delegate('obDelete', el => {
 })
 
 // 表の CSV を区切って取得し、1つのファイルにまとめる（2つ目以降の見出しの行は除く）
+// 続きの位置（cursor）で区切る。行の無いページ（見出しも無い）は飛ばし、見出しは最初に行のあったページのものを使う（w28-offboard）
 async function obFetchTableCsv(cid, target) {
-  let offset = 0, out = ''
+  let cursor = 'start', out = '', head = false
   for (let i = 0; i < 100000; i++) {
-    const r = await axios.get(`/api/hq/offboarding/${cid}/export/${encodeURIComponent(target)}`, { params: { offset }, responseType: 'text', transformResponse: x => x })
+    const r = await axios.get(`/api/hq/offboarding/${cid}/export/${encodeURIComponent(target)}`, { params: { cursor }, responseType: 'text', transformResponse: x => x })
     let text = String(r.data).replace(/^﻿/, '')
-    if (offset > 0) text = text.slice(text.indexOf('\r\n') + 2)
-    out += text
+    if (Number(r.headers['x-export-rows']) > 0) {
+      if (head) text = text.slice(text.indexOf('\r\n') + 2)
+      out += text; head = true
+    } else if (!head && !out) out = text
     const next = r.headers['x-export-next']
     if (!next) break
-    offset = Number(next)
+    cursor = next
   }
   return '﻿' + out
 }
@@ -2634,11 +2637,17 @@ delegate('obExportAll', el => withSubmitLock(el, async () => {
 }))
 
 // 写真・書類の一覧（100件ずつ）。ファイルは1件ずつ取得する
+// 続きの位置（cursor）で区切る。「前へ」のために、表示したページの位置を順に控える（w28-offboard）
+let OB_FILE_CURSORS = []
 delegate('obFiles', el => withSubmitLock(el, async () => {
-  const cid = Number(el.dataset.cid), offset = Number(el.dataset.offset) || 0
+  const cid = Number(el.dataset.cid)
+  const page = el.dataset.page == null ? 0 : Number(el.dataset.page) || 0
+  if (page === 0) OB_FILE_CURSORS = ['start']
+  const cursor = OB_FILE_CURSORS[page] || 'start'
   const box = document.getElementById('ob-files')
   try {
-    const { data } = await axios.get(`/api/hq/offboarding/${cid}/files`, { params: { offset } })
+    const { data } = await axios.get(`/api/hq/offboarding/${cid}/files`, { params: { cursor } })
+    if (data.next_cursor) OB_FILE_CURSORS[page + 1] = data.next_cursor
     box.innerHTML = `
       <div class="overflow-x-auto"><table class="w-full text-xs">
         <thead><tr class="text-hq-400 border-b border-hq-700"><th class="text-left px-2 py-1">種類</th><th class="text-left px-2 py-1">ファイル</th><th class="text-left px-2 py-1">日時</th><th></th></tr></thead>
@@ -2649,8 +2658,8 @@ delegate('obFiles', el => withSubmitLock(el, async () => {
           <td class="px-2 py-1"><a class="text-hq-accent-400 hover:underline" href="/api/hq/offboarding/${cid}/files/${encodeURIComponent(f.source)}/${Number(f.id)}">取得</a></td></tr>`).join('') || '<tr><td colspan="4" class="text-center text-hq-500 py-3">ファイルはありません</td></tr>'}</tbody>
       </table></div>
       <div class="flex gap-2 mt-2">
-        ${offset > 0 ? `<button class="text-hq-accent-400 text-xs hover:underline" data-action="obFiles" data-cid="${cid}" data-offset="${Math.max(0, offset - 100)}">← 前へ</button>` : ''}
-        ${data.next != null ? `<button class="text-hq-accent-400 text-xs hover:underline" data-action="obFiles" data-cid="${cid}" data-offset="${Number(data.next)}">次へ →</button>` : ''}
+        ${page > 0 ? `<button class="text-hq-accent-400 text-xs hover:underline" data-action="obFiles" data-cid="${cid}" data-page="${page - 1}">← 前へ</button>` : ''}
+        ${data.next_cursor ? `<button class="text-hq-accent-400 text-xs hover:underline" data-action="obFiles" data-cid="${cid}" data-page="${page + 1}">次へ →</button>` : ''}
       </div>`
   } catch (e) { showApiError(e, 'ファイルの一覧を読み込めませんでした') }
 }))

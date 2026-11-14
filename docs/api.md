@@ -709,11 +709,11 @@ Mobital のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 | GET | `/api/hq/offboarding` | 本部 | [api.ts:8676](../src/api.ts#L8676) | 一覧: 停止中の企業と、解約の処理の記録がある企業 | hq.js |
 | GET | `/api/hq/offboarding/:cid` | 本部 | [api.ts:8692](../src/api.ts#L8692) | 詳細: 解約の処理・操作の記録・表ごとの件数（削除の dry-run を兼ねる）・R2 のファイルの件数 | hq.js |
 | POST | `/api/hq/offboarding/:cid/cancel` | 本部 | [api.ts:8742](../src/api.ts#L8742) | 契約終了の取消（猶予中だけ。削除を始めた後は取り消せない） | hq.js |
-| POST | `/api/hq/offboarding/:cid/delete` | 本部 | [api.ts:8824](../src/api.ts#L8824) | 削除（猶予を過ぎた企業だけ。会社コードと「削除する」の入力で確かめる）。1回の要求で処理できる量だけ進め、進み具合を返す。 書き出しをしていない場合は、書き出しをしない理由（企業が不要と回答した など）を求める | hq.js |
-| GET | `/api/hq/offboarding/:cid/export/:target` | 本部 | [api.ts:8769](../src/api.ts#L8769) | 表ごとの CSV（offset から OFFBOARDING_EXPORT_PAGE 行。次があれば X-Export-Next に次の offset を入れる）。最初の取得を記録する | hq.js |
-| GET | `/api/hq/offboarding/:cid/files` | 本部 | [api.ts:8788](../src/api.ts#L8788) | R2 の写真・書類の一覧（offset から OFFBOARDING_FILES_PAGE 件） | hq.js |
-| GET | `/api/hq/offboarding/:cid/files/:source/:id` | 本部 | [api.ts:8800](../src/api.ts#L8800) | R2 のファイル1件の取得（元の表と行の ID で。その企業のものだけ）。取得を記録する | hq.js |
-| GET | `/api/hq/offboarding/:cid/record.csv` | 本部 | [api.ts:8869](../src/api.ts#L8869) | 〔見出し〕解約・停止した企業のデータの書き出しと削除（system_admin限定。作業単位 w5-hq-offboarding: #177） | hq.js |
+| POST | `/api/hq/offboarding/:cid/delete` | 本部 | [api.ts:8845](../src/api.ts#L8845) | 削除（猶予を過ぎた企業だけ。会社コードと「削除する」の入力で確かめる）。1回の要求で処理できる量だけ進め、進み具合を返す。 書き出しをしていない場合は、書き出しをしない理由（企業が不要と回答した など）を求める | hq.js |
+| GET | `/api/hq/offboarding/:cid/export/:target` | 本部 | [api.ts:8770](../src/api.ts#L8770) | 表ごとの CSV（offset から OFFBOARDING_EXPORT_PAGE 行。次があれば X-Export-Next に次の offset を入れる）。最初の取得を記録する cursor を付けると続きの位置で区切る（X-Export-Next は次の位置。空なら最後。cursor=start が最初。w… | hq.js |
+| GET | `/api/hq/offboarding/:cid/files` | 本部 | [api.ts:8802](../src/api.ts#L8802) | R2 の写真・書類の一覧（offset から OFFBOARDING_FILES_PAGE 件。cursor を付けると続きの位置で区切る） | hq.js |
+| GET | `/api/hq/offboarding/:cid/files/:source/:id` | 本部 | [api.ts:8821](../src/api.ts#L8821) | R2 のファイル1件の取得（元の表と行の ID で。その企業のものだけ）。取得を記録する | hq.js |
+| GET | `/api/hq/offboarding/:cid/record.csv` | 本部 | [api.ts:8890](../src/api.ts#L8890) | 〔見出し〕解約・停止した企業のデータの書き出しと削除（system_admin限定。作業単位 w5-hq-offboarding: #177） | hq.js |
 | POST | `/api/hq/offboarding/:cid/start` | 本部 | [api.ts:8714](../src/api.ts#L8714) | 契約終了の登録（停止中の企業だけ）。会社コードの入力で確かめる | hq.js |
 | GET | `/api/hq/plan-prices` | 本部 | [api.ts:8250](../src/api.ts#L8250) | 〔見出し〕プランの料金の設定（#295） | hq.js |
 | PUT | `/api/hq/plan-prices` | 本部 | [api.ts:8253](../src/api.ts#L8253) | 〔見出し〕プランの料金の設定（#295） | hq.js |
