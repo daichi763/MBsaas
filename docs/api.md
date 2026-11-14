@@ -1,6 +1,6 @@
 # API 一覧
 
-Field OS のサーバー（Cloudflare Workers + Hono）が受け付ける、すべてのエンドポイントの一覧です。新しく加わる開発者や外部の開発会社が、前提知識なしで読めるように書いています。
+Mobital のサーバー（Cloudflare Workers + Hono）が受け付ける、すべてのエンドポイントの一覧です。新しく加わる開発者や外部の開発会社が、前提知識なしで読めるように書いています。
 
 - 関連する資料: [DB 設計書](db.md)・[画面一覧](screens.md)
 - 一覧（下の「4. エンドポイントの一覧」）はコードから生成しています。手で直さず、`npm run docs` で作り直してください（作り方は [DB 設計書](db.md) の「この資料の作り方」と同じです）。
@@ -131,19 +131,19 @@ Field OS のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 <!-- BEGIN GENERATED: api-pages -->
 | メソッド | パス | 定義 | 用途 |
 |---|---|---|---|
-| GET | `/api/health` | [index.tsx:104](../src/index.tsx#L104) | ログイン不要・CSRF の対象外（GET だけ）。D1 に SELECT 1 だけを投げ、R2 には触らない。応答は ok と版の短い ID だけ（内部の情報は出さない）。 D1 につながらないときは 503（本文に ok を含めないので、キーワードの監視でも落ちたと分かる）。キャッシュさせない |
-| GET | `/sw.js` | [index.tsx:180](../src/index.tsx#L180) | Service Worker（スタッフ画面・本部画面・管理画面のプッシュ通知の表示。#178 #9622 #552） |
-| POST | `/webhooks/resend` | [index.tsx:184](../src/index.tsx#L184) | ログイン不要。署名（RESEND_WEBHOOK_SECRET。wrangler secret で登録する）を確かめてから送信の記録を更新する（src/services/email.ts） |
-| GET | `/` | [index.tsx:227](../src/index.tsx#L227) | ルート: ロール別リダイレクト |
-| GET | `/login` | [index.tsx:247](../src/index.tsx#L247) | ログイン済みならホームへ移す（入力し直しと、不要なセッションの増加を防ぐ） |
-| GET | `/reset-password` | [index.tsx:476](../src/index.tsx#L476) | パスワード再設定ページ（メール内リンクからアクセス。トークンはクエリパラメータで受け取る） |
-| GET | `/verify-email` | [index.tsx:557](../src/index.tsx#L557) | ログイン用メールアドレスの確認ページ（#207。管理者が登録したアドレスに届いたリンクから開く）。 メールソフトのリンクの事前読み込みで確認済みにならないよう、ボタンを押したときに確認する |
-| GET | `/notice-ack` | [index.tsx:605](../src/index.tsx#L605) | お知らせメールの「確認しました」（#454。メールのリンクから開く）。 メールソフトのリンクの事前読み込みで既読にならないよう、ボタンを押したときに既読にする（/api/public/notice-ack） |
-| GET | `/r/:token` | [index.tsx:663](../src/index.tsx#L663) | シフト専用の報告用URL（ログイン不要。public/static/report-link.js） |
-| GET | `/apply/:token` | [index.tsx:677](../src/index.tsx#L677) | 公開の募集ページ（ログイン不要。/api/public/recruit/:token） |
-| GET | `/staff` | [index.tsx:691](../src/index.tsx#L691) | スタッフ画面 (スマホファースト SPA) |
-| GET | `/admin` | [index.tsx:731](../src/index.tsx#L731) | 管理者画面 (PC向け SPA) |
-| GET | `/hq` | [index.tsx:823](../src/index.tsx#L823) | SaaS本部管理画面 |
+| GET | `/api/health` | [index.tsx:113](../src/index.tsx#L113) | ログイン不要・CSRF の対象外（GET だけ）。D1 に SELECT 1 だけを投げ、R2 には触らない。応答は ok と版の短い ID だけ（内部の情報は出さない）。 D1 につながらないときは 503（本文に ok を含めないので、キーワードの監視でも落ちたと分かる）。キャッシュさせない |
+| GET | `/sw.js` | [index.tsx:189](../src/index.tsx#L189) | Service Worker（スタッフ画面・本部画面・管理画面のプッシュ通知の表示。#178 #9622 #552） |
+| POST | `/webhooks/resend` | [index.tsx:193](../src/index.tsx#L193) | ログイン不要。署名（RESEND_WEBHOOK_SECRET。wrangler secret で登録する）を確かめてから送信の記録を更新する（src/services/email.ts） |
+| GET | `/` | [index.tsx:236](../src/index.tsx#L236) | ルート: ロール別リダイレクト |
+| GET | `/login` | [index.tsx:256](../src/index.tsx#L256) | ログイン済みならホームへ移す（入力し直しと、不要なセッションの増加を防ぐ） |
+| GET | `/reset-password` | [index.tsx:485](../src/index.tsx#L485) | パスワード再設定ページ（メール内リンクからアクセス。トークンはクエリパラメータで受け取る） |
+| GET | `/verify-email` | [index.tsx:566](../src/index.tsx#L566) | ログイン用メールアドレスの確認ページ（#207。管理者が登録したアドレスに届いたリンクから開く）。 メールソフトのリンクの事前読み込みで確認済みにならないよう、ボタンを押したときに確認する |
+| GET | `/notice-ack` | [index.tsx:614](../src/index.tsx#L614) | お知らせメールの「確認しました」（#454。メールのリンクから開く）。 メールソフトのリンクの事前読み込みで既読にならないよう、ボタンを押したときに既読にする（/api/public/notice-ack） |
+| GET | `/r/:token` | [index.tsx:672](../src/index.tsx#L672) | シフト専用の報告用URL（ログイン不要。public/static/report-link.js） |
+| GET | `/apply/:token` | [index.tsx:686](../src/index.tsx#L686) | 公開の募集ページ（ログイン不要。/api/public/recruit/:token） |
+| GET | `/staff` | [index.tsx:700](../src/index.tsx#L700) | スタッフ画面 (スマホファースト SPA) |
+| GET | `/admin` | [index.tsx:740](../src/index.tsx#L740) | 管理者画面 (PC向け SPA) |
+| GET | `/hq` | [index.tsx:832](../src/index.tsx#L832) | SaaS本部管理画面 |
 <!-- END GENERATED: api-pages -->
 
 ## 4. エンドポイントの一覧
@@ -252,10 +252,10 @@ Field OS のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 | GET | `/api/staff/performance` | スタッフ | [api.ts:2403](../src/api.ts#L2403) | 〔見出し〕打刻（#427 #9939。本体は src/attendance-punch.ts） | staff.js |
 | GET | `/api/staff/photo-options` | スタッフ | [api.ts:1862](../src/api.ts#L1862) | 写真が送れないときの扱い（#535）。スタッフ: シフトの所有企業が写真なしの報告を許可しているかと、理由の選択肢 | staff.js |
 | GET | `/api/staff/push/config` | スタッフ | [notifications.ts:1963](../src/notifications.ts#L1963) | 〔見出し〕プッシュ通知（#178） | staff.js |
-| GET | `/api/staff/push/latest` | スタッフ | [notifications.ts:2033](../src/notifications.ts#L2033) | 〔見出し〕プッシュ通知（#178） |  |
+| GET | `/api/staff/push/latest` | スタッフ | [notifications.ts:2043](../src/notifications.ts#L2043) | 〔見出し〕プッシュ通知（#178） |  |
 | POST | `/api/staff/push/subscribe` | スタッフ | [notifications.ts:1976](../src/notifications.ts#L1976) | 〔見出し〕プッシュ通知（#178） | staff.js |
-| POST | `/api/staff/push/test` | スタッフ | [notifications.ts:2013](../src/notifications.ts#L2013) | テスト通知: この端末にだけ、その場で送る（端末が取りに来たときにテストの文面を返す） | staff.js |
-| POST | `/api/staff/push/unsubscribe` | スタッフ | [notifications.ts:2005](../src/notifications.ts#L2005) | 〔見出し〕プッシュ通知（#178） | staff.js |
+| POST | `/api/staff/push/test` | スタッフ | [notifications.ts:2023](../src/notifications.ts#L2023) | テスト通知: この端末にだけ、その場で送る（端末が取りに来たときにテストの文面を返す） | staff.js |
+| POST | `/api/staff/push/unsubscribe` | スタッフ | [notifications.ts:2015](../src/notifications.ts#L2015) | 〔見出し〕プッシュ通知（#178） | staff.js |
 | GET | `/api/staff/self/documents` | スタッフ | [staff-self-service.ts:259](../src/staff-self-service.ts#L259) | 〔見出し〕#288 書類の提出 | staff-profile.js |
 | POST | `/api/staff/self/documents` | スタッフ<br>＋本文で確認: ADMIN_NOTIFY_ROLES | [staff-self-service.ts:267](../src/staff-self-service.ts#L267) | 〔見出し〕#288 書類の提出 | staff-profile.js |
 | DELETE | `/api/staff/self/documents/:id` | スタッフ | [staff-self-service.ts:321](../src/staff-self-service.ts#L321) | 本人が削除できるのは、担当者がまだ確認していない書類だけ（D1 を先に消し、R2 は後で消す） | staff-profile.js |
@@ -438,10 +438,10 @@ Field OS のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 | GET | `/api/admin/proxy-attendance/bulk` | 管理者（4ロール）＋本部の閲覧（GET） | [staff-lifecycle.ts:1186](../src/staff-lifecycle.ts#L1186) | 日付（と案件）を選ぶと、勤務のシフトと報告の状況を返す。ログインのない人を先頭に並べる | staff-lifecycle.js |
 | POST | `/api/admin/proxy-attendance/bulk` | 管理者（4ロール） | [staff-lifecycle.ts:1219](../src/staff-lifecycle.ts#L1219) | チェックしたシフトに「予定どおり」で記録する。scope: start = 入店・勤務開始だけ / all = 予定どおり全部（休憩・勤務終了・退店も）。 人ごとに start・end（'HH:MM'）で開始・終了の時刻を直せる。1件の代理入力と同じ確認（確定済み・欠勤・稼働日より前・報告済み・順序）をして、 記録で… | staff-lifecycle.js |
 | GET | `/api/admin/push/config` | 管理者（4ロール）＋本部の閲覧（GET） | [notifications.ts:1963](../src/notifications.ts#L1963) | 〔見出し〕プッシュ通知（#178） | notifications.js |
-| GET | `/api/admin/push/latest` | 管理者（4ロール）＋本部の閲覧（GET） | [notifications.ts:2062](../src/notifications.ts#L2062) | 〔見出し〕プッシュ通知（#178） |  |
+| GET | `/api/admin/push/latest` | 管理者（4ロール）＋本部の閲覧（GET） | [notifications.ts:2072](../src/notifications.ts#L2072) | 〔見出し〕プッシュ通知（#178） |  |
 | POST | `/api/admin/push/subscribe` | 管理者（4ロール） | [notifications.ts:1976](../src/notifications.ts#L1976) | 〔見出し〕プッシュ通知（#178） | notifications.js |
-| POST | `/api/admin/push/test` | 管理者（4ロール） | [notifications.ts:2013](../src/notifications.ts#L2013) | テスト通知: この端末にだけ、その場で送る（端末が取りに来たときにテストの文面を返す） | notifications.js |
-| POST | `/api/admin/push/unsubscribe` | 管理者（4ロール） | [notifications.ts:2005](../src/notifications.ts#L2005) | 〔見出し〕プッシュ通知（#178） | notifications.js |
+| POST | `/api/admin/push/test` | 管理者（4ロール） | [notifications.ts:2023](../src/notifications.ts#L2023) | テスト通知: この端末にだけ、その場で送る（端末が取りに来たときにテストの文面を返す） | notifications.js |
+| POST | `/api/admin/push/unsubscribe` | 管理者（4ロール） | [notifications.ts:2015](../src/notifications.ts#L2015) | 〔見出し〕プッシュ通知（#178） | notifications.js |
 | GET | `/api/admin/rate-rules` | 管理者（4ロール）＋本部の閲覧（GET） | [shift-board.ts:2860](../src/shift-board.ts#L2860) | 〔見出し〕単価ルール・案件の単価設定 | shift-board.js |
 | POST | `/api/admin/rate-rules` | 管理者（4ロール） | [shift-board.ts:2927](../src/shift-board.ts#L2927) | 〔見出し〕単価ルール・案件の単価設定 | shift-board.js |
 | DELETE | `/api/admin/rate-rules/:id` | 管理者（4ロール） | [shift-board.ts:2956](../src/shift-board.ts#L2956) | 〔見出し〕単価ルール・案件の単価設定 | shift-board.js |
@@ -499,7 +499,7 @@ Field OS のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 | POST | `/api/admin/roster/link` | 管理者（4ロール） | [roster.ts:1333](../src/roster.ts#L1333) | ①QR/ID連携: 同意の上で稼働先のスタッフマスタに連携登録する | roster.js |
 | GET | `/api/admin/roster/lookup` | 管理者（4ロール）＋本部の閲覧（GET） | [roster.ts:1251](../src/roster.ts#L1251) | ①QR/ID連携: コードから連携候補をプレビュー（同意前なので識別に必要な最小限のみ返す） | roster.js |
 | GET | `/api/admin/roster/next-code` | 管理者（4ロール）＋本部の閲覧（GET） | [roster.ts:921](../src/roster.ts#L921) | 次に使えるスタッフ番号（#424。登録画面の番号欄の既定値） | roster.js staff-lifecycle.js |
-| GET | `/api/admin/roster/partners` | 管理者（4ロール）＋本部の閲覧（GET） | [roster.ts:928](../src/roster.ts#L928) | 取引先（Field OS未契約の所属元）一覧: 自社名を除いた staff_affiliations。 以前のスタッフ詳細の保存で、個人事業主の屋号やスキルシートのみの人の所属会社名が取引先マスタに入っていたため（#262）、 所属スタッフ・支払先のシフト・連絡先がなく、取引先以外の区分のスタッフの所属会社名と同じ名… | recruit.js roster.js staff-lifecycle.js |
+| GET | `/api/admin/roster/partners` | 管理者（4ロール）＋本部の閲覧（GET） | [roster.ts:928](../src/roster.ts#L928) | 取引先（Mobital未契約の所属元）一覧: 自社名を除いた staff_affiliations。 以前のスタッフ詳細の保存で、個人事業主の屋号やスキルシートのみの人の所属会社名が取引先マスタに入っていたため（#262）、 所属スタッフ・支払先のシフト・連絡先がなく、取引先以外の区分のスタッフの所属会社名と同じ名前… | recruit.js roster.js staff-lifecycle.js |
 | POST | `/api/admin/roster/partners` | 管理者（4ロール） | [roster.ts:1152](../src/roster.ts#L1152) | 〔見出し〕取引先の登録・編集・統合・削除（#161） | roster.js |
 | DELETE | `/api/admin/roster/partners/:pid` | 管理者（4ロール） | [roster.ts:1237](../src/roster.ts#L1237) | 削除: 所属スタッフ・支払先のシフト・予約中の区分変更がない取引先だけ | roster.js |
 | PUT | `/api/admin/roster/partners/:pid` | 管理者（4ロール） | [roster.ts:1170](../src/roster.ts#L1170) | 編集。名前を変えたら、所属スタッフの所属会社名もそろえる | roster.js |
@@ -718,10 +718,10 @@ Field OS のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 | GET | `/api/hq/plan-prices` | 本部 | [api.ts:8250](../src/api.ts#L8250) | 〔見出し〕プランの料金の設定（#295） | hq.js |
 | PUT | `/api/hq/plan-prices` | 本部 | [api.ts:8253](../src/api.ts#L8253) | 〔見出し〕プランの料金の設定（#295） | hq.js |
 | GET | `/api/hq/push/config` | 本部 | [notifications.ts:1963](../src/notifications.ts#L1963) | 〔見出し〕プッシュ通知（#178） | hq.js |
-| GET | `/api/hq/push/latest` | 本部 | [notifications.ts:2084](../src/notifications.ts#L2084) | 〔見出し〕プッシュ通知（#178） |  |
+| GET | `/api/hq/push/latest` | 本部 | [notifications.ts:2094](../src/notifications.ts#L2094) | 〔見出し〕プッシュ通知（#178） |  |
 | POST | `/api/hq/push/subscribe` | 本部 | [notifications.ts:1976](../src/notifications.ts#L1976) | 〔見出し〕プッシュ通知（#178） | hq.js |
-| POST | `/api/hq/push/test` | 本部 | [notifications.ts:2013](../src/notifications.ts#L2013) | テスト通知: この端末にだけ、その場で送る（端末が取りに来たときにテストの文面を返す） | hq.js |
-| POST | `/api/hq/push/unsubscribe` | 本部 | [notifications.ts:2005](../src/notifications.ts#L2005) | 〔見出し〕プッシュ通知（#178） | hq.js |
+| POST | `/api/hq/push/test` | 本部 | [notifications.ts:2023](../src/notifications.ts#L2023) | テスト通知: この端末にだけ、その場で送る（端末が取りに来たときにテストの文面を返す） | hq.js |
+| POST | `/api/hq/push/unsubscribe` | 本部 | [notifications.ts:2015](../src/notifications.ts#L2015) | 〔見出し〕プッシュ通知（#178） | hq.js |
 | POST | `/api/hq/retention/dry-run` | 本部 | [api.ts:8454](../src/api.ts#L8454) | 注意: 実際の削除はCron Triggerからのみ実行する（HTTP経由の一般APIとしては公開しない）。 ここではdry-run（削除せず対象件数のみ確認）と、過去の実行ログの閲覧のみ提供する。 全社にまたがる集計のため、各社admin(company_admin等)ではなく本部(system_admin)限定と… | hq.js |
 | DELETE | `/api/hq/retention/holds/:kind/:id` | 本部 | [api.ts:8554](../src/api.ts#L8554) | 〔見出し〕データ保持（定期削除、system_admin限定） | hq.js |
 | PUT | `/api/hq/retention/holds/:kind/:id` | 本部 | [api.ts:8543](../src/api.ts#L8543) | 〔見出し〕データ保持（定期削除、system_admin限定） | hq.js |

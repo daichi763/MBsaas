@@ -16,7 +16,7 @@ const TODAY = addDays(0);
 
 const esc = (s) => s == null ? 'NULL' : `'${String(s).replace(/'/g, "''")}'`;
 
-let sql = `-- Field OS シードデータ (generated ${TODAY})\n`;
+let sql = `-- Mobital シードデータ (generated ${TODAY})\n`;
 
 // ============ 企業 ============
 sql += `

@@ -2,7 +2,7 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Field OS 共通スタイル
+/* Mobital 共通スタイル
    共通クラス（.card .badge .inp .btn .report-btn など）は @layer components に書く。
    ユーティリティ（py-3・text-lg・hidden など）より前に出力されるので、要素に付けたユーティリティの指定が優先される（#495）。
    @layer components のクラスは、tailwind.config.js の content のファイルに名前が書かれているものだけが出力される。

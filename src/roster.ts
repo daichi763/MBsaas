@@ -391,14 +391,14 @@ export async function samePersonRows(db: D1Database, companyId: number): Promise
 }
 
 /**
- * 取引先（Field OS未契約の所属元）として登録しようとしている名前が、他の導入企業の会社名と一致するかを確認する。
+ * 取引先（Mobital未契約の所属元）として登録しようとしている名前が、他の導入企業の会社名と一致するかを確認する。
  * 導入企業のスタッフは取引先ではなく ①QR/ID連携（linked_external）で扱うため、一致した場合はエラーメッセージを返す。
  */
 export async function partnerNameConflict(db: D1Database, companyId: number, name: string | null | undefined): Promise<string | null> {
   const n = String(name || '').trim()
   if (!n) return null
   const hit = await db.prepare('SELECT 1 FROM companies WHERE company_name = ? AND company_id != ? LIMIT 1').bind(n, companyId).first()
-  return hit ? `「${n}」はField OSの導入企業のため、協力会社として登録できません（①QR/ID連携で登録してください）` : null
+  return hit ? `「${n}」はMobitalの導入企業のため、協力会社として登録できません（①QR/ID連携で登録してください）` : null
 }
 
 /**
@@ -920,7 +920,7 @@ rosterApi.post('/share-codes', async (c) => {
 // 次に使えるスタッフ番号（#424。登録画面の番号欄の既定値）
 rosterApi.get('/next-code', async (c) => c.json(await nextStaffCode(c.env.DB, c.get('user').company_id)))
 
-// 取引先（Field OS未契約の所属元）一覧: 自社名を除いた staff_affiliations。
+// 取引先（Mobital未契約の所属元）一覧: 自社名を除いた staff_affiliations。
 // 以前のスタッフ詳細の保存で、個人事業主の屋号やスキルシートのみの人の所属会社名が取引先マスタに入っていたため（#262）、
 // 所属スタッフ・支払先のシフト・連絡先がなく、取引先以外の区分のスタッフの所属会社名と同じ名前の行は出さない
 // 統合済み（#161）の取引先は出さない。取引先の画面用に、在籍中の所属スタッフ数・今月の稼働（支払先がこの取引先のシフト）・

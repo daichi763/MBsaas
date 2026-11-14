@@ -16,6 +16,7 @@ import { notifySavedSearchMatches } from './board'
 import { recordError, newErrorRef, maskPath, sanitizeErrorText, errorAlertSettings, setErrorAlertSender, type ErrorAlertEnv } from './lib/error-log'
 import { apiNotFound } from './lib/http'
 import { csrfGuard } from './lib/csrf'
+import { hostRedirectTarget, HOST_REDIRECT_MAX_AGE } from './lib/host-redirect'
 import { nowJST } from './lib/time'
 import { CRITICAL_PLACES, notifyCriticalFailure, notifyCronFailure, sendErrorThresholdAlert, type AlertEnv } from './services/alerts'
 import { runMonitorDaily, type MonitorEnv } from './services/monitor'
@@ -33,6 +34,14 @@ const app = new Hono<{ Bindings: Bindings }>()
 let fullEnv: AlertEnv | null = null
 setErrorAlertSender((env, a) => sendErrorThresholdAlert({ ...(fullEnv || {}), ...env } as AlertEnv, a))
 app.use('*', async (c, next) => { if (!fullEnv) fullEnv = c.env as unknown as AlertEnv; await next() })
+
+// workers.dev の URL で開いた画面は、APP_BASE_URL（本番は https://app.mobital.jp）の同じパスへ 301 で移す（#9981）。
+// /api/*・/webhooks/* は移さない（古いタブ・ホーム画面のアプリ・Resend の Webhook のため）。条件は src/lib/host-redirect.ts
+app.use('*', async (c, next) => {
+  const to = hostRedirectTarget(c.req.method, c.req.url, c.env as { APP_BASE_URL?: string })
+  if (!to) return next()
+  return new Response(null, { status: 301, headers: { Location: to, 'Cache-Control': `max-age=${HOST_REDIRECT_MAX_AGE}` } })
+})
 
 // ============ 画面の応答に付けるセキュリティヘッダー（#202） ============
 // 外部のスクリプト・スタイルは jsDelivr（バージョン固定・SRI 付き）と、募集ページの Turnstile だけを許す。
@@ -91,7 +100,7 @@ app.onError((err, c) => {
       .then(r => (r.alerted ? flushPushQueue(c.env as any) : null)).catch(e => console.log(`error log failed: ${e}`)))
   } catch { /* waitUntil が使えないとき（テストなど）は記録しない（Workers Logs には上で残している） */ }
   if (c.req.path.startsWith('/api/')) return c.json({ error: msg, ref }, 500)
-  return c.html(`<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>エラー | Field OS</title></head>
+  return c.html(`<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>エラー | Mobital</title></head>
 <body style="font-family:sans-serif;padding:24px"><p>${msg}</p><p><a href="/">トップへ戻る</a></p></body></html>`, 500)
 })
 
@@ -153,9 +162,9 @@ self.addEventListener('install', function () { self.skipWaiting() })
 self.addEventListener('activate', function (e) { e.waitUntil(self.clients.claim()) })
 self.addEventListener('push', function (e) { e.waitUntil(showLatest()) })
 async function showLatest() {
-  var n = HQ ? { title: 'Field OS 本部', body: '新しい通知があります。本部画面を開いて確認してください', link: FALLBACK, tag: 'fieldos-hq' }
-    : ADMIN ? { title: 'Field OS 管理', body: '新しい通知があります。管理画面を開いて確認してください', link: FALLBACK, tag: 'fieldos-admin' }
-    : { title: 'Field OS', body: '新しい通知があります。アプリを開いて確認してください', link: FALLBACK, tag: 'fieldos' }
+  var n = HQ ? { title: 'Mobital 本部', body: '新しい通知があります。本部画面を開いて確認してください', link: FALLBACK, tag: 'fieldos-hq' }
+    : ADMIN ? { title: 'Mobital 管理', body: '新しい通知があります。管理画面を開いて確認してください', link: FALLBACK, tag: 'fieldos-admin' }
+    : { title: 'Mobital', body: '新しい通知があります。アプリを開いて確認してください', link: FALLBACK, tag: 'fieldos' }
   try {
     var sub = await self.registration.pushManager.getSubscription()
     var r = await fetch('/api' + HOME + '/push/latest?endpoint=' + encodeURIComponent(sub ? sub.endpoint : ''), { credentials: 'same-origin', cache: 'no-store', headers: { 'X-Background': '1' } })
@@ -208,7 +217,7 @@ const LIB_FALLBACK = `<script>if(!window.axios||!window.dayjs){window.__LIB_MISS
 const head = (title: string) => `
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${title} | Field OS</title>
+  <title>${title} | Mobital</title>
   ${cdnCss('@fortawesome/fontawesome-free@6.4.0/css/all.min.css')}
   ${cdnJs('axios@1.21.0/dist/axios.min.js')}
   ${cdnJs('dayjs@1.11.10/dayjs.min.js')}
@@ -235,7 +244,7 @@ app.get('/', async (c) => {
 const APP_META = `
   <link rel="manifest" href="/manifest.webmanifest">
   <meta name="theme-color" content="#2563eb">
-  <meta name="apple-mobile-web-app-title" content="Field OS">
+  <meta name="apple-mobile-web-app-title" content="Mobital">
   <link rel="apple-touch-icon" href="/static/icon-180.png">`
 // 未ログインで開いたときは、ログインの後に元の画面へ戻れるよう、元のパスを next に付ける。
 // ハッシュ（#attendance など）はサーバーに届かないが、ブラウザがリダイレクト先に引き継ぐのでログイン画面の JS で付け直す（#206）
@@ -256,7 +265,7 @@ app.get('/login', async (c) => {
       <div class="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-primary-600 text-white text-2xl mb-3 shadow-brand">
         <i class="fas fa-tower-cell"></i>
       </div>
-      <h1 class="text-2xl font-bold text-neutral-800">Field OS</h1>
+      <h1 class="text-2xl font-bold text-neutral-800">Mobital</h1>
       <p class="text-sm text-neutral-500 mt-1">通信人材会社向け 運営標準化SaaS</p>
     </header>
     <section id="login-card" class="bg-surface rounded-2xl shadow-sm border border-neutral-100 p-6">
@@ -567,7 +576,7 @@ app.get('/verify-email', (c) => c.html(`<!DOCTYPE html>
     </header>
     <section class="bg-surface rounded-2xl shadow-sm border border-neutral-100 p-6 space-y-4">
       <div id="verify-form">
-        <p class="text-sm text-neutral-600 mb-4">このメールアドレスを、Field OS の通知・パスワード再設定に使うメールアドレスとして登録します。</p>
+        <p class="text-sm text-neutral-600 mb-4">このメールアドレスを、Mobital の通知・パスワード再設定に使うメールアドレスとして登録します。</p>
         <p id="verify-error" class="hidden text-sm text-danger-600 bg-danger-50 rounded-lg px-3 py-2 mb-3" role="alert"></p>
         <button type="button" id="verify-btn" class="w-full py-3.5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white font-bold text-base transition">確認して登録する</button>
       </div>
@@ -760,7 +769,7 @@ app.get('/admin', async (c) => {
     <aside id="sidebar" class="hidden md:flex flex-col bg-surface border-r border-neutral-100 fixed inset-y-0 z-30">
       <div class="side-head px-5 py-5 border-b border-neutral-100 flex items-start gap-2">
         <div class="side-brand flex-1 min-w-0">
-          <h1 class="font-bold text-neutral-800 flex items-center gap-2 text-lg"><i class="fas fa-tower-cell text-primary-600"></i>Field OS</h1>
+          <h1 class="font-bold text-neutral-800 flex items-center gap-2 text-lg"><i class="fas fa-tower-cell text-primary-600"></i>Mobital</h1>
           <p id="company-name" class="text-xs text-neutral-400 mt-1 truncate"></p>
         </div>
         <button type="button" id="side-toggle" class="side-toggle" data-action="sideToggle" aria-expanded="true" aria-controls="side-nav" title="メニューを畳む" aria-label="メニューを畳む"><i class="fas fa-angles-left" aria-hidden="true"></i></button>
@@ -778,7 +787,7 @@ app.get('/admin', async (c) => {
       <!-- スマホ用のヘッダー（#236）: 会社名・氏名、未対応の件数の合計（メニューの各項目にも件数を出す）、ログアウト -->
       <header class="md:hidden bg-surface border-b border-neutral-100 sticky top-0 z-20 px-4 py-2 flex items-center justify-between gap-2">
         <div class="min-w-0 flex-1">
-          <h1 class="font-bold text-neutral-800 truncate"><i class="fas fa-tower-cell text-primary-600 mr-1"></i>Field OS 管理<span id="mobile-todo-badge" class="hidden ml-1 align-middle text-3xs bg-danger-500 text-white rounded-full px-1.5 py-0.5" title="未対応の件数（打刻修正・応募・掲示板・チャット）"></span></h1>
+          <h1 class="font-bold text-neutral-800 truncate"><i class="fas fa-tower-cell text-primary-600 mr-1"></i>Mobital 管理<span id="mobile-todo-badge" class="hidden ml-1 align-middle text-3xs bg-danger-500 text-white rounded-full px-1.5 py-0.5" title="未対応の件数（打刻修正・応募・掲示板・チャット）"></span></h1>
           <p id="mobile-company-name" class="text-2xs text-neutral-400 truncate"></p>
         </div>
         <select id="mobile-nav" class="text-sm border border-neutral-200 rounded-lg px-2 py-1.5 w-32 shrink-0" aria-label="メニュー">${adminMobileNavHtml(menuRole)}</select>
@@ -831,7 +840,7 @@ app.get('/hq', async (c) => {
 <body class="bg-hq-900 min-h-screen text-neutral-100">
   <header class="bg-hq-800 border-b border-hq-700 sticky top-0 z-20">
     <div class="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
-      <h1 class="font-bold flex items-center gap-2"><i class="fas fa-satellite-dish text-hq-accent-400"></i>Field OS <span class="text-hq-accent-400">本部管理</span></h1>
+      <h1 class="font-bold flex items-center gap-2"><i class="fas fa-satellite-dish text-hq-accent-400"></i>Mobital <span class="text-hq-accent-400">本部管理</span></h1>
       <div class="flex items-center gap-4 text-sm">
         <nav class="flex gap-1">
           <a href="#companies" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="companies">導入企業</a>

@@ -229,7 +229,7 @@ async function browserChecks() {
       await ev(`axios.post('/api/auth/change-password', { current_password: ${JSON.stringify(NEWPW)}, new_password: ${JSON.stringify(NEWPW + 'x')} }).then(() => { ME.must_change_password = false })`)
     }
     await until(`!!document.querySelector('#tour-root .tour-bubble[role="dialog"]')`, 6000)
-    ok('#9711 画面: 初回（パスワードの変更の後）に「Field OS へようこそ」［始める］［あとで］を出す', /ようこそ/.test(await title())
+    ok('#9711 画面: 初回（パスワードの変更の後）に「Mobital へようこそ」［始める］［あとで］を出す', /ようこそ/.test(await title())
       && await ev(`[...document.querySelectorAll('#tour-root .tour-actions button')].map(b => b.textContent.trim()).join(',') === 'あとで,始める'`)
       && await ev(`document.querySelector('#tour-root .tour-bubble').getAttribute('aria-labelledby') === 'tour-title' && document.querySelector('#tour-root .tour-bubble').getAttribute('aria-modal') === 'true'`))
     await shot('admin-welcome')

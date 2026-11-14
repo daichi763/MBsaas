@@ -70,7 +70,7 @@ const stripJsonc = (src) => {
 }
 const wr = JSON.parse(stripJsonc(read('wrangler.jsonc')))
 ok('#9924 wrangler.jsonc のトップレベルと env.production の両方で preview_urls: false', wr.preview_urls === false && wr.env.production.preview_urls === false, { top: wr.preview_urls, prod: wr.env.production.preview_urls })
-ok('#9924 本番の workers.dev の URL は止めない（workers_dev を false にしない）', wr.workers_dev !== false && wr.env.production.workers_dev !== false && wr.env.production.vars.APP_BASE_URL === 'https://mbsaas.saas-2a2.workers.dev')
+ok('#9924 本番の workers.dev の URL は止めない（workers_dev を false にしない）', wr.workers_dev !== false && wr.env.production.workers_dev !== false && wr.env.production.vars.APP_BASE_URL === 'https://app.mobital.jp')
 // CI（Workers Builds）で作る wrangler.json にも残るか。repo の外の一時フォルダで、本物のスクリプトを動かす
 {
   const dir = mkdtempSync(join(tmpdir(), 'w20fe-ci-'))
