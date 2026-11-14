@@ -324,6 +324,8 @@
   - `wrangler.jsonc` の `env.production` の `APP_BASE_URL` を `https://app.mobital.jp` にする。カスタムドメインは Cloudflare のダッシュボードで付け、`routes`・`custom_domain` は `wrangler.jsonc` に書かない。`workers_dev` は止めない（D-49 のとおり）。
   - workers.dev で開いた画面（GET・HEAD）は、app.mobital.jp の同じパス・クエリへ 301 で移す。`/api/*`・`/webhooks/*` は移さない（古いタブ・ホーム画面のアプリ・Resend の Webhook が動き続けるように）。
   - ログインの Cookie・プッシュ通知の購読・ホーム画面のアプリはホストごとなので、全員がやり直す。移す前に告知する（[operations.md](operations.md) の 11.4）。
+  - app.mobital.jp（`APP_BASE_URL` のホスト）でプッシュ通知をオンにしたら、その人の別のホスト（workers.dev）で登録した購読をサーバーが消す（同じ端末に2回届かないように。`push_subscriptions.subscribed_host`、0113）。端末の Service Worker の更新には頼らない。
+  - 内部の識別子（通知の `tag` の `fieldos*`・localStorage の `fieldos.login`・カレンダーの `UID` の `@field-os`・Webhook の `source: "fieldos"`）は変えない（端末の記憶・購読したカレンダーの予定・受け側の設定を崩さないため）。
   - Resend の Webhook と Turnstile の設定は、移した後に利用者が行う。
 - **理由**: ローンチの前に URL を決めておかないと、ローンチの後に全員のやり直しが起きる（[operations.md](operations.md) の 10.6 の4）。サービス名に合わせた独自ドメインにする。
 - **根拠のコード**: `src/lib/host-redirect.ts`（転送の条件）、`src/lib/csrf.ts`（送り元の確認は要求のホストと `APP_BASE_URL` のホスト）、`wrangler.jsonc`。手順と戻し方は [operations.md](operations.md) の 11 章

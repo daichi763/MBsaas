@@ -31,7 +31,7 @@ npm run docs:check    # 作り直さずに、今のコードと合っている�
 ## 1. 全体の要約
 
 <!-- BEGIN GENERATED: db-summary -->
-- マイグレーション: 111 本（0001_initial_schema.sql 〜 0111_report_month_summaries.sql）
+- マイグレーション: 112 本（0001_initial_schema.sql 〜 0113_push_subscribed_host.sql）
 - 表: 137・索引: 311・トリガー: 18・ビュー: 0
 - REFERENCES（外部キー）で宣言した関係: 92・宣言のない `*_id` の列で、ほかの表の主キーと同じ名前のもの: 143
 - 主キーが INTEGER の1列（ROWID。AUTOINCREMENT を含む）の表: 101・それ以外の主キーの表: 36
@@ -3478,6 +3478,7 @@ UNIQUE 制約: (company_id, fiscal_year, staff_id)
 | `last_error` | TEXT | 可 |  |  |  |  |
 | `failures` | INTEGER |  | 0 |  |  |  |
 | `test_requested_at` | TEXT | 可 |  |  |  |  |
+| `subscribed_host` | TEXT | 可 |  |  | 0113 | プッシュの購読を登録したホスト（Sprint 27 #9981。作業単位 w27-mobital） 本番の URL を workers.dev から app.mobital.jp に移すと、購読はオリジン（ホスト）ごとなので、同じ端末に workers.dev の購読（古い Service Worker）と app.… |
 
 UNIQUE 制約: (endpoint)
 

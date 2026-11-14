@@ -7,12 +7,17 @@
 //   5) 開発サーバー（APP_BASE_URL を https://app.mobital.jp にして起動）: ローカルでは転送しない、タイトル・manifest の名前、
 //      Origin が app.mobital.jp でもログイン・打刻・報告用URLの報告が通る、Cookie に Domain を付けない
 //   6) 画面（ヘッドレスの Chrome）: ログイン画面とスタッフのホームのタイトルが Mobital。Chrome が無いときは省く（CHROME=<パス> で指定できる）
+//   7) プッシュの購読の重複（移した後に同じ端末へ2回届かない）: 決め方（src/lib/web-push.ts の pushHostCleanup）の単体と、
+//      開発サーバーへ Host: app.mobital.jp で購読を登録すると、同じ人の別のホスト・ホストの記録がない購読が消え、ほかの人の購読は残ること
+//      （ホストの記録がない購読は PERSIST=<保存先> のときだけ D1 に直接入れて確かめる。--local のみ）
 // 前提: bash scripts/setup-test-db.sh <保存先> でローカルの D1 を作り直し、
 //   npm run build && npx wrangler dev --local --port 9025 --persist-to <保存先> --var APP_BASE_URL:https://app.mobital.jp で起動していること
 // 実行: BASE=http://127.0.0.1:9025 APP_BASE_URL=https://app.mobital.jp node --import ./scripts/fetch-origin.mjs scripts/test-w27-mobital.mjs
 // run-tests: --var APP_BASE_URL:https://app.mobital.jp
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
+import http from 'node:http'
+import { writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -58,6 +63,23 @@ async function bundle(entry, name, extra = {}) {
   ok('転送: ブラウザが転送を覚えるのは1日（戻すときのため）', HOST_REDIRECT_MAX_AGE === 86400)
 }
 
+// ---------- 1b. プッシュの購読の重複を消す決め方（単体） ----------
+{
+  const { pushHostCleanup: h } = await bundle('src/lib/web-push.ts', 'web-push.mjs')
+  const app = h(`${APP}/api/staff/push/subscribe`, { APP_BASE_URL: APP })
+  ok('購読: app.mobital.jp（APP_BASE_URL のホスト）で登録したら、別のホスト・ホストの記録がない購読を消す', app.host === 'app.mobital.jp' && app.cleanup === true && app.nullIsOther === true, app)
+  const wd = h(`${WD}/api/staff/push/subscribe`, { APP_BASE_URL: APP })
+  ok('購読: workers.dev の古いタブで登録しても、ほかの購読は消さない（ホストは記録する）', wd.host === 'mbsaas.saas-2a2.workers.dev' && wd.cleanup === false && wd.nullIsOther === false, wd)
+  const stg = h(`${WD}/api/staff/push/subscribe`, { APP_BASE_URL: WD + '/' })
+  ok('購読: APP_BASE_URL が workers.dev（ステージング・戻したとき）は、同じホストなのでホストの記録がない購読は消さない', stg.cleanup === true && stg.nullIsOther === false, stg)
+  const up = h('https://APP.Mobital.JP/api/hq/push/subscribe', { APP_BASE_URL: APP })
+  ok('購読: ホストの大文字・小文字は同じに扱う', up.host === 'app.mobital.jp' && up.cleanup === true, up)
+  const loc = h('http://localhost:8787/api/staff/push/subscribe', { APP_BASE_URL: 'http://localhost:8787' })
+  const loc2 = h('http://127.0.0.1:9045/api/staff/push/subscribe', { APP_BASE_URL: 'http://localhost:8787' })
+  ok('購読: 手元はポートまで比べる（localhost:8787 なら消す・127.0.0.1 のテストのサーバーでは消さない）', loc.cleanup === true && loc.host === 'localhost:8787' && loc2.cleanup === false && loc2.host === '127.0.0.1:9045', [loc, loc2])
+  const none = [h(`${APP}/x`, {}), h(`${APP}/x`, null), h('not a url', { APP_BASE_URL: APP })]
+  ok('購読: APP_BASE_URL が無い・URL が読めないときは消さない', none.every(x => x.cleanup === false), none)
+}
 // ---------- 2. src/index.tsx を本番のホストの URL で呼ぶ（D1 は差し替え） ----------
 const fakeDb = () => {
   const stmt = { bind() { return stmt }, first: async () => null, all: async () => ({ results: [] }), run: async () => ({ meta: { changes: 0 } }), raw: async () => [] }
@@ -206,6 +228,85 @@ let serverUp = false
   const sw = await req('GET', '/sw.js', { origin: null })
   ok('サーバー: Service Worker の通知の既定の名前が Mobital', sw.status === 200 && /'Mobital'/.test(sw.text) && /'Mobital 本部'/.test(sw.text) && /'Mobital 管理'/.test(sw.text))
 }
+
+// ---------- 7. プッシュの購読の重複（開発サーバーに Host: app.mobital.jp で送る） ----------
+// 本番では app.mobital.jp の要求の URL のホストが app.mobital.jp になる。開発サーバーでも Host のヘッダーが要求の URL のホストになるので、それで同じ状況を作る
+const PERSIST = process.env.PERSIST || ''
+function hostReq(method, path, { host, cookie, origin, body } = {}) {
+  const u = new URL(BASE + path)
+  const data = body === undefined ? undefined : Buffer.from(JSON.stringify(body))
+  const headers = { Host: host || u.host }
+  if (cookie) headers.Cookie = cookie
+  if (origin) headers.Origin = origin
+  if (data) { headers['Content-Type'] = 'application/json'; headers['Content-Length'] = String(data.length) }
+  return new Promise((res, rej) => {
+    const r = http.request({ hostname: u.hostname, port: u.port, path: u.pathname + u.search, method, headers }, (resp) => {
+      let t = ''; resp.setEncoding('utf8'); resp.on('data', d => t += d)
+      resp.on('end', () => { let j = null; try { j = JSON.parse(t) } catch { } res({ status: resp.statusCode, data: j, headers: resp.headers }) })
+    })
+    r.on('error', rej); if (data) r.write(data); r.end()
+  })
+}
+const work2 = mkdtempSync(join(tmpdir(), 'w27-push-'))
+let sqlSeq = 0
+function sql(command) {
+  const file = join(work2, `q${++sqlSeq}.sql`)
+  writeFileSync(file, command)
+  const out = execFileSync('npx', ['wrangler', 'd1', 'execute', 'mbsaas-production', '--local', '--persist-to', `"${PERSIST}"`, '--json', `--file="${file}"`], { cwd: ROOT, encoding: 'utf8', shell: true, stdio: ['ignore', 'pipe', 'ignore'] })
+  return JSON.parse(out)[0].results
+}
+if (!serverUp) console.log('SKIP  プッシュの購読の重複（開発サーバーに接続できません）')
+else {
+  const APP_HOST = new URL(APP).host
+  const keys = { p256dh: 'BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U', auth: 'tBHItJI5svbpez7KI4CCXg' }
+  const EP = (s) => `https://fcm.googleapis.com/fcm/send/w27-${tag}-${s}`
+  const st = await login('sample', 'st012')
+  const other = await login('sample', 'st013')
+  ok('（前提）スタッフ st012・st013 でログインする', !!st.cookie && !!other.cookie, [st.status, other.status])
+  const sub = (cookie, ep, host) => hostReq('POST', '/api/staff/push/subscribe', { host, cookie, origin: host ? `http://${host}` : SELF, body: { endpoint: ep, keys } })
+  const cfg = (cookie, host, ep) => hostReq('GET', '/api/staff/push/config' + (ep ? `?endpoint=${encodeURIComponent(ep)}` : ''), { host, cookie })
+  // 1) APP_BASE_URL でないホスト（127.0.0.1。移す前の workers.dev に当たる）で登録した購読
+  const s1 = await sub(st.cookie, EP('old1'))
+  ok('購読: APP_BASE_URL でないホスト（移す前の workers.dev に当たる）で登録しても、ほかの購読は消さない', s1.status === 200 && s1.data?.other_host_removed === 0, s1)
+  const o1 = await sub(other.cookie, EP('other'))
+  ok('（前提）別の人（st013）の購読を登録する', o1.status === 200, o1)
+  let nullRows = false
+  if (PERSIST) {
+    try {
+      sql(`INSERT INTO push_subscriptions (company_id, user_id, person_id, endpoint, p256dh, auth, user_agent, created_at, updated_at)
+        SELECT company_id, user_id, person_id, '${EP('null1')}', 'x', 'y', 'old', '2026-11-01 00:00:00', '2026-11-01 00:00:00' FROM users WHERE user_id = 15;
+        INSERT INTO push_subscriptions (company_id, user_id, person_id, endpoint, p256dh, auth, user_agent, created_at, updated_at)
+        SELECT company_id, user_id, person_id, '${EP('null2')}', 'x', 'y', 'old', '2026-11-01 00:00:00', '2026-11-01 00:00:00' FROM users WHERE user_id = 16;`)
+      nullRows = true
+    } catch (e) { ok('（前提）ホストの記録がない購読（0113 より前の登録）を D1 に入れる', false, String(e.message).slice(0, 200)) }
+  } else console.log('SKIP  ホストの記録がない購読（PERSIST 未指定）')
+  const before = await cfg(st.cookie)
+  ok(`（前提）移す前: st012 の購読は ${nullRows ? 2 : 1} 台`, before.data?.devices === (nullRows ? 2 : 1), before.data)
+  // 2) app.mobital.jp で通知をオンにし直す
+  const s2 = await sub(st.cookie, EP('new'), APP_HOST)
+  ok(`購読: app.mobital.jp で登録すると、同じ人の別のホスト${nullRows ? '・ホストの記録がない' : ''}購読を消す（同じ端末に2回届かない）`, s2.status === 200 && s2.data?.other_host_removed === (nullRows ? 2 : 1), s2)
+  const after = await cfg(st.cookie, APP_HOST, EP('new'))
+  const otherCfg = await cfg(other.cookie)
+  ok('購読: 残るのは app.mobital.jp の購読だけ（この端末は受け取る状態）', after.data?.devices === 1 && after.data?.subscribed === true, after.data)
+  ok('購読: ほかの人の購読（別のホスト・ホストの記録がないもの）は消さない', otherCfg.data?.devices === (nullRows ? 2 : 1), otherCfg.data)
+  if (PERSIST) {
+    const rows = sql(`SELECT endpoint, subscribed_host FROM push_subscriptions WHERE endpoint LIKE '%w27-${tag}-%' ORDER BY endpoint`)
+    const byEp = Object.fromEntries(rows.map(r => [r.endpoint.split('-').pop(), r.subscribed_host]))
+    ok('購読: 登録したホストを subscribed_host に残す（app.mobital.jp・127.0.0.1:<ポート>）', byEp.new === APP_HOST && byEp.other === new URL(BASE).host && !('old1' in byEp) && !('null1' in byEp) && (!nullRows || byEp.null2 === null), byEp)
+  }
+  // 3) 古いホストの開いたままのタブで登録し直しても、app.mobital.jp の購読は消さない。app.mobital.jp でもう一度登録すると古い方を消す
+  const s3 = await sub(st.cookie, EP('old2'))
+  const mid = await cfg(st.cookie, APP_HOST, EP('new'))
+  ok('購読: 古いホストのタブで登録しても、app.mobital.jp の購読は消さない', s3.status === 200 && s3.data?.other_host_removed === 0 && mid.data?.devices === 2 && mid.data?.subscribed === true, [s3.data, mid.data])
+  const s4 = await sub(st.cookie, EP('new'), APP_HOST)
+  const fin = await cfg(st.cookie, APP_HOST, EP('new'))
+  ok('購読: app.mobital.jp で同じ端末を登録し直すと、古いホストの購読だけを消し、自分の購読は残す', s4.data?.other_host_removed === 1 && fin.data?.devices === 1 && fin.data?.subscribed === true, [s4.data, fin.data])
+  // 後片付け（このテストで作った購読を消す）
+  await hostReq('POST', '/api/staff/push/unsubscribe', { host: APP_HOST, cookie: st.cookie, origin: APP, body: { endpoint: EP('new') } })
+  await hostReq('POST', '/api/staff/push/unsubscribe', { cookie: other.cookie, origin: SELF, body: { endpoint: EP('other') } })
+  if (nullRows) sql(`DELETE FROM push_subscriptions WHERE endpoint LIKE '%w27-${tag}-%'`)
+}
+rmSync(work2, { recursive: true, force: true })
 
 // ---------- 6. 画面（ヘッドレスの Chrome） ----------
 const CHROME = process.env.CHROME || ['C:/Program Files/Google/Chrome/Application/chrome.exe', 'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe', '/usr/bin/google-chrome', '/usr/bin/chromium'].find(p => existsSync(p))
