@@ -168,7 +168,7 @@ async function browserChecks() {
     await setCookie(A.api.cookie)
     await send('Page.navigate', { url: `${BASE}/admin` }); await ready()
     await until(`/ようこそ/.test((document.querySelector('#tour-root .tour-title') || {}).textContent || '')`, 8000)
-    ok('#9915 画面: 会社管理者の初回は「Field OS へようこそ」で、はじめの準備（5つ）を出す［あとで］［始める］', /ようこそ/.test(await title())
+    ok('#9915 画面: 会社管理者の初回は「Mobital へようこそ」で、はじめの準備（5つ）を出す［あとで］［始める］', /ようこそ/.test(await title())
       && (await actButtons()) === 'あとで,始める' && /実際に登録しながら/.test(await bodyText())
       && (await ev(`[...document.querySelectorAll('#tour-root .tour-setup-list li')].length`)) === 5, { t: await title(), b: await actButtons() })
     await shot('a-welcome')

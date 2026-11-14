@@ -201,7 +201,7 @@ scheduleStaffApi.get('/shifts/:id/ics', async (c) => {
   const rows = id == null || !ids.length ? [] : await loadCalendarShifts(db, ids, { shiftId: id })
   if (!rows.length) return c.json({ error: '確定したシフトが見つかりません（仮押さえ・欠勤のシフトはカレンダーに追加できません）' }, 404)
   const multi = rows[0].company_id !== u.company_id
-  const ics = buildCalendar(rows, { appUrl: baseUrl(c) + '/staff#shift', showCompany: multi, name: 'Field OS シフト' })
+  const ics = buildCalendar(rows, { appUrl: baseUrl(c) + '/staff#shift', showCompany: multi, name: 'Mobital シフト' })
   return new Response(ics, { headers: {
     'Content-Type': 'text/calendar; charset=utf-8',
     'Content-Disposition': `attachment; filename="shift-${rows[0].work_date.replace(/-/g, '')}-${rows[0].shift_id}.ics"`,
@@ -242,7 +242,7 @@ calendarPublicApi.get('/:file', async (c) => {
     await db.prepare('UPDATE staff_calendar_tokens SET last_accessed_at = ? WHERE user_id = ?').bind(nowJST(), t.user_id).run()
   }
   const multi = new Set(persons.map(r => r.company_id)).size > 1
-  const ics = buildCalendar(rows, { appUrl: baseUrl(c) + '/staff#shift', showCompany: multi, name: 'Field OS シフト', feed: true })
+  const ics = buildCalendar(rows, { appUrl: baseUrl(c) + '/staff#shift', showCompany: multi, name: 'Mobital シフト', feed: true })
   return new Response(ics, { headers: {
     'Content-Type': 'text/calendar; charset=utf-8',
     'Cache-Control': 'private, max-age=600',
@@ -290,7 +290,7 @@ const hm = (t: string) => String(t || '').slice(0, 5)
 
 export function buildCalendar(rows: any[], opt: { appUrl: string; showCompany: boolean; name: string; feed?: boolean }): string {
   const stamp = icsUtc(nowJST())
-  const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Field OS//Shift Calendar//JA', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH',
+  const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Mobital//Shift Calendar//JA', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH',
     `X-WR-CALNAME:${icsText(opt.name)}`, 'X-WR-TIMEZONE:Asia/Tokyo']
   if (opt.feed) lines.push('REFRESH-INTERVAL;VALUE=DURATION:PT3H', 'X-PUBLISHED-TTL:PT3H')
   for (const s of rows) {

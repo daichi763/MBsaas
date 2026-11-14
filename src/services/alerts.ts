@@ -130,7 +130,7 @@ export function alertText(env: Partial<AlertEnv>, ev: AlertEvent): string {
   if (ev.count != null) lines.push(`件数: ${Number(ev.count)}件`)
   const base = appBaseUrl(env)
   if (base) lines.push(`本部画面: ${base}/hq#errors`)
-  return `【Field OS】${ev.title}\n${lines.join('\n')}`.slice(0, 3000)
+  return `【Mobital】${ev.title}\n${lines.join('\n')}`.slice(0, 3000)
 }
 
 /** 送り先の種類ごとの要求（Incoming Webhook の形・LINE の push・汎用の JSON） */
@@ -168,7 +168,7 @@ async function sendOne(env: AlertEnv, d: Destination, ev: AlertEvent): Promise<D
       const html = `<pre style="font-family:sans-serif;white-space:pre-wrap">${text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre>`
       let failed: string | null = null
       for (const to of d.to!.split(',').map(s => s.trim()).filter(Boolean)) {
-        const r = await sendEmail(env as unknown as MailEnv, { to, subject: `[Field OS] ${ev.title}`.slice(0, 120), html, text, type: 'error_alert' })
+        const r = await sendEmail(env as unknown as MailEnv, { to, subject: `[Mobital] ${ev.title}`.slice(0, 120), html, text, type: 'error_alert' })
         if (!r.ok) failed = String(r.error || 'failed').slice(0, 100)
       }
       return failed ? { ...base, status: 'failed', http_status: null, error: `メールを送れませんでした（${failed}）` } : { ...base, status: 'sent', http_status: null, error: null }

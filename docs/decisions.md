@@ -1,11 +1,11 @@
 # 決定事項の記録
 
-これまでに利用者（Field OS の発注者）が決めたことと、その理由の記録です。
+これまでに利用者（Mobital〔旧 Field OS〕の発注者）が決めたことと、その理由の記録です。
 「なぜこうなっているのか」を調べるときに使います。仕様を変えるときは、ここに新しい行を足し、古い行は消さずに「D-xx で変更」と書きます。
 
 - **番号の読み方**: `#123` はレビューで見つかった指摘の番号、`#9101` のような4桁の 9xxx は利用者の要望の番号（9 の次の桁が Sprint。`91xx` は Sprint 9）です。どちらもコードのコメントに書いてあるので、`grep -rn "#9101" src public` で該当する所を探せます。
 - **日付**: 利用者が決めた日。決めた日の記録がないものは、反映した PR のマージの日（GitHub）です。
-- **根拠のコード**: `ファイル:行` は 2026-11-14 時点（コミット `98cdba0`）のものです。
+- **根拠のコード**: `ファイル:行` は 2026-11-14 時点（コミット `a68d597`）のものです。
 
 ## 一覧
 
@@ -58,6 +58,7 @@
 | D-52 | 2026-11-09 | 「パスワードを忘れた」は、メールを送れない間も今のまま出す（Sprint 21） | 認証 |
 | D-53 | 2026-11-09 | 他社連携のスタッフのログインの扱いは自社だけに絞る（稼働先の管理者はその会社に切り替えたログインだけを見る・終了する。連携が終わった会社には切り替えられない。#9940 #9942。Sprint 21） | 認証・企業間連携 |
 | D-54 | 2026-11-09 | 移行の控えの表3つ（`attendance_reports_duplicates_0036`・`daily_report_duplicates`・`roster_value_fixes`）をバックアップの後に消す（「表は消さない」の例外。#9950。Sprint 22） | データ保持 |
+| D-55 | 2026-11-13 | サービス名を Mobital に・本番の URL を https://app.mobital.jp に移す（workers.dev の画面は転送、API・Webhook は転送しない。#9981。Sprint 27） | 運用・技術 |
 
 ---
 
@@ -142,7 +143,7 @@
 ### D-15 「取引先」を「協力会社」に改名し、クライアントとつなぐ（B 案）
 - **決定**:
   - 画面の「取引先」を「協力会社」に改名する。データと API のパスは変えない（`staff_affiliations`・`/api/admin/roster/partners`）（#9301）。
-  - **クライアント** = 案件をくれる会社（請求先）。**協力会社** = Field OS を使っていない会社で、スタッフを出してくれて、こちらが支払う会社。Field OS を使っている会社のスタッフは企業間連携で扱う。
+  - **クライアント** = 案件をくれる会社（請求先）。**協力会社** = Field OS（現 Mobital）を使っていない会社で、スタッフを出してくれて、こちらが支払う会社。Field OS を使っている会社のスタッフは企業間連携で扱う。
   - 両方を兼ねる会社は、クライアントと協力会社の両方に登録して、協力会社の詳細で1対1につなぐ（`staff_affiliations.client_id`）。つながると、お互いの詳細に相手へのリンクと、月の請求・支払の要約が出る（#9302）。
 - **理由**: 「取引先」では、お金を払う相手なのかもらう相手なのか分からなかった。1つの会社を1つの表にまとめる案（A）より、今の表を活かしてつなぐ案（B）のほうが既存のデータを動かさずに済む。
 - **根拠のコード**: `public/static/roster.js:844`、`src/roster.ts:956`、`migrations/0091_partner_client_link.sql`
@@ -316,6 +317,19 @@
 - **当てる順番**: `0103` は、参照を外したコードを本番に出した**後**に当てる（前の版のコードは、無い表を読んで解約・案件の削除・写真の確かめが失敗する）。当てる前に、本番の3つの表の行数を確かめ、D1 のバックアップを取る（[operations.md](operations.md) の本番リリース）。新しい版のコードは、表があってもなくても動く（表が残っている間は、解約の削除が「削除の対象に入っていない表」として 409 で止まる）。同じ Sprint の `0102`（索引・トリガー）は、コードとどちらが先でもよい。
 - **根拠のコード**: `migrations/0103_drop_migration_backups.sql`、`src/services/retention.ts` の `OFFBOARDING_TABLES`・`OFFBOARDING_FILE_SOURCES`・`scanOrphanPhotos`、`src/api.ts` の `PROJECT_USAGE`
 
+## Sprint 27（2026-11-13 決定）
+
+### D-55 サービス名を Mobital に・本番の URL を app.mobital.jp に移す（#9981）
+- **決定**: サービス名を「Field OS」から「Mobital」に変える（利用者 2026-11-13）。本番の URL を `https://mbsaas.saas-2a2.workers.dev` から `https://app.mobital.jp`（Worker `mbsaas` のカスタムドメイン）に移す。
+  - `wrangler.jsonc` の `env.production` の `APP_BASE_URL` を `https://app.mobital.jp` にする。カスタムドメインは Cloudflare のダッシュボードで付け、`routes`・`custom_domain` は `wrangler.jsonc` に書かない。`workers_dev` は止めない（D-49 のとおり）。
+  - workers.dev で開いた画面（GET・HEAD）は、app.mobital.jp の同じパス・クエリへ 301 で移す。`/api/*`・`/webhooks/*` は移さない（古いタブ・ホーム画面のアプリ・Resend の Webhook が動き続けるように）。
+  - ログインの Cookie・プッシュ通知の購読・ホーム画面のアプリはホストごとなので、全員がやり直す。移す前に告知する（[operations.md](operations.md) の 11.4）。
+  - app.mobital.jp（`APP_BASE_URL` のホスト）でプッシュ通知をオンにしたら、その人の別のホスト（workers.dev）で登録した購読をサーバーが消す（同じ端末に2回届かないように。`push_subscriptions.subscribed_host`、0113）。端末の Service Worker の更新には頼らない。
+  - 内部の識別子（通知の `tag` の `fieldos*`・localStorage の `fieldos.login`・カレンダーの `UID` の `@field-os`・Webhook の `source: "fieldos"`）は変えない（端末の記憶・購読したカレンダーの予定・受け側の設定を崩さないため）。
+  - Resend の Webhook と Turnstile の設定は、移した後に利用者が行う。
+- **理由**: ローンチの前に URL を決めておかないと、ローンチの後に全員のやり直しが起きる（[operations.md](operations.md) の 10.6 の4）。サービス名に合わせた独自ドメインにする。
+- **根拠のコード**: `src/lib/host-redirect.ts`（転送の条件）、`src/lib/csrf.ts`（送り元の確認は要求のホストと `APP_BASE_URL` のホスト）、`wrangler.jsonc`。手順と戻し方は [operations.md](operations.md) の 11 章
+
 ## 運用・技術
 
 ### D-30 Workers の Free プランで動かす・PBKDF2 は 10,000 回
@@ -327,7 +341,7 @@
 ### D-31 メール送信（Resend）は保留・パスワードの再設定は管理者が再発行
 - **決定**: 利用者の Resend のアカウントの準備ができるまで、メール送信は保留にする。本番には `RESEND_API_KEY` を登録しないので、本番からメールは送られない（送信の記録には「送信失敗（設定なし）」で残る）。パスワードを忘れた人には、管理者が仮パスワードを再発行する。
 - **根拠のコード**: `src/services/email.ts:112`〜`115`（`mailMode`）、`src/accounts.ts:324`（管理者の再発行）、`src/accounts.ts:356`（本部の再発行）
-- **再開するとき**: [operations.md](operations.md) の「シークレット」の手順で `RESEND_API_KEY` と `RESEND_WEBHOOK_SECRET` を登録し、`MAIL_FROM` を Resend で認証した独自ドメインの送信元に変える（`wrangler.jsonc:84`。2026-11-13 に notify.mobital.jp に変えた）。
+- **再開するとき**: [operations.md](operations.md) の「シークレット」の手順で `RESEND_API_KEY` と `RESEND_WEBHOOK_SECRET` を登録し、`MAIL_FROM` を Resend で認証した独自ドメインの送信元に変える（`wrangler.jsonc:86`。2026-11-13 に notify.mobital.jp に変えた）。
 
 ### D-32 GitHub の main へのマージで Workers Builds が本番にデプロイする
 - **決定**: 本番へのデプロイは、GitHub（`daichi763/MBsaas`）の `main` へのマージで Cloudflare Workers Builds が行う。ビルドのとき `scripts/ci-wrangler-config.mjs` が `wrangler.jsonc` の `env.production` を `wrangler.json` の最上位に展開する。マイグレーションは自動では適用されないので、マージより先に手で適用する。

@@ -109,3 +109,25 @@ export async function sendWebPush(env: VapidEnv, endpoint: string, ttlSeconds = 
     return { ok: false, status: 0, gone: false, error: 'network_error' }
   }
 }
+
+/**
+ * 購読を登録した要求のホストと、同じ人の別のホストの購読を消すかどうか（Sprint 27 #9981）。
+ * 購読はオリジン（ホスト）ごとなので、本番の URL を workers.dev から APP_BASE_URL（app.mobital.jp）に移した後、
+ * 新しいホストで通知をオンにし直すと、同じ端末に古いホストの購読（古い Service Worker）も残り、同じ通知が2回届く。
+ * そこで、APP_BASE_URL のホストで購読を登録したときだけ、同じ人の、別のホストで登録した購読を消す（その端末には新しいホストの購読から届く）。
+ *   ・host: 保存する登録のホスト（push_subscriptions.subscribed_host。小文字・ポート付き）
+ *   ・cleanup: 別のホストの購読を消すか。APP_BASE_URL のホストでの登録のときだけ（古いホストの開いたままのタブで登録しても、新しいホストの購読は消さない）
+ *   ・nullIsOther: ホストの記録がない購読（0113 より前の登録）も別のホストとして消すか。0113 より前の購読は、
+ *     本番・ステージングでは workers.dev、手元では localhost で登録したもの。APP_BASE_URL が workers.dev（ステージング・戻したとき）なら
+ *     同じホストの購読なので消さない
+ * 端末の Service Worker の更新に頼らない（iOS のホーム画面のアプリ・Android の Chrome のどちらも、古い Service Worker がいつ更新されるか決まらないため）。
+ * 消した古い購読の端末には、もうプッシュを送らない（ブラウザに残った購読には何も届かない）
+ */
+export function pushHostCleanup(requestUrl: string, env: { APP_BASE_URL?: string } | null | undefined): { host: string; cleanup: boolean; nullIsOther: boolean } {
+  let host = ''
+  try { host = new URL(requestUrl).host.toLowerCase() } catch { /* 読めない URL は記録しない */ }
+  let app = ''
+  try { app = new URL(appBaseUrl(env)).host.toLowerCase() } catch { /* APP_BASE_URL が無いときは消さない */ }
+  const cleanup = !!host && !!app && host === app
+  return { host, cleanup, nullIsOther: cleanup && !app.split(':')[0].endsWith('.workers.dev') }
+}

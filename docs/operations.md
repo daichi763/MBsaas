@@ -1,6 +1,6 @@
 # 運用手順書
 
-Field OS の開発・リリース・障害対応の手順です。初めて担当する人（社外の開発会社を含む）が、この資料だけで作業を始められるように書いています。
+Mobital の開発・リリース・障害対応の手順です。初めて担当する人（社外の開発会社を含む）が、この資料だけで作業を始められるように書いています。
 全体の構成は [architecture.md](architecture.md)、用語は [glossary.md](glossary.md) を先に読んでください。`ファイル:行` の行番号は、[architecture.md](architecture.md) の冒頭に書いたコミットのものです。
 
 **本番に触る作業には印を付けています: 🔴 本番**。印のある手順は、Cloudflare のアカウントの権限が要り、取り消せないものもあります。手順どおりに、1人で急がずに行ってください。
@@ -17,6 +17,7 @@ Field OS の開発・リリース・障害対応の手順です。初めて担�
 | 8 | データの定期削除（retention）と解約企業のデータ |
 | 9 | 開発の決まり（テーブル・定期処理・画面を足すとき） |
 | 10 | ローンチ当日のチェックリスト |
+| 11 | 本番の URL を app.mobital.jp に移す（Sprint 27） |
 
 自動バックアップの仕組みと設定は [backup.md](backup.md)、障害の記録と通知の仕組みと設定は [monitoring.md](monitoring.md) にあります。
 
@@ -62,7 +63,7 @@ npx wrangler dev --local --port 8787            # http://localhost:8787/login
 | 現場管理者 / 営業管理者 | `sample` | `mgr01` / `sales01` | `/admin` |
 | 本部 | （空欄） | `hq` | `/hq` |
 
-`seed.sql` は本番には入れません。本番のログイン画面にデモの案内が出ないことは `DEMO_MODE`（本番は `false`）で決まります（`src/index.tsx:317`）。
+`seed.sql` は本番には入れません。本番のログイン画面にデモの案内が出ないことは `DEMO_MODE`（本番は `false`）で決まります（`src/index.tsx:326`）。
 
 ### 1.5 型チェックとビルド
 
@@ -274,7 +275,7 @@ Cloudflare のダッシュボードの Workers Builds のビルドのログに�
 
 | 名前 | 本番の値 |
 |---|---|
-| `APP_BASE_URL` | 本番の URL（`wrangler.jsonc:86`） |
+| `APP_BASE_URL` | 本番の URL（`wrangler.jsonc:88`） |
 | `MAIL_ENABLED` | `true` |
 | `RETENTION_ENABLED` | `true` |
 | `DEMO_MODE` | `false` |
@@ -436,14 +437,14 @@ node scripts/restore-drill.mjs "<保存先>" --json drill.json      # 保存先�
 
 ### 5.1 Workers Logs（本番の console の出力）
 
-本番だけ有効です（`wrangler.jsonc:94`〜`97`）。Cloudflare のダッシュボードで Worker `mbsaas` の Logs（Observability）を開き、文字で検索します。保存される期間はプランによります。
+本番だけ有効です（`wrangler.jsonc:96`〜`99`）。Cloudflare のダッシュボードで Worker `mbsaas` の Logs（Observability）を開き、文字で検索します。保存される期間はプランによります。
 
 | 探すもの | 検索する文字 | 出す所 |
 |---|---|---|
-| 予期しないエラー（利用者に参照番号を出したもの） | `unhandled_error`、または参照番号（8文字） | `src/index.tsx:79`〜`85` |
+| 予期しないエラー（利用者に参照番号を出したもの） | `unhandled_error`、または参照番号（8文字） | `src/index.tsx:88`〜`94` |
 | 定期処理の結果 | `cron <処理名>:`（例 `cron retention:`） | `src/services/cron.ts:76` |
 | 定期処理の記録の失敗 | `cron_runs insert failed` | `src/services/cron.ts:92` |
-| プッシュ通知の送信の失敗 | `push flush failed` | `src/index.tsx:137` |
+| プッシュ通知の送信の失敗 | `push flush failed` | `src/index.tsx:146` |
 | Turnstile の問い合わせの失敗 | `turnstile siteverify failed` | `src/recruit.ts:286` |
 | 応募の回数制限の塩がない | `RATE_LIMIT_SALT が未設定` | `src/recruit.ts:378` |
 | メールの送信元がテスト用 | `mail warning` | `src/services/email.ts:127` |
@@ -533,7 +534,7 @@ Cloudflare の API トークンなど、自動バックアップ・通知の仕�
 
 ### 8.1 定期削除
 - 毎日 3:00 の `retention` と 3:30 の `retention_in_service` が、保存期間を過ぎた個人情報を消します（`src/services/retention.ts:7`〜`63` に対象と基準の一覧）。主な基準: 日報は勤務日から3年、退職したスタッフのデータは退職日（と最終稼働日の遅い方）から7年（本人情報の行は消さずに匿名化）、送信のメール記録は1年、操作履歴は7年、在職中でも位置情報・写真は報告から1年など。
-- 本番は `RETENTION_ENABLED = 'true'` なので、実際に消します（`wrangler.jsonc:88`）。`'true'` 以外は dry-run（数えるだけ）です。
+- 本番は `RETENTION_ENABLED = 'true'` なので、実際に消します（`wrangler.jsonc:90`）。`'true'` 以外は dry-run（数えるだけ）です。
 - 安全策: 退職日のない人は消さない、退職日より後にシフトがある人は対象外、初めて対象になってから7日は猶予（本部画面に「次回削除予定」と出る）、1回の処理の人数・ファイル数に上限（`src/services/retention.ts:52`〜`63`）。
 - 本部画面「データ保持・定期処理」で、dry-run の実行・削除の予定・結果・在職中の保存期間の設定（`src/services/retention.ts:128`）・削除の保留ができます。
 - **削除の保留**: 調査や訴訟などで残す必要があるスタッフ・企業は、本部画面で保留にします（`staff_profiles.retention_hold_at`・`companies.retention_hold_at`）。保留中はどの削除でも消しません。
@@ -593,12 +594,12 @@ Cloudflare の API トークンなど、自動バックアップ・通知の仕�
 
 ### 10.2 `DEMO_MODE=false` の確認
 - Cloudflare のダッシュボードの Workers Builds で、ローンチの日のデプロイのビルドのログに、`scripts/ci-wrangler-config.mjs:42` の1行（`wrangler.json を本番の設定で作成しました（APP_BASE_URL=…, DEMO_MODE=false）`）が出ていることを確かめます（3.2 の 6）。
-- `/login` を開いて、デモアカウントの案内が出ないことを確かめます（`src/index.tsx:317`）。
+- `/login` を開いて、デモアカウントの案内が出ないことを確かめます（`src/index.tsx:326`）。
 
 ### 10.3 メールの送信を始めるとき（任意）
 メールの送信は保留しています（D-31）。ローンチで始めるときだけ行います。始めないときは、パスワードを忘れた人には今までどおり管理者が仮パスワードを再発行します。
 1. Resend で独自ドメインを認証する（Resend の Domains で DNS のレコードを足す）。
-2. `wrangler.jsonc` の `env.production` の `MAIL_FROM`（`wrangler.jsonc:84`。2026-11-13 に `Mobital <notify@notify.mobital.jp>` に変えた）を、認証したドメインの送信元に変えて、マージする（`vars` なので、ダッシュボードで変えても次のデプロイで戻る。7章）。
+2. `wrangler.jsonc` の `env.production` の `MAIL_FROM`（`wrangler.jsonc:86`。2026-11-13 に `Mobital <notify@notify.mobital.jp>` に変えた）を、認証したドメインの送信元に変えて、マージする（`vars` なので、ダッシュボードで変えても次のデプロイで戻る。7章）。
 3. `RESEND_API_KEY` と `RESEND_WEBHOOK_SECRET` をシークレットに登録する（7章の `secret put`）。
 4. 管理者の画面からパスワードの再設定のメールなどを1通送り、届くこと、本部画面「メール送信」に送信の記録が出ることを確かめる。
 5. [decisions.md](decisions.md) の D-31 に、再開した日を書き足す。
@@ -620,7 +621,7 @@ Cloudflare の API トークンなど、自動バックアップ・通知の仕�
 | 1 | Web Push の VAPID の鍵を Secret にする | 未設定だと、初めての通知のときに鍵を作り、秘密鍵を D1 の `push_vapid_keys` に平文で保存する（`src/lib/web-push.ts`）。D1 のバックアップにも入る。ローンチの後に入れ替えると、スタッフ全員が通知の受け取りを押し直すことになる（7章）。今のうちなら入れ替えの手間がない | 鍵を作り（`npx web-push generate-vapid-keys` と同じ形式）、`VAPID_PUBLIC_KEY`・`VAPID_PRIVATE_KEY` を `secret put`（7章）。`push_vapid_keys` に行が残っていれば、開発者と相談して扱いを決める | 🔴 |
 | 2 | `RATE_LIMIT_SALT` を登録する | 未設定だと、応募の送信回数の制限に使う接続元 IP のハッシュが短い形になる（`src/recruit.ts` の `ipSaltState`）。入れ替えると直近1時間の回数がいったん0に戻るので、先に入れておく | 長いランダムな文字列を `secret put`（7章）。本部画面「障害」の設定の状態で、登録済みと出ることを確かめる | 🔴 |
 | 3 | Turnstile（応募フォームのロボット判定）を使うか | 未設定だと、公開の応募フォームにロボット判定がない（回数の制限だけ） | 使うなら Cloudflare の Turnstile で本番の URL のサイトを作り、`TURNSTILE_SITE_KEY`・`TURNSTILE_SECRET_KEY` を2つとも `secret put`（7章）。本部画面「障害」の設定の状態で、有効と出ることを確かめる | 🔴 |
-| 4 | 本番の URL（`workers.dev` のままか、独自ドメインにするか） | 今の本番の URL は `https://mbsaas.saas-2a2.workers.dev`（`APP_BASE_URL`）。ローンチの後に URL を変えると、プッシュ通知の購読・ホーム画面に追加したアプリ（PWA）・ログインの Cookie・メールのリンクがすべてやり直しになる | 独自ドメインにするなら、Cloudflare で Worker `mbsaas` にカスタムドメインを付け、`wrangler.jsonc` の `env.production` の `APP_BASE_URL` を変えてマージする（`vars` なのでダッシュボードでは変えない。7章）。VAPID・Turnstile の設定も新しい URL で行う | 🔴 |
+| 4 | 本番の URL（`workers.dev` のままか、独自ドメインにするか） | **決定済み（利用者 2026-11-13。[decisions.md](decisions.md) の D-55）**: `https://app.mobital.jp` に移す。ローンチの後に URL を変えると、プッシュ通知の購読・ホーム画面に追加したアプリ（PWA）・ログインの Cookie・メールのリンクがすべてやり直しになる | 11章の手順で移す。`wrangler.jsonc` の `env.production` の `APP_BASE_URL` は Sprint 27 で `https://app.mobital.jp` にした（`vars` なのでダッシュボードでは変えない）。Turnstile・Resend の Webhook は移した後に新しい URL で設定する | 🔴 |
 | 5 | Workers の有料プラン（Workers Paid）に切り替える（利用者の決定 2026-11-09） | 今は Free プラン（[decisions.md](decisions.md) の D-30。CPU は1リクエスト 10ms、D1 の呼び出しは1回の起動で50回まで）。同時に多くの人が使うと上限にかかる。有料プランは CPU 30秒・D1 の呼び出し1,000回まで、D1 の Time Travel も30日前まで戻せる | Cloudflare のダッシュボードの **Workers & Pages** → **Plans** で Workers Paid に切り替える（料金がかかる）。切り替えた日を D-30 に書き足す。PBKDF2 の回数（D-30）は、切り替えとは別に決める | 🔴 |
 | 6 | メール（Resend）を使うか | 本番は今メールを送らない（D-31）。「パスワードを忘れた」は、メールを送れない間も今のまま出す（D-52） | 使うなら 10.3 | 🔴 |
 | 7 | 管理者の4ロール（会社管理者・現場管理者・営業管理者・事務担当）の権限 | 会社全体の設定の一部（緊急連絡先・入店の位置ずれの判定距離・前日確認）は、今は4ロールのだれでも変えられる（D-51）。ローンチの後に絞ると、今使っている人が急に変えられなくなる | 利用者の決定（2026-11-09）で、4ロールの権限は最後にまとめて決めて設定する（Sprint 24）。決めた内容をコードに入れてリリースする | |
@@ -628,3 +629,88 @@ Cloudflare の API トークンなど、自動バックアップ・通知の仕�
 | 9 | 開発者の Cloudflare の API トークンを消すか、期限を付ける | 開発の間に本番を確かめるために作ったトークンが残っていると、ローンチの後も本番の DB を読み書きできる | Cloudflare のダッシュボードの **My Profile** → **API Tokens** で、開発者が使っているトークンを消すか、**TTL**（有効期限）を付ける。開発者のアカウントを Cloudflare のメンバーにしているなら、権限も見直す。GitHub の Secrets の `CLOUDFLARE_API_TOKEN`（自動バックアップ用。[backup.md](backup.md)）は別のもので、消さない | 🔴 |
 | 10 | ブランチの保護（CI が通らない PR をマージできないようにする） | `main` へのマージがそのまま本番のデプロイになる（D-32） | 3.5 | |
 | 11 | main 以外のブランチのビルドを止める | プレビューの版は本番の D1・R2 につながる（D-49） | 3.4 | 🔴 |
+
+## 11. 本番の URL を app.mobital.jp に移す（Sprint 27） 🔴 本番
+
+サービス名を **Mobital** にし（旧名 Field OS）、本番の URL を `https://mbsaas.saas-2a2.workers.dev` から `https://app.mobital.jp` に移します（利用者の決定 2026-11-13。[decisions.md](decisions.md) の D-55。#9981）。
+コードの側（名前・`APP_BASE_URL`・転送）は Sprint 27 で入れました。Cloudflare の設定（カスタムドメイン）と、移した後の Resend の Webhook・Turnstile の設定は、コードとは別に行います。
+
+### 11.1 移した後の動き
+
+| 項目 | 動き | コード |
+|---|---|---|
+| 本番の URL | `wrangler.jsonc` の `env.production` の `APP_BASE_URL` が `https://app.mobital.jp`。メールのリンク（パスワード再設定・メールアドレスの確認・お知らせ・打刻修正）、カレンダーの購読 URL、障害の通知のリンクはこの URL で作る | `src/lib/http.ts` の `appBaseUrl` |
+| workers.dev で開いた画面 | GET・HEAD の画面（`/`・`/login`・`/staff`・`/admin`・`/hq`・報告用URL `/r/<トークン>`・募集ページ `/apply/<トークン>`・`/reset-password` など）は、`https://app.mobital.jp` の同じパス・クエリへ 301 で移す。ブラウザが転送を覚えるのは1日（`Cache-Control: max-age=86400`） | `src/lib/host-redirect.ts` |
+| 転送しないもの | `/api/*`（`/api/health` を含む）・`/webhooks/*`・`/sw.js`・`/static/*`・`/manifest.webmanifest`・拡張子の付いたファイル・GET と HEAD 以外。古いタブ・ホーム画面のアプリ・workers.dev の Service Worker・Resend の Webhook（宛先を変えるまで workers.dev に届く）がそのまま動く | 同上 |
+| 転送する条件 | 要求のホストが `*.workers.dev` で、`APP_BASE_URL`（https）のホストと違うときだけ。ローカル（localhost・127.0.0.1）・テストでは転送しない | 同上 |
+| CSRF の送り元の確認 | 送り元（Origin）が「要求のホスト」か「`APP_BASE_URL` のホスト」なら通す。app.mobital.jp の画面からの操作も、workers.dev の古いタブからの操作も通る | `src/lib/csrf.ts` |
+| ログインの Cookie | `Domain` を付けない（そのホストだけ）・`SameSite=Lax`・https では `Secure`・`HttpOnly`。**ホストごとに別のログイン**なので、app.mobital.jp では全員がログインし直す。workers.dev のログインは期限まで残るが、画面を開くと app.mobital.jp に移る | `src/lib/auth.ts` の `sessionCookieOptions` |
+| CSP | 画面の CSP は `'self'` と jsDelivr・Turnstile だけで、ホスト名を書いていない。どちらのホストでもそのまま動く | `src/index.tsx` |
+| CORS | 付けていない（同じオリジンからだけ呼ぶ）。変更なし | — |
+| プッシュ通知 | 購読はオリジン（ホスト）ごと。workers.dev の購読は、端末のブラウザに残っている間は届き、タップすると app.mobital.jp に移る（ログインし直し）。app.mobital.jp で通知をオンにし直してもらう。**app.mobital.jp（`APP_BASE_URL` のホスト）で通知をオンにすると、その人の workers.dev で登録した購読（ホストの記録がない 0113 より前の購読を含む）をサーバーが消す**（同じ端末に古い Service Worker の購読が残ると、同じ通知が2回届くため。端末の Service Worker の更新には頼らない）。消した購読の端末にはもう送らない。別の端末で workers.dev のままの人も、その端末で app.mobital.jp からオンにし直せば届く。ホストは `push_subscriptions.subscribed_host`（0113）に残す。`APP_BASE_URL` が workers.dev のとき（ステージング・戻したとき）は、ホストの記録がない購読を消さない。VAPID の鍵はホストに関係しない（`VAPID_SUBJECT` は `mailto:support@mobital.jp` を登録済み） | `src/lib/web-push.ts` の `pushHostCleanup`・`src/notifications.ts` の `/push/subscribe` |
+| 内部の識別子 | 名前を変えても、通知の `tag`（`fieldos`・`fieldos-admin`・`fieldos-hq` など）・プッシュの `Topic`（`fieldos-notice`）・ログイン画面の記憶の localStorage のキー（`fieldos.login`）・カレンダーの予定の `UID`（`shift-<番号>@field-os`）・障害の通知の Webhook の `source`（`fieldos`）・Service Worker のメッセージ（`fos-open`）は変えない。変えると、端末の記憶が消える・購読したカレンダーに同じ予定が2つ出る・受け側の設定が合わなくなるため | `src/index.tsx`・`src/staff-schedule.ts`・`src/services/alerts.ts` |
+| ホーム画面のアプリ（PWA） | オリジンごと。workers.dev で追加したアイコンは、開くと app.mobital.jp に移り、ブラウザの表示になる。app.mobital.jp で追加し直してもらう。名前は「Mobital」 | `public/manifest.webmanifest` |
+| 報告用URL・募集ページ・QR | トークンは変わらない。workers.dev の URL（配った案内文・印刷した QR）を開くと app.mobital.jp の同じ URL に移る。報告・応募の送信（`/api/public/*`）はどちらのホストでも動く。新しく作る URL・QR は、画面を開いているホスト（移した後は app.mobital.jp）で作る | `public/static/staff-lifecycle.js`・`public/static/recruit.js` |
+| ログイン画面の記憶 | 会社コード・ID の記憶（ブラウザの localStorage）はオリジンごとなので、app.mobital.jp では1回入力し直す | `src/index.tsx` |
+| Turnstile | 今は未設定（キーが無ければ使わない）。設定するときはホスト名に `app.mobital.jp` と `mbsaas.saas-2a2.workers.dev` の両方を入れる | `src/recruit.ts` |
+
+### 11.2 移す手順（この順に行う）
+
+1. **カスタムドメインを付ける**（Cloudflare のダッシュボード。`mobital.jp` のゾーンがあるアカウント）: **Workers & Pages** → `mbsaas` → **Settings** → **Domains & Routes** → **Add** → **Custom domain** に `app.mobital.jp` を入れる。DNS のレコードと証明書は自動で作られる。`wrangler.jsonc` には `routes`・`custom_domain` を書かない（Workers Builds のトークンでは付けられないことがあるため。ダッシュボードで付けたものはデプロイで消えない）。`workers_dev` は止めない。
+2. **疎通を確かめる**（この時点では前の版のコードのまま。転送はまだ起きない）:
+   ```bash
+   curl -s https://app.mobital.jp/api/health          # {"ok":true,"version":"<今の版>"}
+   curl -sI https://app.mobital.jp/login | head -1    # HTTP/2 200
+   ```
+   証明書が出るまで数分かかることがある。ブラウザで `https://app.mobital.jp/login` を開き、ログインできることも確かめる（Origin が要求のホストと同じなので、前の版でも通る）。
+3. **デプロイ**: Sprint 27 の変更（`APP_BASE_URL` と転送）を `main` にマージする（3章。Workers Builds がデプロイする）。
+4. **確かめる**:
+   ```bash
+   curl -sI https://mbsaas.saas-2a2.workers.dev/login | grep -i -E '^(HTTP|location)'     # 301 / location: https://app.mobital.jp/login
+   curl -sI "https://mbsaas.saas-2a2.workers.dev/staff?x=1" | grep -i location           # https://app.mobital.jp/staff?x=1
+   curl -s  https://mbsaas.saas-2a2.workers.dev/api/health                               # 転送されずに {"ok":true,...}
+   curl -s  https://app.mobital.jp/manifest.webmanifest | grep name                      # "Mobital"
+   ```
+   ブラウザ（スマホ）で、app.mobital.jp のログイン・スタッフの打刻・報告用URL（workers.dev の URL を開いて移ること）・管理画面・本部画面を確かめる。画面のタイトルが「Mobital」になっていること。本部画面「障害」の設定の状態も見る。パスワード再設定のメールを1通送り、リンクが `https://app.mobital.jp/reset-password?...` になっていることを確かめる。
+5. **告知する**（11.4 の文）。
+6. **利用者に設定を頼む**（移した後に行う）:
+   - Resend の Webhook の宛先を `https://app.mobital.jp/webhooks/resend` にする（イベントは `email.delivered`・`email.bounced`・`email.complained`。署名の秘密は `RESEND_WEBHOOK_SECRET`。秘密を作り直したら `secret put` する。7章）。変えるまでは workers.dev に届き、そのまま記録される。
+   - Turnstile を使うなら、ホスト名に `app.mobital.jp` と `mbsaas.saas-2a2.workers.dev` を入れ（Managed）、`TURNSTILE_SITE_KEY`・`TURNSTILE_SECRET_KEY` を `secret put` する（10.6 の3）。
+
+### 11.3 戻し方
+
+- **コードだけ戻す**（転送を止める）: ダッシュボードの Worker `mbsaas` の Deployments で前の版に戻す（4.1。`APP_BASE_URL` も前の版の値に戻る）。そのあと `main` にも、`wrangler.jsonc` の `env.production` の `APP_BASE_URL` を `https://mbsaas.saas-2a2.workers.dev` に戻す PR を入れる（入れないと次のマージでまた移る）。
+- **カスタムドメインはすぐに外さない**: ブラウザは workers.dev からの転送を最長1日覚えている（`max-age=86400`）。その間は workers.dev を開いても app.mobital.jp に移るので、戻した後も少なくとも1日は `app.mobital.jp` を付けたままにする（付けたままなら、戻した版でも app.mobital.jp で動く。CSRF の確認は要求のホストを自分のサイトとして扱う）。
+- 戻すと、app.mobital.jp でログインし直した人は workers.dev でまたログインする（Cookie はホストごと）。app.mobital.jp で取り直したプッシュの購読・ホーム画面のアプリも workers.dev では使えない。
+- Resend の Webhook・Turnstile を新しい URL に変えた後なら、元に戻す（Turnstile はホスト名に両方を入れておけば戻さなくてよい）。
+
+### 11.4 告知の文（下書き）
+
+**お知らせ用（アプリのお知らせ・掲示に出す短い文）**
+
+> 【重要】Mobital の URL が変わりました
+> サービス名を「Mobital」に変え、アプリの URL を https://app.mobital.jp に移しました。前の URL を開いても新しい URL に自動で移ります。
+> ・新しい URL で、もう一度ログインしてください（会社コード・ID・パスワードは変わりません）。
+> ・プッシュ通知を受け取っていた方は、通知の設定からもう一度オンにしてください。
+> ・ホーム画面にアプリを追加していた方は、古いアイコンを消して、新しい URL から追加し直してください。
+> 報告用URL・募集ページの URL は今までのものも使えます。
+
+**メール用（会社の管理者・スタッフあて）**
+
+件名: 【Mobital】アプリの URL 変更とログインのお願い
+
+> いつもご利用いただきありがとうございます。
+> サービス名を「Field OS」から「Mobital」に変え、アプリの URL を次のとおり変更しました。
+>
+> 新しい URL: https://app.mobital.jp
+>
+> 前の URL（https://mbsaas.saas-2a2.workers.dev）を開いても、新しい URL に自動で移ります。お手数ですが、次の3点をお願いします。
+>
+> 1. 新しい URL でもう一度ログインしてください。会社コード・ID・パスワードは変わりません。
+> 2. プッシュ通知を受け取っていた方は、ログインの後、通知の設定からもう一度オンにしてください（前の URL で受けていた通知の設定は、新しい URL には引き継がれません）。
+> 3. スマホのホーム画面にアプリを追加していた方は、古いアイコンを消し、新しい URL をブラウザで開いて「ホーム画面に追加」し直してください。
+>
+> 配布済みの報告用URL・募集ページの URL・QR コードは、そのまま使えます。
+> ご不明な点は、所属の会社の担当者または support@mobital.jp までお問い合わせください。
+>
+> Mobital

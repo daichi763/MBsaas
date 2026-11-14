@@ -25,7 +25,7 @@ import { loadStaffNotices } from './lib/notices'
 import { sha256Hex, isCompanyActive } from './lib/auth'
 import { personStaffRows } from './roster'
 import * as emailService from './services/email'
-import { loadVapid, sendWebPush, isAllowedPushEndpoint, allowLocalPush, type VapidEnv } from './lib/web-push'
+import { loadVapid, sendWebPush, isAllowedPushEndpoint, allowLocalPush, pushHostCleanup, type VapidEnv } from './lib/web-push'
 import { ERROR_ALERT_KIND } from './lib/error-log'
 import { nowJST } from './lib/time'
 import { randomHex } from './lib/hash'
@@ -1984,15 +1984,22 @@ function pushDeviceRoutes(app: Hono<{ Bindings: NotifyEnv; Variables: Variables 
     if (!p256dh || !auth) return c.json({ error: '購読の情報が正しくありません' }, 400)
     const at = nowJST()
     const ua = String(c.req.header('User-Agent') || '').slice(0, 200)
+    const origin = pushHostCleanup(c.req.url, c.env)
+    const o = ownsSub(u)
     const res = await c.env.DB.batch([
       // 同じ宛先（endpoint）が別の利用者・別の会社の購読なら、その行を消してから新しく登録する（他の人の購読を付け替えない。#9969 authz-07）。
       // 同じ端末で別の人がログインし直したときも、前の人の購読は消える（前の人の通知はこの端末に届かなくなる）
       c.env.DB.prepare('DELETE FROM push_subscriptions WHERE endpoint = ? AND NOT (user_id = ? AND company_id = ?) RETURNING subscription_id, company_id, user_id')
         .bind(endpoint, u.user_id, u.company_id),
-      c.env.DB.prepare(`INSERT INTO push_subscriptions (company_id, user_id, person_id, endpoint, p256dh, auth, user_agent, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      c.env.DB.prepare(`INSERT INTO push_subscriptions (company_id, user_id, person_id, endpoint, p256dh, auth, user_agent, subscribed_host, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(endpoint) DO UPDATE SET person_id = excluded.person_id, p256dh = excluded.p256dh, auth = excluded.auth,
-          user_agent = excluded.user_agent, updated_at = excluded.updated_at, failures = 0, last_error = NULL, test_requested_at = NULL`)
-        .bind(u.company_id, u.user_id, u.person_id || null, endpoint, p256dh, auth, ua, at, at),
+          user_agent = excluded.user_agent, subscribed_host = excluded.subscribed_host, updated_at = excluded.updated_at, failures = 0, last_error = NULL, test_requested_at = NULL`)
+        .bind(u.company_id, u.user_id, u.person_id || null, endpoint, p256dh, auth, ua, origin.host || null, at, at),
+      // 本番の URL を移した後（#9981）: APP_BASE_URL のホストで登録したら、この人の、別のホスト（workers.dev）で登録した購読を消す。
+      // 同じ端末に古いホストの Service Worker の購読が残っていると、同じ通知が2回届くため（決め方は src/lib/web-push.ts の pushHostCleanup）
+      c.env.DB.prepare(`DELETE FROM push_subscriptions WHERE ? = 1 AND endpoint != ? AND ${o.sql}
+        AND (subscribed_host != ? OR (subscribed_host IS NULL AND ? = 1)) RETURNING subscription_id`)
+        .bind(origin.cleanup ? 1 : 0, endpoint, ...o.binds, origin.host, origin.nullIsOther ? 1 : 0),
       c.env.DB.prepare(`DELETE FROM push_subscriptions WHERE user_id = ? AND subscription_id NOT IN (SELECT subscription_id FROM push_subscriptions WHERE user_id = ? ORDER BY updated_at DESC, subscription_id DESC LIMIT ?)`)
         .bind(u.user_id, u.user_id, PUSH_MAX_PER_USER),
     ])
@@ -2000,7 +2007,10 @@ function pushDeviceRoutes(app: Hono<{ Bindings: NotifyEnv; Variables: Variables 
     const replaced = (res[0]?.results || []) as any[]
     if (replaced.length) console.log(JSON.stringify({ event: 'push_subscription_replaced', company_id: u.company_id, user_id: u.user_id,
       replaced: replaced.map(r => ({ subscription_id: r.subscription_id, company_id: r.company_id, user_id: r.user_id })) }))
-    return c.json({ ok: true })
+    const otherHost = (res[2]?.results || []) as any[]
+    if (otherHost.length) console.log(JSON.stringify({ event: 'push_subscription_other_host_removed', company_id: u.company_id, user_id: u.user_id,
+      removed: otherHost.map(r => r.subscription_id) }))
+    return c.json({ ok: true, other_host_removed: otherHost.length })
   })
   app.post('/push/unsubscribe', async (c) => {
     const u = c.get('user')

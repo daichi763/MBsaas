@@ -8,7 +8,7 @@
     own_employee: '正社員・契約社員・アルバイト・パート。従業員管理に登録します',
     daily_worker: '自社で日々雇用する人。従業員管理には登録しません',
     freelance: '個人で業務委託する人。支払は本人への業務委託費になります',
-    partner_manual: '協力会社（Field OS 未利用の会社）に所属する人。支払は協力会社へ',
+    partner_manual: '協力会社（Mobital 未利用の会社）に所属する人。支払は協力会社へ',
   }
   // シフト単位の例外のみ（案件・スタッフ単位の勤怠報告は「案件報告管理」で 8 種類ごとに設定する）
   const ATT_LABEL = { '': '案件報告管理の設定どおり', none: '勤怠報告なし', in_out: '入店・退店のみ', full: '案件報告管理の設定どおり' }
@@ -392,7 +392,7 @@
   // ---------- ログイン案内（#328）。本人に SMS・LINE などで送れるよう、URL・会社コード・スタッフ番号・初期パスワードをまとめてコピーできるようにする ----------
   window.showLoginGuide = function (g) {
     const text = [
-      `【Field OS ログインのご案内】${g.company_name ? '（' + g.company_name + '）' : ''}`,
+      `【Mobital ログインのご案内】${g.company_name ? '（' + g.company_name + '）' : ''}`,
       `ログインURL: ${g.login_url}`,
       `会社コード: ${g.company_code}`,
       `スタッフ番号: ${g.user_code}`,

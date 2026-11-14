@@ -1,4 +1,4 @@
-// Field OS SaaS本部管理SPA
+// Mobital SaaS本部管理SPA
 const $app = document.getElementById('app')
 
 // esc・toast・loading・modal・closeModal・errMsg は common.js のものを使う

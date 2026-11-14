@@ -1,14 +1,14 @@
-// Field OS 管理画面: スタッフマスタ新規作成（4ルート）/ 企業間連携
+// Mobital 管理画面: スタッフマスタ新規作成（4ルート）/ 企業間連携
 // docs/spec_multi_company_staff.md フェーズC
 // common.js の部品（modal / closeModal / onModalClose / toast / esc）と admin.js の renderStaff を利用する。admin.js の後に読み込むこと。
 
 const ROSTER_ROUTES = [
   { key: 'link', icon: 'fa-qrcode', color: 'text-primary-600', title: '① QRコード / スタッフIDから連携',
-    desc: '他社（Field OS利用企業）に所属する既存スタッフを、スタッフIDで連携登録します。基本項目は所属元が管理し、自社では追記のみ可能です。' },
+    desc: '他社（Mobital利用企業）に所属する既存スタッフを、スタッフIDで連携登録します。基本項目は所属元が管理し、自社では追記のみ可能です。' },
   { key: 'employee', icon: 'fa-id-card', color: 'text-success-600', title: '② 従業員管理から作成（自社雇用）',
     desc: '自社で雇用するスタッフを登録します。ログインアカウントと従業員管理（社員名簿）が作成されます。' },
   { key: 'partner', icon: 'fa-building', color: 'text-accent-600', title: '③ 協力会社から作成',
-    desc: '所属会社がField OSを利用していない場合に、協力会社所属のスタッフとして登録します。' },
+    desc: '所属会社がMobitalを利用していない場合に、協力会社所属のスタッフとして登録します。' },
   { key: 'skillsheet', icon: 'fa-file-lines', color: 'text-neutral-600', title: '④ スキルシートのみ作成',
     desc: '稼働管理は行わず、スキルシートの発行だけを目的に登録します。ログインアカウントは作成されません。' },
 ]
@@ -839,7 +839,7 @@ delegate('rosterResumeLink', (el) => withSubmitLock(el, async () => {
 }))
 
 // =========================================================
-// 取引先（Field OS 未契約の所属元）の管理（#161）: 一覧・登録・編集・統合・削除
+// 取引先（Mobital 未契約の所属元）の管理（#161）: 一覧・登録・編集・統合・削除
 // =========================================================
 // 協力会社（#9301。以前の名前は「取引先」）の詳細（#partners/<id>）とクライアントとのつながり（#9302）
 // 一覧の「編集」は、詳細の会社基本情報をクライアントと同じ形の編集欄で開く（#9909。editOnOpen に開く協力会社の ID を入れる）
@@ -865,7 +865,7 @@ window.renderPartners = async function () {
       <h2 class="text-xl font-bold text-neutral-900">協力会社 <span class="text-sm font-normal text-neutral-400">${PARTNERS.list.length}社</span></h2>
       <button class="btn btn-primary" data-action="partnerEdit"><i class="fas fa-plus"></i>協力会社を登録</button>
     </div>
-    <p class="text-sm text-neutral-700 mb-1">スタッフの所属会社・支払先になる会社です（Field OS を使っている会社は企業間連携で扱います）</p>
+    <p class="text-sm text-neutral-700 mb-1">スタッフの所属会社・支払先になる会社です（Mobital を使っている会社は企業間連携で扱います）</p>
     <p class="text-xs text-neutral-500 mb-4">精算では、協力会社ごとに支払先がまとまります。クライアントでもある会社は、詳細でクライアントとつなげます。
       同じ会社が別の名前（表記ゆれ）で分かれているときは「統合」でまとめてください（所属スタッフと未確定のシフトの支払先を付け替えます。確定済みの精算は変えません）。</p>
     ${PARTNERS.list.length ? `<div class="card p-3 mb-3 flex gap-2 items-center flex-wrap"><i class="fas fa-magnifying-glass text-neutral-400"></i>
