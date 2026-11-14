@@ -7982,7 +7982,7 @@ api.get('/hq/companies', async (c) => {
     // 他社から連携したスタッフは所属元のログインのまま稼働先へ報告するので、報告先の企業のスタッフ行で数える。
     // アプリからの報告には必ず端末の情報（device_info）が入り、位置情報・端末の情報は保存期間（最短90日）まで残るので、
     // 30日以内のアプリの報告は locationPhotoSql の条件を満たす。この条件を付けて部分索引 idx_attendance_location_photo（reported_at）で引く
-    // （報告の日時だけの索引 idx_attendance_reported_at は打刻のたびに書くだけになるので、次の Sprint で消す。#9976）
+    // （報告の日時だけの索引 idx_attendance_reported_at は打刻のたびに書くだけになるので、migrations/0112 で消した。#9976 #9982）
     db.prepare(`SELECT company_id, SUM(CASE WHEN last_at >= ? THEN 1 ELSE 0 END) AS active_users, COUNT(*) AS active_users_30d
       FROM (SELECT company_id, user_id, MAX(t) AS last_at FROM (
           SELECT u.company_id, u.user_id, MAX(COALESCE(u.last_login_at, ''), COALESCE(u.last_seen_at, '')) AS t FROM users u

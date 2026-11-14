@@ -262,7 +262,7 @@ const S = { W1: await newStaff('W1'), W2: await newStaff('W2'), W3: await newSta
   ok('総勤怠報告: 索引なしでも同じ値', detail2.stats.total_attendance === byCompany.n, detail2.stats.total_attendance)
   const ob2 = must(await hq.get('/api/hq/offboarding/1'), 'offboarding 1 (no index)')
   ok('解約企業: 索引なしでも件数が同じ', ob2.tables.find(t => t.target === 'attendance_reports').count === o1.n && (ob2.files.attendance_reports || 0) === (o1.f || 0), [ob2.tables.find(t => t.target === 'attendance_reports'), ob2.files])
-  await sql(`CREATE INDEX IF NOT EXISTS idx_attendance_reported_at ON attendance_reports(reported_at); CREATE INDEX IF NOT EXISTS idx_attendance_company ON attendance_reports(company_id)`)
+  // 2つの索引は migrations/0112 で消した（Sprint 27 #9982）ので、作り直さない（0112 の後の形のまま。scripts/test-w27-index.mjs も参照）
 }
 
 // ---------- (3) セッションの延長・最終利用の更新の間隔 ----------

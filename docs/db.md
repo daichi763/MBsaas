@@ -31,8 +31,8 @@ npm run docs:check    # 作り直さずに、今のコードと合っている�
 ## 1. 全体の要約
 
 <!-- BEGIN GENERATED: db-summary -->
-- マイグレーション: 111 本（0001_initial_schema.sql 〜 0111_report_month_summaries.sql）
-- 表: 137・索引: 311・トリガー: 18・ビュー: 0
+- マイグレーション: 112 本（0001_initial_schema.sql 〜 0112_drop_attendance_indexes.sql）
+- 表: 137・索引: 309・トリガー: 18・ビュー: 0
 - REFERENCES（外部キー）で宣言した関係: 92・宣言のない `*_id` の列で、ほかの表の主キーと同じ名前のもの: 143
 - 主キーが INTEGER の1列（ROWID。AUTOINCREMENT を含む）の表: 101・それ以外の主キーの表: 36
 - company_id の列がある表: 109
@@ -97,6 +97,8 @@ npm run docs:check    # 作り直さずに、今のコードと合っている�
 - 既存のデータを壊す変更（列・表の削除、型の変更）は書きません。列・表の追加と、安全なデータの移行だけにします。
   - 例外: 移行の控えの表3つ（`attendance_reports_duplicates_0036`・`daily_report_duplicates`・`roster_value_fixes`）は、利用者の決定で `0103` で消しました（[decisions.md](decisions.md) の D-54）。
 - 同じ名前の索引を別の定義で `CREATE INDEX IF NOT EXISTS` しても、何も起きません（前の索引が残ります）。索引の名前は重ねません（`scripts/test-w22-migrations.mjs` で確かめます。`0049` の `idx_board_proposals_imported` は作られず、`0102` で `idx_board_proposals_dup_check` として作り直しました）。
+- 索引は、書き込みのたびに索引の行も書き込みとして数えられる（D1）ので、使わない索引は消します（`0104`・`0110`・`0112`）。消す前に、その表を引く今のコードの文が全件読みにならないことを `EXPLAIN QUERY PLAN` で確かめます（`scripts/test-w26-writes.mjs`・`scripts/test-w27-index.mjs`）。
+  - `attendance_reports` は `0112` で報告の日時（`idx_attendance_reported_at`）と企業（`idx_attendance_company`）の索引を消しました（打刻1回の書き込みが2行減る。#9982）。残る索引は、一意制約（shift_id, report_type）・スタッフ（`idx_attendance_staff`）と、部分索引の位置情報と写真（`idx_attendance_location_photo`）・遅刻（`idx_attendance_late`）・写真のキー（`idx_attendance_photo_key_nn`）です。企業で打刻を引く文は、その企業のシフト・スタッフから引きます（[`OB_ATTENDANCE`](../src/services/retention.ts)）。`company_id` だけで打刻を引く文を足さないでください。
 - 会社のデータを持つ表を足したら、[`OFFBOARDING_TABLES`](../src/services/retention.ts)（解約のときに書き出して消す表）か [`OFFBOARDING_KEPT_TABLES`](../src/services/retention.ts)（解約しても残す表）に入れます。スタッフ個人のデータなら、退職後の削除（[`RETIRED_TARGETS`](../src/services/retention.ts)）にも入れます。どちらにも入っていない表は、下の「6. 削除・匿名化・解約」に名前が出ます。
 - 足したら `npm run docs` でこの資料を作り直します。
 
@@ -2694,9 +2696,7 @@ UNIQUE 制約: (shift_id, report_type)
 
 - `idx_attendance_photo_key_nn`: (photo_key) WHERE `photo_key IS NOT NULL`
 - `idx_attendance_late`: (company_id, report_type) WHERE `status = 'late'`
-- `idx_attendance_reported_at`: (reported_at)
 - `idx_attendance_location_photo`: (reported_at) WHERE `latitude IS NOT NULL OR longitude IS NOT NULL OR address IS NOT NULL OR device_info IS NOT NULL OR device_id IS NOT NULL OR photo_key IS NOT NULL`
-- `idx_attendance_company`: (company_id)
 - `idx_attendance_staff`: (staff_id)
 
 <a id="daily_report_comments"></a>
@@ -4688,6 +4688,7 @@ END
 | `hashPassword` | [lib/auth.ts:44](../src/lib/auth.ts#L44) |
 | `hashToken` | [lib/auth.ts:36](../src/lib/auth.ts#L36) |
 | `RETURNING_COUNTED` | [services/retention.ts:97](../src/services/retention.ts#L97) |
+| `OB_ATTENDANCE` | [services/retention.ts:1197](../src/services/retention.ts#L1197) |
 | `OFFBOARDING_KEPT_TABLES` | [services/retention.ts:1323](../src/services/retention.ts#L1323) |
 | `RETIRED_TARGETS` | [services/retention.ts:98](../src/services/retention.ts#L98) |
 | `sitePosition` | [lib/site-location.ts:39](../src/lib/site-location.ts#L39) |
