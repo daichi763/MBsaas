@@ -7,7 +7,8 @@
 //            開始の早い順に足していき、超えた分を後のシフトに付ける（日をまたぐ勤務は稼働日の分として数える）
 //   休日   = 休日の曜日（holiday_weekdays）の稼働日の勤務。休日の勤務には時間外を付けない（深夜は付ける）
 // 割増額 = 1時間あたりの賃金 ×（深夜 × 深夜の率 ＋ 時間外 × 時間外の率 ＋ 休日 × 休日の率）。割増の部分（25% など）だけで、基本の賃金は含まない。
-// 1時間あたりの賃金は、時給はその単価、日額は単価を予定の実働時間で割った額。
+// 1時間あたりの賃金は、時給はその単価、日額は単価を予定の実働時間で割った額。月額（#9984）のシフトには割増を付けない（月額は時間に左右されないため。
+// 時間は数えるので、同じ日のほかのシフトの時間外には入る）
 // 未確定のシフトは表示のたびに計算し（attachPremiums）、確定したときに shifts.pay_premium などに書き込んで以後はその値を使う
 // =========================================================
 import { workHours } from '../shift-board'
@@ -68,7 +69,7 @@ export function computePremiums(rows: any[], st: PremiumSettings): Map<number, P
     const h = workHours(s, proj)
     const w = workedWindow(s, h.basis)
     const payMin = Math.round(h.pay_hours * 60), planMin = Math.round(h.planned_hours * 60)
-    const base = s.pay_rate == null ? null : s.pay_unit_type === 'hourly' ? Number(s.pay_rate) : planMin > 0 ? Number(s.pay_rate) * 60 / planMin : 0
+    const base = s.pay_rate == null || s.pay_unit_type === 'monthly' ? null : s.pay_unit_type === 'hourly' ? Number(s.pay_rate) : planMin > 0 ? Number(s.pay_rate) * 60 / planMin : 0
     return { s, w, payMin, base, night: Math.min(nightMinutes(w.start, w.end), payMin) }
   })
   const byDay = new Map<string, typeof items>()

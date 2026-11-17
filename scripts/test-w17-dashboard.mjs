@@ -7,8 +7,11 @@
 // 実行: BASE=http://127.0.0.1:8813 node scripts/test-w17-dashboard.mjs
 //   画面の確認は、ヘッドレスの Chrome がある環境だけで行う（CHROME=<chrome.exe のパス>。無ければ省く）。SHOT_DIR=<フォルダ> で画面の写しを残す
 //   今日・昨日のシフトを足すので、テストのたびに DB を作り直すこと（npm test -- w17-dashboard なら自動で行う）
+//   月額（固定）は Sprint 29（#9984）で新しく作れなくなったので、移せなかったルールの形（migrated_at・migrated_from が NULL）を
+//   ローカルの D1 に直接入れる（PERSIST=<--persist-to の保存先>。npm test なら自動で渡す。wrangler d1 execute は --local のみ）
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { spawn } from 'node:child_process'
+import { spawn, execFileSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -131,8 +134,17 @@ const dCL = await dash(`?client_id=${CL}`)
 }
 
 // ---------- #9905 月額（固定）の売上も案件で分かれる ----------
+// 移せなかった月額（固定）のルールを入れる（新しいルールは API で作れない。#9984）
+function insertLegacyMonthly(projectId, amount, memo) {
+  const persist = process.env.PERSIST
+  if (!persist) throw new Error('PERSIST（--persist-to の保存先）を指定してください')
+  const dir = mkdtempSync(join(tmpdir(), 'w17m-')), file = join(dir, 'rule.sql')
+  writeFileSync(file, `INSERT INTO monthly_bill_rules (company_id, project_id, staff_id, amount, memo, created_at) SELECT company_id, project_id, NULL, ${Number(amount)}, '${String(memo).replace(/'/g, "''")}', datetime('now') FROM projects WHERE project_id = ${Number(projectId)};`)
+  const cli = fileURLToPath(new URL('../node_modules/wrangler/bin/wrangler.js', import.meta.url))
+  try { execFileSync(process.execPath, [cli, 'd1', 'execute', 'mbsaas-production', '--local', '--persist-to', persist, `--file=${file}`], { stdio: ['ignore', 'pipe', 'pipe'] }) } finally { rmSync(dir, { recursive: true, force: true }) }
+}
 {
-  must(await admin.post('/api/admin/settlement/monthly-rules', { project_id: PA, amount: 50000, memo: PFX }), 'monthly rule A')
+  insertLegacyMonthly(PA, 50000, PFX)
   const a2 = await dash(`?project_id=${PA}`), b2 = await dash(`?project_id=${PB}`), all2 = await dash(), cl2 = await dash(`?client_id=${CL}`)
   ok('#9905 月額（固定）は、今日がその月の最初の稼働日の案件の売上予定に入る', a2.revenue_monthly === 50000 && a2.revenue_forecast === dA.revenue_forecast + 50000, [a2.revenue_monthly, a2.revenue_forecast, dA.revenue_forecast])
   ok('#9905 月額はほかの案件の売上予定には入らない', b2.revenue_monthly === 0 && b2.revenue_forecast === dB.revenue_forecast, [b2.revenue_monthly, b2.revenue_forecast])
@@ -140,7 +152,7 @@ const dCL = await dash(`?client_id=${CL}`)
     && cl2.revenue_forecast === dCL.revenue_forecast + 50000, [all2.revenue_monthly, all2.revenue_forecast, cl2.revenue_forecast])
   // その月の最初の稼働日が今日でない（前日にシフトがある）案件の月額は、今日の売上予定に入れない（精算で計上する日と同じ）
   if (today.slice(0, 7) === yesterday.slice(0, 7)) {
-    must(await admin.post('/api/admin/settlement/monthly-rules', { project_id: PB, amount: 30000, memo: PFX }), 'monthly rule B')
+    insertLegacyMonthly(PB, 30000, PFX)
     const b3 = await dash(`?project_id=${PB}`)
     ok('#9905 その月の最初の稼働日が今日より前の案件の月額は、今日の売上予定に入れない', b3.revenue_monthly === 0 && b3.revenue_forecast === dB.revenue_forecast, [b3.revenue_monthly, b3.revenue_forecast])
   } else console.log('SKIP  月の最初の稼働日が前日の月額の確認（今日は月の1日）')

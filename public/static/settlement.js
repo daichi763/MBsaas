@@ -4,7 +4,11 @@
 // =========================================================
 (function () {
   const PAYEE_LABEL = { payroll: '自社給与', payroll_daily: '日雇い給与', freelance: '個人事業主', partner: '協力会社', linked: '他社（連携元）' }
-  const UNIT = { daily: '日', hourly: '時' }
+  const UNIT = { daily: '日', hourly: '時', monthly: '月' }
+  // 単価 × 数量の文（月額 #9984 は「月額 ◯円 ÷ ◯日」）
+  const rateQtyText = (unit, rate, qty, days) => (unit === 'monthly'
+    ? `月額 ${rate != null ? yen(rate) : '-'} ÷ ${days ? days + '日' : '-（数えない日）'}`
+    : `${rate != null ? yen(rate) : '-'} × ${qty ?? '-'}${UNIT[unit] || '日'}`)
   // src/settlement.ts の確認事項と同じ文言
   const PENDING_ISSUE = '承認待ちの打刻修正あり'
   const PAY_REQUEST_ISSUE = '承認待ちの交通費・延長の申請あり'
@@ -237,7 +241,8 @@
         || '<tr><td colspan="13" class="text-center text-neutral-400">対象のシフトはありません</td></tr>'}
         </tbody></table></div>
         <p class="text-2xs text-neutral-400 mt-2">請求明細書は、表示中の期間のそのクライアントの確定済みのシフトを載せます（案件・スタッフ・支払区分の絞り込みは使いません）</p>
-        <p class="text-2xs text-neutral-400 mt-1" id="settle-monthly-note">月額（固定）は、その月に確定・代打のシフトが1件以上あれば月に1回だけ請求します。その月の最初のシフトの日が表示中の期間に入る月の分を出します（単価の設定のタブで登録）${S.payee_type ? '。支払区分で絞り込んでいるときは出しません' : ''}</p>`
+        ${(data.monthly_lines || []).length ? `<p class="text-2xs text-neutral-400 mt-1" id="settle-monthly-note">「月額」の行は、以前の月額（固定）のうち、単位の「月額」に移せなかった月の分です（その月に確定・代打のシフトが1件以上あれば月に1回だけ請求します。その月の最初のシフトの日が表示中の期間に入る月の分を出します）${S.payee_type ? '。支払区分で絞り込んでいるときは出しません' : ''}</p>` : ''}
+        <p class="text-2xs text-neutral-400 mt-1">単位が月額のシフトは、月額をその月の働いた日数で割った1日分をシフトの請求額にしています（単価の設定のタブの「月額」）</p>`
       return
     }
     if (S.tab === 'payment') {
@@ -300,44 +305,43 @@
     }
     if (String(S.pricing_pid || S.project_id || '') !== String(pid)) return
     monthlyCtx = { pid: Number(pid), rules: data.rules || [], staff: data.staff || [] }
+    // 単位の「月額」にすべての月を移したルール（migrated_from = '0000-00'）は出さない（#9984）
+    const legacy = monthlyCtx.rules.filter(r => r.migrated_from !== '0000-00')
+    if (!legacy.length) { host.innerHTML = ''; return }
+    const movedText = (r) => (!r.migrated_at ? '' : r.migrated_from ? `${monthYM(r.migrated_from)}からは単位の「月額」で請求` : '単位の「月額」に移せませんでした')
     host.innerHTML = `
       <section class="card p-4 mt-4" id="project-monthly-rules">
         <div class="flex items-center justify-between gap-2 mb-2 flex-wrap">
-          <h3 class="text-sm font-bold text-neutral-700"><i class="fas fa-calendar-check text-primary-600 mr-1"></i>月額（固定）の請求</h3>
-          <button class="btn btn-outline text-xs" data-action="monthlyAdd"><i class="fas fa-plus"></i>月額を追加</button>
+          <h3 class="text-sm font-bold text-neutral-700"><i class="fas fa-calendar-check text-primary-600 mr-1"></i>以前の月額（固定）の請求</h3>
         </div>
-        <p class="text-2xs text-neutral-500 mb-2">その月に確定・代打のシフトが1件以上あれば、月に1回だけ請求します（シフトの数・時間には左右されません）。シフトの時給・日額とは別の行として、精算の請求・請求前確認・請求の CSV・請求明細書に出します。
-          スタッフ別の月額は、そのスタッフのシフトがある月だけ請求します（案件全体の月額とは別に請求します）。金額を変えるときは、適用開始月を入れて追加してください（前の月額はその前の月までになります。日割りはしません）。支払（スタッフへの給与）には使いません</p>
-        <div class="overflow-x-auto"><table class="tbl text-xs"><thead><tr><th>対象</th><th class="text-right">月額</th><th>適用する月</th><th>備考</th><th></th></tr></thead><tbody>
-          ${monthlyCtx.rules.map(r => `<tr data-monthly-rule="${Number(r.rule_id)}"><td>${r.staff_id == null ? '案件全体' : `<a class="text-primary-600 hover:underline" href="#staff/${Number(r.staff_id)}">${esc(r.staff_name || '')}</a>`}</td>
-            <td class="text-right font-bold">${yen(r.amount)}</td><td>${esc(monthlyPeriod(r))}</td><td>${esc(r.memo || '')}</td>
+        <p class="text-2xs text-neutral-500 mb-2">月額（固定）は、単価の単位の「月額」（上の標準単価・単価ルールで選べます。月額をその月の働いた日数で割って1日分にします）に置き換えました。新しく追加はできません。
+          ここには、確定済み・締めた月など、単位の「月額」に移せなかった月の分が残っています。その月に確定・代打のシフトが1件以上あれば、月に1回だけ請求します（精算の請求・請求前確認・請求の CSV・請求明細書に「月額」の行として出します）</p>
+        <div class="overflow-x-auto"><table class="tbl text-xs"><thead><tr><th>対象</th><th class="text-right">月額</th><th>適用する月</th><th>移した月</th><th>備考</th><th></th></tr></thead><tbody>
+          ${legacy.map(r => `<tr data-monthly-rule="${Number(r.rule_id)}"><td>${r.staff_id == null ? '案件全体' : `<a class="text-primary-600 hover:underline" href="#staff/${Number(r.staff_id)}">${esc(r.staff_name || '')}</a>`}</td>
+            <td class="text-right font-bold">${yen(r.amount)}</td><td>${esc(monthlyPeriod(r))}</td><td>${esc(movedText(r))}</td><td>${esc(r.memo || '')}</td>
             <td class="whitespace-nowrap"><button class="btn btn-outline text-xs" data-action="monthlyEdit" data-id="${Number(r.rule_id)}"><i class="fas fa-pen"></i>変更</button>
-              <button class="btn btn-outline text-xs" data-action="monthlyDelete" data-id="${Number(r.rule_id)}"><i class="fas fa-trash"></i>削除</button></td></tr>`).join('')
-            || '<tr><td colspan="5" class="text-center text-neutral-400">月額は登録されていません</td></tr>'}
+              <button class="btn btn-outline text-xs" data-action="monthlyDelete" data-id="${Number(r.rule_id)}"><i class="fas fa-trash"></i>削除</button></td></tr>`).join('')}
         </tbody></table></div>
       </section>`
   }
   function monthlyModal(rule) {
     const ctx = monthlyCtx; if (!ctx) return
     modal(`
-      <h3 class="font-bold text-lg mb-1">${rule ? '月額の変更' : '月額の追加'}</h3>
-      <p class="text-xs text-neutral-500 mb-3">その月に確定・代打のシフトが1件以上あれば、月に1回だけ請求します</p>
+      <h3 class="font-bold text-lg mb-1">以前の月額（固定）の変更</h3>
+      <p class="text-xs text-neutral-500 mb-3">その月に確定・代打のシフトが1件以上あれば、月に1回だけ請求します（単位の「月額」に移した月には効きません）</p>
       <div class="space-y-3 text-sm">
-        <label class="block">対象${rule ? `<p class="font-medium mt-1">${rule.staff_id == null ? '案件全体' : esc(rule.staff_name || '')}</p>` : `
-          <select id="mr-staff" class="inp text-sm"><option value="">案件全体</option>${ctx.staff.map(s => `<option value="${Number(s.staff_id)}">${esc(s.name)}</option>`).join('')}</select>
-          <span class="block text-2xs text-neutral-400 mt-1">スタッフは、この案件にシフトのある人から選べます</span>`}</label>
-        <label class="block">月額（円）<input id="mr-amount" type="number" min="1" step="1" inputmode="numeric" class="inp text-sm" value="${rule ? Number(rule.amount) : ''}"></label>
+        <label class="block">対象<p class="font-medium mt-1">${rule.staff_id == null ? '案件全体' : esc(rule.staff_name || '')}</p></label>
+        <label class="block">月額（円）<input id="mr-amount" type="number" min="1" step="1" inputmode="numeric" class="inp text-sm" value="${Number(rule.amount)}"></label>
         <div class="grid grid-cols-2 gap-2">
-          <label class="block">適用開始月<input id="mr-from" type="month" class="inp text-sm" value="${esc(rule ? rule.valid_from || '' : '')}"></label>
-          <label class="block">終了月<input id="mr-to" type="month" class="inp text-sm" value="${esc(rule ? rule.valid_to || '' : '')}"></label>
+          <label class="block">適用開始月<input id="mr-from" type="month" class="inp text-sm" value="${esc(rule.valid_from || '')}"></label>
+          <label class="block">終了月<input id="mr-to" type="month" class="inp text-sm" value="${esc(rule.valid_to || '')}"></label>
         </div>
         <p class="text-2xs text-neutral-400">空欄は期限なしです。月の途中では変えられません（その月は1つの月額だけを使います）</p>
-        <label class="block">備考（請求明細書に出します）<input id="mr-memo" class="inp text-sm" maxlength="200" value="${esc(rule ? rule.memo || '' : '')}"></label>
+        <label class="block">備考（請求明細書に出します）<input id="mr-memo" class="inp text-sm" maxlength="200" value="${esc(rule.memo || '')}"></label>
       </div>
       <div class="flex gap-2 mt-4"><button class="btn btn-outline flex-1" data-action="settleCloseModal">やめる</button>
-        <button class="btn btn-primary flex-1" data-action="monthlySave" data-id="${rule ? Number(rule.rule_id) : ''}">保存</button></div>`)
+        <button class="btn btn-primary flex-1" data-action="monthlySave" data-id="${Number(rule.rule_id)}">保存</button></div>`)
   }
-  delegate('monthlyAdd', () => monthlyModal(null))
   delegate('monthlyEdit', el => { const r = monthlyCtx && monthlyCtx.rules.find(x => String(x.rule_id) === el.dataset.id); if (r) monthlyModal(r) })
   delegate('monthlySave', el => withSubmitLock(el, async () => {
     const ctx = monthlyCtx; if (!ctx) return
@@ -346,11 +350,7 @@
     if (!/^\d+$/.test(amount) || Number(amount) < 1) { toast('月額を1円以上の整数で入力してください'); return }
     const body = { amount: Number(amount), valid_from: document.getElementById('mr-from').value, valid_to: document.getElementById('mr-to').value, memo: document.getElementById('mr-memo').value }
     try {
-      if (el.dataset.id) await axios.put('/api/admin/settlement/monthly-rules/' + encodeURIComponent(el.dataset.id), body)
-      else {
-        const { data } = await axios.post('/api/admin/settlement/monthly-rules', { ...body, project_id: ctx.pid, staff_id: document.getElementById('mr-staff').value || null })
-        if (data.revised_rule_id) toast('前の月額を、適用開始月の前の月までにしました')
-      }
+      await axios.put('/api/admin/settlement/monthly-rules/' + encodeURIComponent(el.dataset.id), body)
       closeModal(); toast('月額を保存しました'); await renderMonthlyPanel(ctx.pid)
     } catch (e) { toast(errMsg(e, '保存できませんでした')) }
   }))
@@ -393,9 +393,9 @@
           <td class="whitespace-nowrap">${esc(r.start_time)}〜${esc(r.end_time)}<span class="text-neutral-400 block">休憩${r.break_minutes}分・${hrs(r.planned_hours)}</span></td>
           <td class="whitespace-nowrap">${cancel ? `<span class="badge badge-red">${esc(CANCEL_REASON_LABEL[r.cancel_reason] || '欠勤')}</span>${r.adjust_note ? `<span class="text-neutral-400 block">${esc(r.adjust_note)}</span>` : ''}`
             : r.actual_start ? `${esc(r.actual_start)}〜${esc(r.actual_end)}<span class="text-neutral-400 block">${r.actual_source === 'manual' ? '手入力' : '報告'}・休憩${r.used_break_minutes}分・${hrs(r.actual_hours)}</span>` : '<span class="text-neutral-400">-</span>'}</td>
-          <td class="text-right whitespace-nowrap">${cancel ? '<span class="text-neutral-400">-</span>' : r.bill_unit_type === 'hourly' || r.pay_unit_type === 'hourly' ? hrs(r.hours) : '<span class="text-neutral-400">日額</span>'}</td>
-          <td class="text-right whitespace-nowrap">${yen(r.bill_total)}<span class="text-neutral-400 block">${cancel ? 'キャンセル料' : r.bill_rate != null ? yen(r.bill_rate) + '/' + UNIT[r.bill_unit_type] : ''}</span></td>
-          <td class="text-right whitespace-nowrap">${r.pay_total == null ? '<span class="text-warning-600">未設定</span>' : yen(r.pay_total)}<span class="text-neutral-400 block">${cancel ? '補償・控除' : r.pay_rate != null ? yen(r.pay_rate) + '/' + UNIT[r.pay_unit_type] : ''}</span>${r.pay_premium ? `<span class="text-3xs text-accent-3-600 block" title="${esc(premiumText(r))}">うち割増 ${yen(r.pay_premium)}</span>` : ''}</td>
+          <td class="text-right whitespace-nowrap">${cancel ? '<span class="text-neutral-400">-</span>' : r.bill_unit_type === 'hourly' || r.pay_unit_type === 'hourly' ? hrs(r.hours) : r.bill_unit_type === 'monthly' || r.pay_unit_type === 'monthly' ? `<span class="text-neutral-400" title="月額をその月の働いた日数で割った1日分">月額 1/${r.bill_month_days || r.pay_month_days || '-'}日</span>` : '<span class="text-neutral-400">日額</span>'}</td>
+          <td class="text-right whitespace-nowrap">${yen(r.bill_total)}<span class="text-neutral-400 block">${cancel ? 'キャンセル料' : r.bill_rate != null ? yen(r.bill_rate) + '/' + (UNIT[r.bill_unit_type] || '日') + (r.bill_unit_type === 'monthly' ? `÷${r.bill_month_days || '-'}日` : '') : ''}</span></td>
+          <td class="text-right whitespace-nowrap">${r.pay_total == null ? '<span class="text-warning-600">未設定</span>' : yen(r.pay_total)}<span class="text-neutral-400 block">${cancel ? '補償・控除' : r.pay_rate != null ? yen(r.pay_rate) + '/' + (UNIT[r.pay_unit_type] || '日') + (r.pay_unit_type === 'monthly' ? `÷${r.pay_month_days || '-'}日` : '') : ''}</span>${r.pay_premium ? `<span class="text-3xs text-accent-3-600 block" title="${esc(premiumText(r))}">うち割増 ${yen(r.pay_premium)}</span>` : ''}</td>
           <td class="whitespace-nowrap">${esc(PAYEE_LABEL[r.payee_type] || r.payee_type)}${r.payee_type === 'partner' || r.payee_type === 'linked' ? `<span class="text-neutral-400 block">${esc(r.payee_name)}</span>` : ''}</td>
           <td>${issuesCellHtml(r)}</td>
           <td class="whitespace-nowrap">${r.settle_status === 'confirmed' ? '<span class="badge badge-green">確定</span>' : '<span class="badge badge-gray">未確定</span>'}${lock}</td>
@@ -639,14 +639,15 @@
       <section class="rounded-lg border border-neutral-100 p-3 mb-3 text-xs" id="settle-money-box">
         <div class="grid grid-cols-2 gap-3">
           <div><p class="font-bold text-neutral-700 mb-1">請求</p>
-            <p>基本 ${yen(r.bill_base)}（${r.bill_rate != null ? yen(r.bill_rate) : '-'} × ${r.bill_qty ?? '-'}${UNIT[r.bill_unit_type]}）</p>
+            <p>基本 ${yen(r.bill_base)}（${rateQtyText(r.bill_unit_type, r.bill_rate, r.bill_qty, r.bill_month_days)}）</p>
             <p>交通費 ${yen(r.bill_transport)}${r.bill_adjust ? `・調整 ${yen(r.bill_adjust)}` : ''}</p><p class="font-bold">合計 ${yen(r.bill_total)}</p></div>
           <div><p class="font-bold text-neutral-700 mb-1">支払（${esc(PAYEE_LABEL[r.payee_type] || r.payee_type)}${r.payee_type === 'partner' || r.payee_type === 'linked' ? '・' + esc(r.payee_name) : ''}）</p>
-            <p>基本 ${r.pay_base == null ? '未設定' : yen(r.pay_base)}（${r.pay_rate != null ? yen(r.pay_rate) : '-'} × ${r.pay_qty ?? '-'}${UNIT[r.pay_unit_type]}）</p>
+            <p>基本 ${r.pay_base == null ? '未設定' : yen(r.pay_base)}（${rateQtyText(r.pay_unit_type, r.pay_rate, r.pay_qty, r.pay_month_days)}）</p>
             <p>交通費 ${yen(r.pay_transport)}（実費 ${yen(r.transportation_fee)}）${r.pay_adjust ? `・調整 ${yen(r.pay_adjust)}` : ''}</p>
             ${r.premium_night_minutes != null ? `<p id="settle-premium-line">割増 ${yen(r.pay_premium)}（${esc(premiumText(r))}）${r.settle_status === 'confirmed' ? '' : '<span class="text-neutral-400">・確定するまで実績に合わせて計算し直します</span>'}</p>` : ''}<p class="font-bold">合計 ${r.pay_total == null ? '-' : yen(r.pay_total)}</p></div>
         </div>
         ${r.adjust_note ? `<p class="text-neutral-500 mt-1">調整メモ: ${esc(r.adjust_note)}</p>` : ''}
+        ${r.bill_unit_type === 'monthly' || r.pay_unit_type === 'monthly' ? '<p class="text-neutral-500 mt-1" id="settle-monthly-help">月額は、同じ月のこのスタッフ・この案件の確定・代打のシフトの数で割った額を1日分にします（1円未満は切り捨て、余りは月の最後の稼働日に足します）。確定済みのシフトの金額は変えません</p>' : ''}
         ${r.price_locked ? `<p class="text-warning-600 mt-1">${r.qty_locked ? '手動で金額を変更したシフトです（単価・数量とも固定。実働が変わっても金額は変わりません）' : '手動で単価を変更したシフトです（単価はそのまま、時給の数量は実働に合わせます）'}</p>` : ''}
         ${locked ? '' : `<button class="btn btn-outline text-xs w-full mt-2" data-action="settleOpenPrice" data-id="${r.shift_id}"><i class="fas fa-pen"></i>単価・交通費・調整を変更</button>`}
       </section>
@@ -711,7 +712,7 @@
     } catch (e) { toast(errMsg(e)) }
   }
   // 単価・交通費・調整の手動変更（このシフトだけ。PUT /api/admin/shifts/:id/price）
-  const UNIT_LABEL = { daily: '日額', hourly: '時給' }
+  const UNIT_LABEL = { daily: '日額', hourly: '時給', monthly: '月額' }
   const BT_LABEL = { actual: '実費', fixed: '定額', included: '単価に込み' }
   const PT_LABEL = { actual: '実費', capped: '実費（上限あり）', fixed: '定額', none: '支払なし' }
   const opt = (map, v) => Object.entries(map).map(([k, l]) => `<option value="${k}" ${v === k ? 'selected' : ''}>${l}</option>`).join('')
@@ -724,10 +725,10 @@
       <div class="grid grid-cols-3 gap-2 text-xs" id="settle-price-form">
         <label>請求<select id="spx-bill-unit" class="inp text-xs">${opt(UNIT_LABEL, r.bill_unit_type)}</select></label>
         <label>請求単価<input id="spx-bill-rate" type="number" class="inp text-xs" value="${r.bill_rate ?? ''}"></label>
-        <label>数量<input id="spx-bill-qty" type="number" step="0.25" min="0" max="24" class="inp text-xs" value="${r.qty_locked ? (r.bill_qty ?? '') : ''}" placeholder="${r.bill_qty ?? ''}"></label>
+        <label>数量<input id="spx-bill-qty" type="number" step="0.25" min="0" max="24" class="inp text-xs" ${r.bill_unit_type === 'monthly' ? `value="" placeholder="1/${r.bill_month_days || '-'}日" disabled title="月額はその月の働いた日数で割ります"` : `value="${r.qty_locked ? (r.bill_qty ?? '') : ''}" placeholder="${r.bill_qty ?? ''}"`}></label>
         <label>支払<select id="spx-pay-unit" class="inp text-xs">${opt(UNIT_LABEL, r.pay_unit_type)}</select></label>
         <label>支払単価<input id="spx-pay-rate" type="number" class="inp text-xs" value="${r.pay_rate ?? ''}" placeholder="未設定"></label>
-        <label>数量<input id="spx-pay-qty" type="number" step="0.25" min="0" max="24" class="inp text-xs" value="${r.qty_locked ? (r.pay_qty ?? '') : ''}" placeholder="${r.pay_qty ?? ''}"></label>
+        <label>数量<input id="spx-pay-qty" type="number" step="0.25" min="0" max="24" class="inp text-xs" ${r.pay_unit_type === 'monthly' ? `value="" placeholder="1/${r.pay_month_days || '-'}日" disabled title="月額はその月の働いた日数で割ります"` : `value="${r.qty_locked ? (r.pay_qty ?? '') : ''}" placeholder="${r.pay_qty ?? ''}"`}></label>
         <label>交通費の実費<input id="spx-fee" type="number" class="inp text-xs" value="${r.transportation_fee}"></label>
         <label>交通費の請求<select id="spx-bt" class="inp text-xs">${opt(BT_LABEL, r.bill_transport_type)}</select></label>
         <label>請求額（定額時）<input id="spx-bt-amt" type="number" class="inp text-xs" value="${r.bill_transport_amount}"></label>
@@ -909,7 +910,7 @@
     }
     const plus = q.start_time && q.end_time && q.new_end_time ? spanMin(q.start_time, q.new_end_time) - spanMin(q.start_time, q.end_time) : null
     return `終了 ${esc(q.end_time || q.before_end_time || '')} → <b>${esc(q.new_end_time)}</b>${plus != null && plus > 0 ? `（+${plus}分）` : ''}
-      <span class="block text-2xs text-neutral-500">${q.instructed_by ? '指示: ' + esc(q.instructed_by) + '・' : ''}${q.pay_unit_type !== 'hourly' ? '日給（承認しても金額は変わりません。必要なら調整額を入れてください）' : q.qty_fixed ? '時給・数量を手動で固定中（承認しても金額は変わりません。必要なら数量を直してください）' : '時給（承認すると延びた分も支払に入ります）'}</span>`
+      <span class="block text-2xs text-neutral-500">${q.instructed_by ? '指示: ' + esc(q.instructed_by) + '・' : ''}${q.pay_unit_type === 'monthly' ? '月額（承認しても金額は変わりません。必要なら調整額を入れてください）' : q.pay_unit_type !== 'hourly' ? '日給（承認しても金額は変わりません。必要なら調整額を入れてください）' : q.qty_fixed ? '時給・数量を手動で固定中（承認しても金額は変わりません。必要なら数量を直してください）' : '時給（承認すると延びた分も支払に入ります）'}</span>`
   }
   // 交通費の申請の領収書の写真（#273。スタッフが付けた1枚・任意）。差し替えられた後に古い画像が出ないよう、URL に添付の時刻を付ける
   const receiptUrl = (q) => `/api/admin/pay-requests/${Number(q.request_id)}/receipt?v=${encodeURIComponent(q.receipt_uploaded_at || '')}`

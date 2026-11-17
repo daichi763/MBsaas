@@ -559,7 +559,7 @@
 ;(function () {
   const REQ_STATUS = { pending: ['承認待ち', 'badge-yellow'], approved: ['承認済み', 'badge-green'], rejected: ['却下', 'badge-red'], cancelled: ['取り消し済み', 'badge-gray'] }
   const KIND_LABEL = { transport: '交通費', overtime: '延長' }
-  const UNIT_LABEL = { daily: '日給', hourly: '時給' }
+  const UNIT_LABEL = { daily: '日給', hourly: '時給', monthly: '月額' }
   const yenText = (n) => (n == null ? '未設定' : Number(n).toLocaleString('ja-JP') + '円')
   const hrsText = (h) => (h == null ? '-' : (Math.round(h * 100) / 100) + '時間')
   const reqBadge = (s) => `<span class="badge ${(REQ_STATUS[s] || [])[1] || 'badge-gray'}">${esc((REQ_STATUS[s] || [s])[0])}</span>`
@@ -725,9 +725,11 @@
     let parts
     if (s.kind === 'cancel') parts = `補償 ${esc(yenText(p.total))}`
     else {
-      parts = p.rate != null
-        ? `${esc(UNIT_LABEL[p.unit_type] || '')} ${esc(yenText(p.rate))}${p.unit_type === 'hourly' && p.qty != null ? ` × ${esc(p.qty)}時間` : ''} = ${esc(yenText(p.base))}`
-        : '単価未設定'
+      // 月額（#9984）は「1日分 ◯円（月額 ◯円 ÷ ◯日）」。日数は、その月のこの案件の勤務（確定・代打）の数
+      parts = p.rate == null ? '単価未設定'
+        : p.unit_type === 'monthly'
+          ? `<span class="pay-monthly">1日分 ${esc(yenText(p.base))}（月額 ${esc(yenText(p.rate))} ÷ ${p.month_days ? esc(p.month_days) + '日' : '-'}）</span>`
+          : `${esc(UNIT_LABEL[p.unit_type] || '')} ${esc(yenText(p.rate))}${p.unit_type === 'hourly' && p.qty != null ? ` × ${esc(p.qty)}時間` : ''} = ${esc(yenText(p.base))}`
       if (p.transport) parts += ` ＋ 交通費 ${esc(yenText(p.transport))}`
       // 深夜・時間外・休日の割増（#167。サーバーは合計に含めて返す）。内訳の足し算が合計と合うように出す
       if (p.premium) parts += ` ＋ <span class="pay-premium">割増 ${esc(yenText(p.premium))}${premiumMinutesText(p.premium_minutes)}</span>`
