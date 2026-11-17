@@ -72,8 +72,8 @@
 | 請求 / 支払 | クライアントへ請求する額 / スタッフ・協力会社へ支払う額。シフトごとに両方を持つ | `shifts.bill_*` / `shifts.pay_*`。`shifts.unit_price` は請求の基本額 |
 | 基本単価・標準単価 | 案件の標準の単価 | `projects` の `pay_unit_type`・`pay_rate`・交通費の列など（`migrations/0016_add_spot_shift_board.sql:6`〜`14`） |
 | 単価ルール | 開催場所・役割・スタッフ別の単価。精算画面の「単価の設定」で管理する（D-12） | `rate_rules`。インセンティブは `rate_rules.pay_incentive` |
-| 単価の引き継ぎ | 新しいシフトに、直近のシフトの単価を使うこと（D-18） | `src/shift-board.ts:203` |
-| 日額 / 時給 / 月額 | 単価の単位。月額は「月額 ÷ その月の働いた日数（確定・代打のシフトの数）」を1日分にする（D-56） | `bill_unit_type`・`pay_unit_type` が `daily` / `hourly` / `monthly`。月額の数量（`bill_qty`・`pay_qty`）は 1/日数、1日分は `migrations/0114` のトリガーが入れる |
+| 単価の引き継ぎ | 新しいシフトに、直近のシフトの単価を使うこと（D-18） | `src/shift-board.ts:226` |
+| 日額 / 時給 / 月額 | 単価の単位。月額は「月額 ÷ その月の働いた日数（確定・代打のシフトの数）」を1日分にする（D-56） | `bill_unit_type`・`pay_unit_type` が `daily` / `hourly` / `monthly`。月額の数量（`bill_qty`・`pay_qty`）は 1/日数、1日分は `migrations/0114_monthly_unit.sql` のトリガーが入れる |
 | 月額（固定） | 以前の請求の仕組み（#9702）。その月にシフトが1件以上あれば月に1回だけ請求する。単位の「月額」に置き換え、移せなかった月だけが残る（D-56） | `monthly_bill_rules`（`migrated_from`）、`src/lib/monthly-billing.ts` |
 | 支払先 | 自社給与・日雇い給与・個人事業主・協力会社・他社（連携元） | `shifts.payee_type` が `payroll` / `payroll_daily` / `freelance` / `partner` / `linked` |
 | 精算・確定 | 実績を確かめて金額を確定すること。確定したシフトは変えられない | `shifts.settle_status` が `planned`（未確定）/ `confirmed`（確定）（`src/settlement.ts`） |
