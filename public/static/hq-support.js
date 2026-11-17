@@ -51,7 +51,7 @@
       parts.push(`<div class="rounded-xl border ${st.cls} px-4 py-3 text-sm">
         <div class="flex flex-wrap items-center gap-2 mb-1">${st.badge}<span class="font-bold text-neutral-800">${esc(a.title)}</span>
           <span class="text-xs text-neutral-400">本部より ${esc(fmt(a.starts_at))}${a.ends_at ? ` 〜 ${esc(fmt(a.ends_at))}` : ''}</span></div>
-        <p class="text-neutral-700 whitespace-pre-wrap">${esc(a.body)}</p>
+        <p class="text-neutral-700 whitespace-pre-wrap text-wrap-any">${esc(a.body)}</p>
         ${VIEW ? '' : `<div class="mt-2"><button type="button" class="btn btn-outline text-xs" data-action="hqsReadAnn" data-id="${Number(a.announcement_id)}"><i class="fas fa-check"></i>確認しました</button></div>`}
       </div>`)
     }
@@ -91,7 +91,7 @@
       <h4 class="font-bold text-sm mt-5 mb-2">これまでの依頼</h4>
       <div class="max-h-48 overflow-y-auto border border-neutral-100 rounded-lg divide-y divide-neutral-100 text-xs">
         ${reqs.requests.map(r => `<div class="px-3 py-2"><div class="flex items-center gap-2">${SUPPORT_STATUS[r.status] || ''}<span class="font-medium">${esc(menus[r.menu] || r.menu)}</span><span class="text-neutral-400 ml-auto">${esc(fmt(r.created_at, true))}・${esc(r.requester_name || '')}</span></div>
-          <p class="text-neutral-600 mt-1 whitespace-pre-wrap line-clamp-2">${esc(r.detail)}</p></div>`).join('')}
+          <p class="text-neutral-600 mt-1 whitespace-pre-wrap text-wrap-any line-clamp-2">${esc(r.detail)}</p></div>`).join('')}
       </div>` : ''}
       <div id="hqs-access" class="mt-5 pt-4 border-t border-neutral-100">${accessHtml(access)}</div>`)
     if (el.dataset.section === 'access') { const a = document.getElementById('hqs-access'); if (a) a.scrollIntoView() }

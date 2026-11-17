@@ -58,8 +58,8 @@
         <button class="card p-3 w-full text-left block ${n.read_at ? '' : 'ring-1 ring-primary-200'}" data-action="notifOpen" data-id="${n.notification_id}" data-link="${esc(n.link || '')}">
           <div class="flex items-center gap-2">${n.read_at ? '' : '<span class="w-2 h-2 rounded-full bg-primary-500 shrink-0"></span>'}<span class="badge badge-gray text-3xs">${esc(kindLabel(n.kind))}</span>${processedBadge(n)}
             <span class="text-2xs text-neutral-400 ml-auto">${esc(fmtAt(n.created_at))}</span></div>
-          <p class="font-bold text-neutral-800 mt-1 text-sm">${esc(n.title)}</p>
-          <p class="text-xs text-neutral-500 mt-0.5 whitespace-pre-wrap">${esc(n.body || '')}</p>
+          <p class="font-bold text-neutral-800 mt-1 text-sm text-wrap-any">${esc(n.title)}</p>
+          <p class="text-xs text-neutral-500 mt-0.5 whitespace-pre-wrap text-wrap-any">${esc(n.body || '')}</p>
         </button>`
   function drawInbox() {
     const kinds = [...Object.keys(KIND), ...Object.keys(INBOX.unread_by_kind).filter(k => !KIND[k])]

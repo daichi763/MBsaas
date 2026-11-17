@@ -104,7 +104,7 @@ async function openEndedChat(threadId) {
       <div class="flex ${m.mine ? 'justify-end' : 'justify-start'}">
         <div class="max-w-[80%] rounded-xl px-3 py-2 text-sm ${m.mine ? 'bg-primary-600 text-white' : 'bg-surface border border-neutral-200 text-neutral-800'}">
           <p class="text-3xs ${m.mine ? 'text-primary-100' : 'text-neutral-400'} mb-0.5">${esc(m.author_company_name)} ・ ${esc(m.author_name || '')} ・ ${esc((m.created_at || '').slice(5, 16))}</p>
-          <p class="whitespace-pre-wrap break-words">${esc(m.body)}</p>
+          <p class="whitespace-pre-wrap text-wrap-any">${esc(m.body)}</p>
         </div>
       </div>`).join('')}</div>
     <button class="btn btn-outline w-full mt-3" onclick="closeModal()">閉じる</button>`)
@@ -194,7 +194,7 @@ window.loadRosterChat = async function (sid, hostKey, opts) {
       <div class="flex ${m.mine ? 'justify-end' : 'justify-start'}">
         <div class="max-w-[80%] rounded-xl px-3 py-2 text-sm ${m.mine ? 'bg-primary-600 text-white' : 'bg-surface border border-neutral-200 text-neutral-800'}">
           <p class="text-3xs ${m.mine ? 'text-primary-100' : 'text-neutral-400'} mb-0.5">${esc(m.author_company_name)} ・ ${esc(m.author_name || '')} ・ ${esc((m.created_at || '').slice(5, 16))}</p>
-          <p class="whitespace-pre-wrap break-words">${esc(m.body)}</p>
+          <p class="whitespace-pre-wrap text-wrap-any">${esc(m.body)}</p>
         </div>
       </div>`).join('') || '<p class="text-xs text-neutral-400 text-center py-6">まだメッセージはありません</p>'
     log.scrollTop = log.scrollHeight

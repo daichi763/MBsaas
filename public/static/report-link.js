@@ -179,7 +179,7 @@
         ${(s.site_name && s.site_name !== s.location) || s.site_address || map ? `<p class="text-xs text-neutral-500 mt-0.5">${esc(s.site_name && s.site_name !== s.location ? s.site_name + ' ' : '')}${esc(s.site_address || '')}${map ? ` <a href="${esc(map)}" target="_blank" rel="noopener noreferrer" class="text-primary-600 underline whitespace-nowrap"><i class="fas fa-map-location-dot mr-0.5"></i>地図を開く</a>` : ''}</p>` : ''}
         ${siteContactHtml(s)}
         ${d.manual_text ? `<details class="mt-2 rounded-lg bg-neutral-50 p-2"><summary class="text-sm font-bold text-primary-700 cursor-pointer"><i class="fas fa-book mr-1"></i>注意事項・マニュアル</summary>
-          <p class="text-sm text-neutral-700 whitespace-pre-wrap break-words mt-2">${esc(d.manual_text)}</p></details>` : ''}
+          <p class="text-sm text-neutral-700 whitespace-pre-wrap text-wrap-any mt-2">${esc(d.manual_text)}</p></details>` : ''}
         ${firstStart && !order.some(t => ['done', 'open'].includes(st[t])) ? `<p class="text-xs text-warning-700 bg-warning-50 rounded p-2 mt-2">報告は ${esc(atLabel(firstStart))} から行えます</p>` : ''}
       </section>
       ${order.length ? `<section class="mb-4 space-y-2.5" id="report-link-attendance">
@@ -239,9 +239,9 @@
     return `<section class="card p-4 mb-4 border border-warning-200" id="report-link-notices">
       <h2 class="font-bold text-neutral-800 mb-2"><i class="fas fa-bullhorn text-warning-500 mr-1"></i>会社からのお知らせ</h2>
       <div class="space-y-2">${list.map(n => `<details class="rounded-lg bg-neutral-50 p-2" ${n.importance === 'urgent' ? 'open' : ''}>
-        <summary class="text-sm font-bold text-neutral-800 cursor-pointer">${IMPORTANCE_BADGE[n.importance] || ''} ${esc(n.title)}
+        <summary class="text-sm font-bold text-neutral-800 cursor-pointer text-wrap-any">${IMPORTANCE_BADGE[n.importance] || ''} ${esc(n.title)}
           <span class="text-2xs font-normal text-neutral-400 ml-1">${esc(dayjs(n.published_at).format('M/D'))}</span></summary>
-        <p class="text-sm text-neutral-700 whitespace-pre-wrap break-words mt-2">${esc(n.body || '')}</p></details>`).join('')}</div></section>`
+        <p class="text-sm text-neutral-700 whitespace-pre-wrap text-wrap-any mt-2">${esc(n.body || '')}</p></details>`).join('')}</div></section>`
   }
   // 遅刻・欠勤・トラブルの連絡（#163）。ボタンからフォームを開いて送る。会社の電話番号があれば発信のリンクも出す
   // 電話は、会社の緊急連絡先（GET /:token/contact。#173）があればそれを、なければ問い合わせの電話番号（contact_phone）を出す（同じ番号を2回出さない）
