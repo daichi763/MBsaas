@@ -53,7 +53,7 @@ ok('#9983 スタッフアプリのお知らせ: タイトル・本文（リン�
 ok('#9983 報告用URL のお知らせ: タイトル（summary）と本文に付ける', /cursor-pointer text-wrap-any">/.test(linkJs) && /whitespace-pre-wrap text-wrap-any mt-2">\$\{esc\(n\.body/.test(linkJs))
 ok('#9983 メールの「確認しました」のページ（/notice-ack）のタイトルに付ける', /p2\.className = 'font-bold text-neutral-800 mt-1 text-wrap-any'/.test(read('src/index.tsx')))
 // 利用者の入力の表示（日報・相談・コメント・チャット・フォロー）。whitespace-pre-wrap の所は pre-wrap のまま text-wrap-any を足す
-const views = ['admin.js', 'staff.js', 'board.js', 'roster-chat.js', 'roster.js', 'notifications.js', 'staff-attendance.js', 'report-link.js', 'recruit.js', 'corrections.js', 'staff-profile.js', 'apply.js', 'hq-support.js']
+const views = ['admin.js', 'staff.js', 'board.js', 'roster-chat.js', 'roster.js', 'notifications.js', 'staff-attendance.js', 'report-link.js', 'recruit.js', 'corrections.js', 'staff-profile.js', 'apply.js', 'hq-support.js', 'hq.js']
 const missing = []
 for (const f of views) for (const m of read(`public/static/${f}`).matchAll(/class="([^"]*\bwhitespace-pre-wrap\b[^"]*)"/g)) if (!/\btext-wrap-any\b/.test(m[1])) missing.push(`${f}: ${m[1]}`)
 ok('#9983 利用者の入力を出す所（whitespace-pre-wrap）は、すべて text-wrap-any も付ける', missing.length === 0, missing)
