@@ -346,6 +346,14 @@
 - **当てる順番**: 0114 はコードを出す**直前**に当て、すぐにデプロイする（前の版のコードは `migrated_from` を知らないので、当ててからデプロイまでの間、移した月額（固定）が「月額」の行としても出て、請求が二重に見える。確定・締めの操作をしない時間に当てる）。前の版のコードは `monthly` の単位を日額として計算し直すが、トリガーが1日分に直す。
 - **根拠のコード**: `migrations/0114_monthly_unit.sql`（トリガー `trg_shifts_monthly_*` と移し替え）、`src/shift-board.ts`（`UNIT_TYPES`・`calcAmounts`・`keepMonthlyAmounts`）、`src/settlement.ts`（`monthlyMismatch`・CSV・明細書の数量）、`src/lib/monthly-billing.ts`（`legacyActiveIn`）、`src/lib/premium-pay.ts`、`src/staff-pay.ts`（`month_days`）。テストは `scripts/test-w29-monthly.mjs`
 
+### D-57 単価は小数第2位まで入れられる（#9985）
+- **決定**: 請求・支払の単価を小数第2位まで入れられるようにする（利用者の要望 2026-11-17「小数点での手動修正もできるようにして欲しい」。例 時給 1,012.5 円）。シフトの単価の手動変更（シフトボードのシフト詳細・精算の金額の修正。PUT /shifts/:id/price）に加えて、同じ入力の部品を使う所（案件の標準単価・案件の登録・単価ルール（インセンティブを含む）・募集枠の役割の単価・シフト登録と一括登録で変える単価）もそろえる。
+  - 単価は入力どおりに保存し、画面・CSV・明細書に入力どおり出す（画面・明細書は ¥1,012.5、CSV は 1012.5）。
+  - **金額**（時給は 単価 × 実働の分 ÷ 60、日額はその額）は、これまでどおり円の整数に丸める（Math.round。例 1,012.5 円 × 7.5 時間 = 7,593.75 → 7,594 円、日額 10,000.5 円 → 10,001 円）。数量・交通費・調整額は今までどおり。
+  - **小数第3位以下**のある単価は丸めずに 400（「請求単価は小数第2位までで入力してください」）にする（入力と保存・表示がずれないように）。
+  - **月額**は円単位だけ（「請求単価（月額）は1円単位で入力してください」）。1日分を作る migrations/0114 のトリガーが月額を円の整数にして割るため。単位を送らずに月額のシフトへ小数を送ったとき（登録の画面で単価だけを変えた場合）は円に丸める。
+- **根拠のコード**: `src/shift-board.ts`（`rateOrNull`・`rateError` と、それを使う PUT /shifts/:id/price・`rateOverrideOf`・`ruleValues`・`ruleIncentive`・`normalizeRoles`・PUT /projects/:id/pricing）、`src/api.ts`（POST /admin/projects）、`src/settlement.ts`（明細書の `rateYenText`）、画面の単価の入力欄（`step="0.01"`）。テストは `scripts/test-w29-decimal.mjs`
+
 ## 運用・技術
 
 ### D-30 Workers の Free プランで動かす・PBKDF2 は 10,000 回
