@@ -838,11 +838,12 @@ app.get('/hq', async (c) => {
 <head>${head('SaaS本部')}
 </head>
 <body class="bg-hq-900 min-h-screen text-neutral-100">
+  <!-- 狭い画面では、名前の下の段にタブを並べ、タブの帯の中だけを横に動かす（Sprint 30 #9987 ui-hq-01。前は 390px でタブが1文字ずつ縦に並び、ページが横に広がった） -->
   <header class="bg-hq-800 border-b border-hq-700 sticky top-0 z-20">
-    <div class="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
-      <h1 class="font-bold flex items-center gap-2"><i class="fas fa-satellite-dish text-hq-accent-400"></i>Mobital <span class="text-hq-accent-400">本部管理</span></h1>
-      <div class="flex items-center gap-4 text-sm">
-        <nav class="flex gap-1">
+    <div class="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between flex-wrap gap-x-4 gap-y-2">
+      <h1 class="font-bold flex items-center gap-2 shrink-0"><i class="fas fa-satellite-dish text-hq-accent-400"></i>Mobital <span class="text-hq-accent-400">本部管理</span></h1>
+      <div class="flex items-center gap-4 text-sm min-w-0 max-w-full">
+        <nav class="flex gap-1 min-w-0 overflow-x-auto">
           <a href="#companies" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="companies">導入企業</a>
           <a href="#templates" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="templates">テンプレート配信</a>
           <a href="#retention" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="retention">データ保持・定期処理</a>
