@@ -265,7 +265,7 @@
             ${p.is_mine && p.source_project_name ? row('コピー元案件', `${esc(p.source_project_name)} <span class="text-xs text-neutral-400">（自社のみ表示）</span>`) : ''}
           </dl>
           <h3 class="text-sm font-bold text-neutral-700 mt-5 mb-2">業務内容・詳細</h3>
-          <div class="text-sm text-neutral-700 whitespace-pre-wrap leading-relaxed">${esc(p.description || '（記載なし）')}</div>
+          <div class="text-sm text-neutral-700 whitespace-pre-wrap text-wrap-any leading-relaxed">${esc(p.description || '（記載なし）')}</div>
         </section>
         <aside class="space-y-4">
           <section class="card p-4" id="board-contact">
@@ -495,9 +495,9 @@
       </dl>
       ${rows.length ? `<p class="text-2xs font-bold text-neutral-400 mt-2 mb-1">経歴</p>
         <table class="w-full text-2xs"><tbody>${rows.map(r => `<tr class="border-t border-neutral-100 align-top">
-          <td class="py-1 pr-2 whitespace-nowrap text-neutral-500">${esc(fmtYm(r.from))}〜${esc(fmtYm(r.to))}</td><td class="py-1 pr-2">${esc(r.company || '')}</td><td class="py-1 whitespace-pre-wrap">${esc(r.work || '')}</td></tr>`).join('')}</tbody></table>`
-        : sn.career ? `<p class="text-2xs font-bold text-neutral-400 mt-2 mb-1">経歴</p><p class="text-xs whitespace-pre-wrap">${esc(sn.career)}</p>` : ''}
-      ${sn.pr_points ? `<p class="text-2xs font-bold text-neutral-400 mt-2 mb-1">経験・スキル・人柄・PRポイント等</p><p class="text-xs whitespace-pre-wrap">${esc(sn.pr_points)}</p>` : ''}`
+          <td class="py-1 pr-2 whitespace-nowrap text-neutral-500">${esc(fmtYm(r.from))}〜${esc(fmtYm(r.to))}</td><td class="py-1 pr-2">${esc(r.company || '')}</td><td class="py-1 whitespace-pre-wrap text-wrap-any">${esc(r.work || '')}</td></tr>`).join('')}</tbody></table>`
+        : sn.career ? `<p class="text-2xs font-bold text-neutral-400 mt-2 mb-1">経歴</p><p class="text-xs whitespace-pre-wrap text-wrap-any">${esc(sn.career)}</p>` : ''}
+      ${sn.pr_points ? `<p class="text-2xs font-bold text-neutral-400 mt-2 mb-1">経験・スキル・人柄・PRポイント等</p><p class="text-xs whitespace-pre-wrap text-wrap-any">${esc(sn.pr_points)}</p>` : ''}`
   }
   function proposalCardHtml(pr) {
     if (!pr) return ''
@@ -531,7 +531,7 @@
         </div>
         ${skillSheetHtml(sn)}
         ${pr.proposed_price ? `<p class="text-xs mt-2"><span class="text-neutral-400">提示単価</span> <span class="font-bold">${esc(UNIT[pr.price_unit] || '')} ${Number(pr.proposed_price).toLocaleString()}円</span></p>` : ''}
-        ${pr.comment ? `<p class="text-xs mt-2 bg-neutral-50 rounded-lg p-2 whitespace-pre-wrap">${esc(pr.comment)}</p>` : ''}
+        ${pr.comment ? `<p class="text-xs mt-2 bg-neutral-50 rounded-lg p-2 whitespace-pre-wrap text-wrap-any">${esc(pr.comment)}</p>` : ''}
         ${consentLine}
         ${actions.length ? `<div class="flex gap-2 mt-3 flex-wrap justify-end">${actions.join('')}</div>` : ''}
       </div>`
@@ -549,7 +549,7 @@
       : `<div class="flex ${m.mine ? 'justify-end' : 'justify-start'}">
           <div class="max-w-[80%] rounded-xl px-3 py-2 text-sm ${m.mine ? 'bg-primary-600 text-white' : 'bg-surface border border-neutral-200 text-neutral-800'}">
             <p class="text-3xs ${m.mine ? 'text-primary-100' : 'text-neutral-400'} mb-0.5">${esc(m.author_company_name)}${m.author_name ? ' ・ ' + esc(m.author_name) : ''} ・ ${esc((m.created_at || '').slice(5, 16))}</p>
-            <p class="whitespace-pre-wrap break-words">${esc(m.body)}</p>
+            <p class="whitespace-pre-wrap text-wrap-any">${esc(m.body)}</p>
           </div>
         </div>`).join('') || '<p class="text-xs text-neutral-400 text-center py-6">まだメッセージはありません</p>'
   }

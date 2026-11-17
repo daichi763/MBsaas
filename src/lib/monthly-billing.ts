@@ -1,6 +1,11 @@
 // =========================================================
 // 請求単価の「月額（固定）」（#9702。表は monthly_bill_rules。migrations/0096_monthly_billing.sql）
 //
+// Sprint 29（#9984）で、請求・支払の単位の「月額」（月額 ÷ その月の働いた日数を1日分としてシフトに持つ。migrations/0114）に置き換えた。
+// 0114 で移せた月（monthly_bill_rules.migrated_from 以降の月）は、シフトの金額に入っているので、ここでは行を作らない。
+// 移せなかった月（確定済み・締めた月、請求単価のあるシフトと混ざった月など）と、移せなかったルール（migrated_from = NULL）だけを、
+// これまでどおり「月額（固定）」の行として足す。新しいルールは作れない（API で断る）。
+//
 // 案件（またはその案件のスタッフ）に月額を決めておき、その月に確定・代打のシフトが1件以上あれば、月に1回だけ請求する。
 // シフトの数・時間には左右されず、シフトの請求額（shifts.unit_price・shiftTotals）には入れない。
 // 精算・請求前確認・請求の CSV・請求明細書・案件とクライアントの売上に「月額」の行として足す。支払には使わない。
@@ -39,6 +44,9 @@ export function monthsOverlapping(from: string, to: string): string[] {
   return out
 }
 export const ruleActiveIn = (r: { valid_from?: string | null; valid_to?: string | null }, ym: string) => (!r.valid_from || r.valid_from <= ym) && (!r.valid_to || r.valid_to >= ym)
+// 月額（固定）の行として請求する月か（ルールの期間で、新しい月額に移した月（migrated_from 以降。#9984）でない）
+export const legacyActiveIn = (r: { valid_from?: string | null; valid_to?: string | null; migrated_from?: string | null }, ym: string) =>
+  ruleActiveIn(r, ym) && (!r.migrated_from || ym < r.migrated_from)
 
 export type MonthlyQuery = {
   months: string[]
@@ -60,7 +68,9 @@ export async function loadMonthlyLines(db: D1Database, companyId: number, q: Mon
   if (q.client_id === 0) w.push('p.client_id IS NULL')
   else if (q.client_id) { w.push('p.client_id = ?'); bind.push(q.client_id) }
   if (q.staff_id) { w.push('r.staff_id = ?'); bind.push(q.staff_id) }
-  const rules = (await db.prepare(`SELECT r.rule_id, r.project_id, r.staff_id, r.amount, r.valid_from, r.valid_to, r.memo,
+  // 新しい月額にすべての月を移したルール（migrated_from = '0000-00'）は読まない
+  w.push("(r.migrated_from IS NULL OR r.migrated_from > ?)"); bind.push(minYM)
+  const rules = (await db.prepare(`SELECT r.rule_id, r.project_id, r.staff_id, r.amount, r.valid_from, r.valid_to, r.memo, r.migrated_from,
       p.project_name, p.client_id, cl.client_name, us.name AS staff_name
     FROM monthly_bill_rules r JOIN projects p ON p.project_id = r.project_id AND p.company_id = r.company_id
     LEFT JOIN clients cl ON cl.client_id = p.client_id AND cl.company_id = p.company_id
@@ -94,7 +104,7 @@ export async function loadMonthlyLines(db: D1Database, companyId: number, q: Mon
   const out: MonthlyLine[] = []
   for (const ym of months) {
     for (const r of rules) {
-      if (!ruleActiveIn(r, ym)) continue
+      if (!legacyActiveIn(r, ym)) continue
       const scope = `${r.project_id}:${r.staff_id ?? ''}:${ym}`
       if (used.has(scope)) continue
       used.add(scope)

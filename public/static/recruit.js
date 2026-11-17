@@ -458,7 +458,7 @@
           ${a.turnstile_unverified ? '<span class="badge badge-yellow mt-1 recruit-unverified" title="ボット対策（Turnstile）の確認サービスに接続できなかったため、ロボットかどうかを判定せずに受け付けた応募です。氏名・電話番号などがいたずらでないか確かめてから承認してください">要確認（ロボット判定できず）</span>' : ''}</div>
         <p class="text-2xs text-neutral-400 text-right">${esc(a.page_title || '')}<br>${dayjs(a.created_at).format('M/D HH:mm')} 応募</p>
       </div>
-      ${a.note ? `<p class="text-xs bg-neutral-50 rounded p-2 mb-2 whitespace-pre-wrap">${esc(a.note)}</p>` : ''}
+      ${a.note ? `<p class="text-xs bg-neutral-50 rounded p-2 mb-2 whitespace-pre-wrap text-wrap-any">${esc(a.note)}</p>` : ''}
       ${(a.answers || []).length ? `<div class="text-xs bg-primary-50 rounded p-2 mb-2 space-y-0.5 rc-answers">${a.answers.map(x => `<p><span class="text-neutral-500">${esc(x.label)}:</span> <b class="font-medium">${esc(x.value)}</b></p>`).join('')}</div>` : ''}
       ${a.staff_inactive && pending.length ? '<p class="text-xs text-danger-700 bg-danger-50 rounded p-2 mb-2"><i class="fas fa-user-slash mr-1"></i>このスタッフは退職・停止中のため、承認できません。見送りにしてください</p>' : ''}
       ${!a.staff_id && a.phone_matches.length ? `<p class="text-xs text-warning-700 bg-warning-50 rounded p-2 mb-2"><i class="fas fa-user-check mr-1"></i>電話番号が一致するスタッフがいます: ${a.phone_matches.map(matchName).join('、')}</p>` : ''}
@@ -496,7 +496,7 @@
   const QUICK_NOTES = ['電話済み', '不在（折り返し待ち）', '面談予定', '結果を連絡済み']
   function notesList(notes) {
     return (notes || []).map(n => `<li class="flex items-start gap-1.5"><span class="text-neutral-400 whitespace-nowrap">${esc(dayjs(n.created_at).format('M/D HH:mm'))} ${esc(n.author_name || '（削除された利用者）')}</span>
-      <span class="flex-1 whitespace-pre-wrap break-words">${esc(n.body)}</span>
+      <span class="flex-1 whitespace-pre-wrap text-wrap-any">${esc(n.body)}</span>
       ${n.mine ? `<button class="text-neutral-400 hover:text-danger-600" data-action="recruitDeleteNote" data-id="${Number(n.application_id)}" data-note="${Number(n.note_id)}" title="このメモを削除"><i class="fas fa-xmark"></i></button>` : ''}</li>`).join('')
       || '<li class="text-neutral-400">まだメモはありません</li>'
   }

@@ -14,9 +14,9 @@ function careerHtml(p) {
   try { const a = JSON.parse(p.career_rows || '[]'); if (Array.isArray(a)) rows = a } catch { rows = [] }
   if (rows.length) {
     // dd は改行をそのまま出す（whitespace-pre-wrap）ため、タグの間に改行・字下げを入れない
-    return `<ul class="space-y-1">${rows.map(r => `<li class="whitespace-pre-wrap break-words">${r.from || r.to ? `<span class="text-xs text-neutral-500">${esc(r.from || '')}〜${esc(r.to || '')}</span> ` : ''}${esc(r.company || '')}${r.work ? ` <span class="text-neutral-600">${esc(r.work)}</span>` : ''}${r.note ? ` <span class="text-xs text-neutral-400">（${esc(r.note)}）</span>` : ''}</li>`).join('')}</ul>`
+    return `<ul class="space-y-1">${rows.map(r => `<li class="whitespace-pre-wrap text-wrap-any">${r.from || r.to ? `<span class="text-xs text-neutral-500">${esc(r.from || '')}〜${esc(r.to || '')}</span> ` : ''}${esc(r.company || '')}${r.work ? ` <span class="text-neutral-600">${esc(r.work)}</span>` : ''}${r.note ? ` <span class="text-xs text-neutral-400">（${esc(r.note)}）</span>` : ''}</li>`).join('')}</ul>`
   }
-  return p.career ? `<span class="whitespace-pre-wrap break-words">${esc(p.career)}</span>` : '-'
+  return p.career ? `<span class="whitespace-pre-wrap text-wrap-any">${esc(p.career)}</span>` : '-'
 }
 function skillsHtml(v) {
   const list = String(v || '').split(/[,、，\n]/).map(s => s.trim()).filter(Boolean)
@@ -30,7 +30,7 @@ function sharedWithHtml(list) {
   return `<section class="card p-4 mb-3">
       <h3 class="text-sm font-bold text-neutral-700 mb-2"><i class="fas fa-share-nodes text-primary-500 mr-1"></i>あなたの情報を共有中の会社</h3>
       ${rows.length ? `<ul class="text-sm divide-y divide-neutral-50">${rows.map(r => `<li class="flex items-center gap-2 py-2">
-          <span class="flex-1 min-w-0 break-words ${r.ended ? 'text-neutral-400' : 'text-neutral-800'}">${esc(r.company_name)}</span>
+          <span class="flex-1 min-w-0 text-wrap-any ${r.ended ? 'text-neutral-400' : 'text-neutral-800'}">${esc(r.company_name)}</span>
           <span class="text-2xs text-neutral-400 whitespace-nowrap">連携 ${esc(day(r.linked_at))}</span>
           ${r.ended ? `<span class="badge badge-gray">終了 ${esc(day(r.ended_at))}</span>` : '<span class="badge badge-blue">共有中</span>'}</li>`).join('')}</ul>`
         : '<p class="text-sm text-neutral-400">他の会社とは共有していません</p>'}
@@ -47,7 +47,7 @@ window.renderMyProfile = async function () {
     return
   }
   // 値は esc 済みの HTML で渡す（経歴・スキルは複数行・バッジで出すため）
-  const rowHtml = (k, html) => `<div class="flex py-2 border-b border-neutral-50 last:border-0"><dt class="w-28 text-neutral-400 shrink-0">${k}</dt><dd class="flex-1 min-w-0 text-neutral-800 whitespace-pre-wrap break-words">${html}</dd></div>`
+  const rowHtml = (k, html) => `<div class="flex py-2 border-b border-neutral-50 last:border-0"><dt class="w-28 text-neutral-400 shrink-0">${k}</dt><dd class="flex-1 min-w-0 text-neutral-800 whitespace-pre-wrap text-wrap-any">${html}</dd></div>`
   const row = (k, v) => rowHtml(k, esc(v == null || v === '' ? '-' : v))
   MY_STAFF_ID.code = p.global_staff_code || ''; MY_STAFF_ID.name = p.name || ''
   const terms = p.share_terms || { shared: [], not_shared: [] }
@@ -316,7 +316,7 @@ window.renderProfileRequest = async function () {
     ${d.requests.length ? `<section class="card p-4"><h3 class="text-sm font-bold text-neutral-700 mb-2">これまでの申請</h3><div class="space-y-3">${d.requests.map(r => `
       <div class="border-b border-neutral-100 pb-2 last:border-0">
         <div class="flex items-center gap-2 flex-wrap text-xs text-neutral-500">${selfStatusBadge(r.status)}<span>${selfDate(r.created_at)} 申請</span>${r.company_name ? `<span>${esc(r.company_name)}</span>` : ''}</div>
-        <ul class="text-sm mt-1 space-y-0.5">${Object.keys(r.changes || {}).map(k => `<li class="break-words"><span class="text-neutral-400">${esc(L[k] || k)}:</span> ${esc(show(r.before && r.before[k]))} → <b>${esc(show(r.changes[k]))}</b></li>`).join('')}</ul>
+        <ul class="text-sm mt-1 space-y-0.5">${Object.keys(r.changes || {}).map(k => `<li class="text-wrap-any"><span class="text-neutral-400">${esc(L[k] || k)}:</span> ${esc(show(r.before && r.before[k]))} → <b>${esc(show(r.changes[k]))}</b></li>`).join('')}</ul>
         ${r.review_comment ? `<p class="text-xs text-neutral-600 mt-1">担当者のコメント: ${esc(r.review_comment)}</p>` : ''}
         ${r.status === 'pending' ? `<button class="btn btn-outline text-xs mt-1" data-action="cancelProfileRequest" data-id="${Number(r.request_id)}">この申請を取り消す</button>` : ''}
       </div>`).join('')}</div></section>` : ''}`
@@ -467,7 +467,7 @@ window.renderMyLeave = async function () {
         <div class="border-b border-neutral-100 pb-2 last:border-0 text-sm">
           <div class="flex items-center gap-2 flex-wrap"><b>${esc(dayjs(l.leave_date).format('M/D'))}（${SELF_WEEKDAY[dayjs(l.leave_date).day()]}）</b>
             <span class="text-xs text-neutral-600">${esc((MY_LEAVE_TYPE[l.leave_type] || l.leave_type).replace(/（.*）/, ''))}・${esc(MY_LEAVE_UNIT[l.leave_unit] || l.leave_unit)}</span>${selfStatusBadge(l.status)}</div>
-          ${l.reason ? `<p class="text-xs text-neutral-500 mt-0.5 whitespace-pre-wrap">${esc(l.reason)}</p>` : ''}
+          ${l.reason ? `<p class="text-xs text-neutral-500 mt-0.5 whitespace-pre-wrap text-wrap-any">${esc(l.reason)}</p>` : ''}
           ${l.review_comment ? `<p class="text-xs text-neutral-600 mt-0.5">担当者のコメント: ${esc(l.review_comment)}</p>` : ''}
           ${l.status === 'pending' ? `<button class="btn btn-outline text-xs mt-1" data-action="cancelLeave" data-id="${Number(l.leave_id)}">取り消す</button>` : ''}
         </div>`).join('')}</div>` : '<p class="text-sm text-neutral-400">まだ申請はありません</p>'}

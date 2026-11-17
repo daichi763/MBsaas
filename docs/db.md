@@ -31,8 +31,8 @@ npm run docs:check    # 作り直さずに、今のコードと合っている�
 ## 1. 全体の要約
 
 <!-- BEGIN GENERATED: db-summary -->
-- マイグレーション: 113 本（0001_initial_schema.sql 〜 0113_push_subscribed_host.sql）
-- 表: 137・索引: 309・トリガー: 18・ビュー: 0
+- マイグレーション: 114 本（0001_initial_schema.sql 〜 0114_monthly_unit.sql）
+- 表: 137・索引: 309・トリガー: 21・ビュー: 0
 - REFERENCES（外部キー）で宣言した関係: 92・宣言のない `*_id` の列で、ほかの表の主キーと同じ名前のもの: 143
 - 主キーが INTEGER の1列（ROWID。AUTOINCREMENT を含む）の表: 101・それ以外の主キーの表: 36
 - company_id の列がある表: 109
@@ -2432,7 +2432,7 @@ UNIQUE 制約: (user_id)
 - `idx_shifts_company_date_settle`: (company_id, work_date, settle_status)
 - `idx_shifts_staff`: (staff_id, work_date)
 
-トリガー: [`trg_shift_cancellations_clear`](#trigger-trg_shift_cancellations_clear)・[`trg_shifts_staff_changed_at`](#trigger-trg_shifts_staff_changed_at)
+トリガー: [`trg_shift_cancellations_clear`](#trigger-trg_shift_cancellations_clear)・[`trg_shifts_monthly_delete`](#trigger-trg_shifts_monthly_delete)・[`trg_shifts_monthly_insert`](#trigger-trg_shifts_monthly_insert)・[`trg_shifts_monthly_update`](#trigger-trg_shifts_monthly_update)・[`trg_shifts_staff_changed_at`](#trigger-trg_shifts_staff_changed_at)
 
 <a id="sites"></a>
 #### sites — 開催場所
@@ -4424,6 +4424,8 @@ UNIQUE 制約: (day)
 | `created_at` | DATETIME | 可 | CURRENT_TIMESTAMP |  |  |  |
 | `updated_by` | INTEGER | 可 |  |  |  |  |
 | `updated_at` | DATETIME | 可 |  |  |  |  |
+| `migrated_at` | TEXT | 可 |  |  | 0114 | 2. 月額（固定）のルールを新しい月額に移した印 migrated_at: 移す処理をした日時（日本時間）。NULL = まだ（この後の 4. で処理する） migrated_from: 新しい月額に移した最初の月（'YYYY-MM'。'0000-00' = すべての月）。この月より前は、これまでどおり 「月額（固定… |
+| `migrated_from` | TEXT | 可 |  |  | 0114 | 2. 月額（固定）のルールを新しい月額に移した印 migrated_at: 移す処理をした日時（日本時間）。NULL = まだ（この後の 4. で処理する） migrated_from: 新しい月額に移した最初の月（'YYYY-MM'。'0000-00' = すべての月）。この月より前は、これまでどおり 「月額（固定… |
 
 索引:
 
@@ -4616,6 +4618,253 @@ CREATE TRIGGER trg_shift_cancellations_clear AFTER UPDATE OF status ON shifts
 WHEN OLD.status = 'absent' AND NEW.status IS NOT 'absent'
 BEGIN
   DELETE FROM shift_cancellations WHERE shift_id = NEW.shift_id;
+END
+```
+
+<a id="trigger-trg_shifts_monthly_delete"></a>
+#### trg_shifts_monthly_delete（shifts・AFTER DELETE）
+
+```sql
+CREATE TRIGGER trg_shifts_monthly_delete AFTER DELETE ON shifts
+WHEN OLD.bill_unit_type = 'monthly' OR OLD.pay_unit_type = 'monthly'
+BEGIN
+  UPDATE shifts SET unit_price = CASE WHEN shifts.status IN ('confirmed','substitute')
+        THEN CAST(COALESCE(shifts.bill_rate, 0) AS INTEGER) / (SELECT COUNT(*) FROM shifts x WHERE x.staff_id = shifts.staff_id AND x.project_id = shifts.project_id
+          AND x.work_date BETWEEN substr(shifts.work_date, 1, 7) || '-01' AND substr(shifts.work_date, 1, 7) || '-31'
+          AND x.company_id = shifts.company_id AND x.bill_unit_type = 'monthly' AND x.status IN ('confirmed','substitute'))
+          + CASE WHEN NOT EXISTS (SELECT 1 FROM shifts x WHERE x.staff_id = shifts.staff_id AND x.project_id = shifts.project_id
+          AND x.work_date BETWEEN substr(shifts.work_date, 1, 7) || '-01' AND substr(shifts.work_date, 1, 7) || '-31'
+          AND x.company_id = shifts.company_id AND x.bill_unit_type = 'monthly' AND x.status IN ('confirmed','substitute')
+          AND (x.work_date > shifts.work_date OR (x.work_date = shifts.work_date AND (COALESCE(x.start_time, '') > COALESCE(shifts.start_time, '')
+            OR (COALESCE(x.start_time, '') = COALESCE(shifts.start_time, '') AND x.shift_id > shifts.shift_id))))) THEN CAST(COALESCE(shifts.bill_rate, 0) AS INTEGER) % (SELECT COUNT(*) FROM shifts x WHERE x.staff_id = shifts.staff_id AND x.project_id = shifts.project_id
+          AND x.work_date BETWEEN substr(shifts.work_date, 1, 7) || '-01' AND substr(shifts.work_date, 1, 7) || '-31'
+          AND x.company_id = shifts.company_id AND x.bill_unit_type = 'monthly' AND x.status IN ('confirmed','substitute')) ELSE 0 END
+        ELSE 0 END,
+    bill_qty = CASE WHEN shifts.status IN ('confirmed','substitute') THEN 1.0 / (SELECT COUNT(*) FROM shifts x WHERE x.staff_id = shifts.staff_id AND x.project_id = shifts.project_id
+          AND x.work_date BETWEEN substr(shifts.work_date, 1, 7) || '-01' AND substr(shifts.work_date, 1, 7) || '-31'
+          AND x.company_id = shifts.company_id AND x.bill_unit_type = 'monthly' AND x.status IN ('confirmed','substitute')) ELSE 0 END
+  WHERE shifts.bill_unit_type = 'monthly' AND (shifts.staff_id = OLD.staff_id AND shifts.project_id = OLD.project_id AND shifts.company_id = OLD.company_id
+        AND shifts.work_date BETWEEN substr(OLD.work_date, 1, 7) || '-01' AND substr(OLD.work_date, 1, 7) || '-31')
+    AND (COALESCE(shifts.settle_status, 'planned') != 'confirmed'
+        AND NOT EXISTS (SELECT 1 FROM settlement_closings k WHERE k.company_id = shifts.company_id AND k.reopened_at IS NULL
+          AND shifts.work_date BETWEEN k.period_from AND k.period_to))
+    AND (shifts.unit_price IS NOT CASE WHEN shifts.status IN ('confirmed','substitute')
+        THEN CAST(COALESCE(shifts.bill_rate, 0) AS INTEGER) / (SELECT COUNT(*) FROM shifts x WHERE x.staff_id = shifts.staff_id AND x.project_id = shifts.project_id
+          AND x.work_date BETWEEN substr(shifts.work_date, 1, 7) || '-01' AND substr(shifts.work_date, 1, 7) || '-31'
+          AND x.company_id = shifts.company_id AND x.bill_unit_type = 'monthly' AND x.status IN ('confirmed','substitute'))
+          + CASE WHEN NOT EXISTS (SELECT 1 FROM shifts x WHERE x.staff_id = shifts.staff_id AND x.project_id = shifts.project_id
+          AND x.work_date BETWEEN substr(shifts.work_date, 1, 7) || '-01' AND substr(shifts.work_date, 1, 7) || '-31'
+          AND x.company_id = shifts.company_id AND x.bill_unit_type = 'monthly' AND x.status IN ('confirmed','substitute')
+          AND (x.work_date > shifts.work_date OR (x.work_date = shifts.work_date AND (COALESCE(x.start_time, '') > COALESCE(shifts.start_time, '')
+            OR (COALESCE(x.start_time, '') = COALESCE(shifts.start_time, '') AND x.shift_id > shifts.shift_id))))) THEN CAST(COALESCE(shifts.bill_rate, 0) AS INTEGER) % (SELECT COUNT(*) FROM shifts x WHERE x.staff_id = shifts.staff_id AND x.project_id = shifts.project_id
+          AND x.work_date BETWEEN substr(shifts.work_date, 1, 7) || '-01' AND substr(shifts.work_date, 1, 7) || '-31'
+          AND x.company_id = shifts.company_id AND x.bill_unit_type = 'monthly' AND x.status IN ('confirmed','substitute')) ELSE 0 END
+        ELSE 0 END
+      OR shifts.bill_qty IS NOT CASE WHEN shifts.status IN ('confirmed','substitute') THEN 1.0 / (SELECT COUNT(*) FROM shifts x WHERE x.staff_id = shifts.staff_id AND x.project_id = shifts.project_id
+          AND x.work_date BETWEEN substr(shifts.work_date, 1, 7) || '-01' AND substr(shifts.work_date, 1, 7) || '-31'
+          AND x.company_id = shifts.company_id AND x.bill_unit_type = 'monthly' AND x.status IN ('confirmed','substitute')) ELSE 0 END);
+  UPDATE shifts SET pay_amount = CASE WHEN shifts.pay_rate IS NULL THEN NULL WHEN shifts.status IN ('confirmed','substitute')
+        THEN CAST(shifts.pay_rate AS INTEGER) / (SELECT COUNT(*) FROM shifts x WHERE x.staff_id = shifts.staff_id AND x.project_id = shifts.project_id
+          AND x.work_date BETWEEN substr(shifts.work_date, 1, 7) || '-01' AND substr(shifts.work_date, 1, 7) || '-31'
+          AND x.company_id = shifts.company_id AND x.pay_unit_type = 'monthly' AND x.status IN ('confirmed','substitute'))
+          + CASE WHEN NOT EXISTS (SELECT 1 FROM shifts x WHERE x.staff_id = shifts.staff_id AND x.project_id = shifts.project_id
+          AND x.work_date BETWEEN substr(shifts.work_date, 1, 7) || '-01' AND substr(shifts.work_date, 1, 7) || '-31'
+          AND x.company_id = shifts.company_id AND x.pay_unit_type = 'monthly' AND x.status IN ('confirmed','substitute')
+          AND (x.work_date > shifts.work_date OR (x.work_date = shifts.work_date AND (COALESCE(x.start_time, '') > COALESCE(shifts.start_time, '')
+            OR (COALESCE(x.start_time, '') = COALESCE(shifts.start_time, '') AND x.shift_id > shifts.shift_id))))) THEN CAST(shifts.pay_rate AS INTEGER) % (SELECT COUNT(*) FROM shifts x WHERE x.staff_id = shifts.staff_id AND x.project_id = shifts.project_id
+          AND x.work_date BETWEEN substr(shifts.work_date, 1, 7) || '-01' AND substr(shifts.work_date, 1, 7) || '-31'
+          AND x.company_id = shifts.company_id AND x.pay_unit_type = 'monthly' AND x.status IN ('confirmed','substitute')) ELSE 0 END
+        ELSE 0 END,
+    pay_qty = CASE WHEN shifts.status IN ('confirmed','substitute') THEN 1.0 / (SELECT COUNT(*) FROM shifts x WHERE x.staff_id = shifts.staff_id AND x.project_id = shifts.project_id
+          AND x.work_date BETWEEN substr(shifts.work_date, 1, 7) || '-01' AND substr(shifts.work_date, 1, 7) || '-31'
+          AND x.company_id = shifts.company_id AND x.pay_unit_type = 'monthly' AND x.status IN ('confirmed','substitute')) ELSE 0 END
+  WHERE shifts.pay_unit_type = 'monthly' AND (shifts.staff_id = OLD.staff_id AND shifts.project_id = OLD.project_id AND shifts.company_id = OLD.company_id
+        AND shifts.work_date BETWEEN substr(OLD.work_date, 1, 7) || '-01' AND substr(OLD.work_date, 1, 7) || '-31')
+    AND (COALESCE(shifts.settle_status, 'planned') != 'confirmed'
+        AND NOT EXISTS (SELECT 1 FROM settlement_closings k WHERE k.company_id = shifts.company_id AND k.reopened_at IS NULL
+          AND shifts.work_date BETWEEN k.period_from AND k.period_to))
+    AND (shifts.pay_amount IS NOT CASE WHEN shifts.pay_rate IS NULL THEN NULL WHEN shifts.status IN ('confirmed','substitute')
+        THEN CAST(shifts.pay_rate AS INTEGER) / (SELECT COUNT(*) FROM shifts x WHERE x.staff_id = shifts.staff_id AND x.project_id = shifts.project_id
+          AND x.work_date BETWEEN substr(shifts.work_date, 1, 7) || '-01' AND substr(shifts.work_date, 1, 7) || '-31'
+          AND x.company_id = shifts.company_id AND x.pay_unit_type = 'monthly' AND x.status IN ('confirmed','substitute'))
+          + CASE WHEN NOT EXISTS (SELECT 1 FROM shifts x WHERE x.staff_id = shifts.staff_id AND x.project_id = shifts.project_id
+          AND x.work_date BETWEEN substr(shifts.work_date, 1, 7) || '-01' AND substr(shifts.work_date, 1, 7) || '-31'
+          AND x.company_id = shifts.company_id AND x.pay_unit_type = 'monthly' AND x.status IN ('confirmed','substitute')
+          AND (x.work_date > shifts.work_date OR (x.work_date = shifts.work_date AND (COALESCE(x.start_time, '') > COALESCE(shifts.start_time, '')
+            OR (COALESCE(x.start_time, '') = COALESCE(shifts.start_time, '') AND x.shift_id > shifts.shift_id))))) THEN CAST(shifts.pay_rate AS INTEGER) % (SELECT COUNT(*) FROM shifts x WHERE x.staff_id = shifts.staff_id AND x.project_id = shifts.project_id
+          AND x.work_date BETWEEN substr(shifts.work_date, 1, 7) || '-01' AND substr(shifts.work_date, 1, 7) || '-31'
+          AND x.company_id = shifts.company_id AND x.pay_unit_type = 'monthly' AND x.status IN ('confirmed','substitute')) ELSE 0 END
+        ELSE 0 END
+      OR shifts.pay_qty IS NOT CASE WHEN shifts.status IN ('confirmed','substitute') THEN 1.0 / (SELECT COUNT(*) FROM shifts x WHERE x.staff_id = shifts.staff_id AND x.project_id = shifts.project_id
+          AND x.work_date BETWEEN substr(shifts.work_date, 1, 7) || '-01' AND substr(shifts.work_date, 1, 7) || '-31'
+          AND x.company_id = shifts.company_id AND x.pay_unit_type = 'monthly' AND x.status IN ('confirmed','substitute')) ELSE 0 END);
+END
+```
+
+<a id="trigger-trg_shifts_monthly_insert"></a>
+#### trg_shifts_monthly_insert（shifts・AFTER INSERT）
+
+```sql
+CREATE TRIGGER trg_shifts_monthly_insert AFTER INSERT ON shifts
+WHEN NEW.bill_unit_type = 'monthly' OR NEW.pay_unit_type = 'monthly'
+BEGIN
+  UPDATE shifts SET unit_price = CASE WHEN shifts.status IN ('confirmed','substitute')
+        THEN CAST(COALESCE(shifts.bill_rate, 0) AS INTEGER) / (SELECT COUNT(*) FROM shifts x WHERE x.staff_id = shifts.staff_id AND x.project_id = shifts.project_id
+          AND x.work_date BETWEEN substr(shifts.work_date, 1, 7) || '-01' AND substr(shifts.work_date, 1, 7) || '-31'
+          AND x.company_id = shifts.company_id AND x.bill_unit_type = 'monthly' AND x.status IN ('confirmed','substitute'))
+          + CASE WHEN NOT EXISTS (SELECT 1 FROM shifts x WHERE x.staff_id = shifts.staff_id AND x.project_id = shifts.project_id
+          AND x.work_date BETWEEN substr(shifts.work_date, 1, 7) || '-01' AND substr(shifts.work_date, 1, 7) || '-31'
+          AND x.company_id = shifts.company_id AND x.bill_unit_type = 'monthly' AND x.status IN ('confirmed','substitute')
+          AND (x.work_date > shifts.work_date OR (x.work_date = shifts.work_date AND (COALESCE(x.start_time, '') > COALESCE(shifts.start_time, '')
+            OR (COALESCE(x.start_time, '') = COALESCE(shifts.start_time, '') AND x.shift_id > shifts.shift_id))))) THEN CAST(COALESCE(shifts.bill_rate, 0) AS INTEGER) % (SELECT COUNT(*) FROM shifts x WHERE x.staff_id = shifts.staff_id AND x.project_id = shifts.project_id
+          AND x.work_date BETWEEN substr(shifts.work_date, 1, 7) || '-01' AND substr(shifts.work_date, 1, 7) || '-31'
+          AND x.company_id = shifts.company_id AND x.bill_unit_type = 'monthly' AND x.status IN ('confirmed','substitute')) ELSE 0 END
+        ELSE 0 END,
+    bill_qty = CASE WHEN shifts.status IN ('confirmed','substitute') THEN 1.0 / (SELECT COUNT(*) FROM shifts x WHERE x.staff_id = shifts.staff_id AND x.project_id = shifts.project_id
+          AND x.work_date BETWEEN substr(shifts.work_date, 1, 7) || '-01' AND substr(shifts.work_date, 1, 7) || '-31'
+          AND x.company_id = shifts.company_id AND x.bill_unit_type = 'monthly' AND x.status IN ('confirmed','substitute')) ELSE 0 END
+  WHERE shifts.bill_unit_type = 'monthly' AND (shifts.staff_id = NEW.staff_id AND shifts.project_id = NEW.project_id AND shifts.company_id = NEW.company_id
+        AND shifts.work_date BETWEEN substr(NEW.work_date, 1, 7) || '-01' AND substr(NEW.work_date, 1, 7) || '-31')
+    AND (shifts.shift_id = NEW.shift_id OR (COALESCE(shifts.settle_status, 'planned') != 'confirmed'
+        AND NOT EXISTS (SELECT 1 FROM settlement_closings k WHERE k.company_id = shifts.company_id AND k.reopened_at IS NULL
+          AND shifts.work_date BETWEEN k.period_from AND k.period_to)))
+    AND (shifts.unit_price IS NOT CASE WHEN shifts.status IN ('confirmed','substitute')
+        THEN CAST(COALESCE(shifts.bill_rate, 0) AS INTEGER) / (SELECT COUNT(*) FROM shifts x WHERE x.staff_id = shifts.staff_id AND x.project_id = shifts.project_id
+          AND x.work_date BETWEEN substr(shifts.work_date, 1, 7) || '-01' AND substr(shifts.work_date, 1, 7) || '-31'
+          AND x.company_id = shifts.company_id AND x.bill_unit_type = 'monthly' AND x.status IN ('confirmed','substitute'))
+          + CASE WHEN NOT EXISTS (SELECT 1 FROM shifts x WHERE x.staff_id = shifts.staff_id AND x.project_id = shifts.project_id
+          AND x.work_date BETWEEN substr(shifts.work_date, 1, 7) || '-01' AND substr(shifts.work_date, 1, 7) || '-31'
+          AND x.company_id = shifts.company_id AND x.bill_unit_type = 'monthly' AND x.status IN ('confirmed','substitute')
+          AND (x.work_date > shifts.work_date OR (x.work_date = shifts.work_date AND (COALESCE(x.start_time, '') > COALESCE(shifts.start_time, '')
+            OR (COALESCE(x.start_time, '') = COALESCE(shifts.start_time, '') AND x.shift_id > shifts.shift_id))))) THEN CAST(COALESCE(shifts.bill_rate, 0) AS INTEGER) % (SELECT COUNT(*) FROM shifts x WHERE x.staff_id = shifts.staff_id AND x.project_id = shifts.project_id
+          AND x.work_date BETWEEN substr(shifts.work_date, 1, 7) || '-01' AND substr(shifts.work_date, 1, 7) || '-31'
+          AND x.company_id = shifts.company_id AND x.bill_unit_type = 'monthly' AND x.status IN ('confirmed','substitute')) ELSE 0 END
+        ELSE 0 END
+      OR shifts.bill_qty IS NOT CASE WHEN shifts.status IN ('confirmed','substitute') THEN 1.0 / (SELECT COUNT(*) FROM shifts x WHERE x.staff_id = shifts.staff_id AND x.project_id = shifts.project_id
+          AND x.work_date BETWEEN substr(shifts.work_date, 1, 7) || '-01' AND substr(shifts.work_date, 1, 7) || '-31'
+          AND x.company_id = shifts.company_id AND x.bill_unit_type = 'monthly' AND x.status IN ('confirmed','substitute')) ELSE 0 END);
+  UPDATE shifts SET pay_amount = CASE WHEN shifts.pay_rate IS NULL THEN NULL WHEN shifts.status IN ('confirmed','substitute')
+        THEN CAST(shifts.pay_rate AS INTEGER) / (SELECT COUNT(*) FROM shifts x WHERE x.staff_id = shifts.staff_id AND x.project_id = shifts.project_id
+          AND x.work_date BETWEEN substr(shifts.work_date, 1, 7) || '-01' AND substr(shifts.work_date, 1, 7) || '-31'
+          AND x.company_id = shifts.company_id AND x.pay_unit_type = 'monthly' AND x.status IN ('confirmed','substitute'))
+          + CASE WHEN NOT EXISTS (SELECT 1 FROM shifts x WHERE x.staff_id = shifts.staff_id AND x.project_id = shifts.project_id
+          AND x.work_date BETWEEN substr(shifts.work_date, 1, 7) || '-01' AND substr(shifts.work_date, 1, 7) || '-31'
+          AND x.company_id = shifts.company_id AND x.pay_unit_type = 'monthly' AND x.status IN ('confirmed','substitute')
+          AND (x.work_date > shifts.work_date OR (x.work_date = shifts.work_date AND (COALESCE(x.start_time, '') > COALESCE(shifts.start_time, '')
+            OR (COALESCE(x.start_time, '') = COALESCE(shifts.start_time, '') AND x.shift_id > shifts.shift_id))))) THEN CAST(shifts.pay_rate AS INTEGER) % (SELECT COUNT(*) FROM shifts x WHERE x.staff_id = shifts.staff_id AND x.project_id = shifts.project_id
+          AND x.work_date BETWEEN substr(shifts.work_date, 1, 7) || '-01' AND substr(shifts.work_date, 1, 7) || '-31'
+          AND x.company_id = shifts.company_id AND x.pay_unit_type = 'monthly' AND x.status IN ('confirmed','substitute')) ELSE 0 END
+        ELSE 0 END,
+    pay_qty = CASE WHEN shifts.status IN ('confirmed','substitute') THEN 1.0 / (SELECT COUNT(*) FROM shifts x WHERE x.staff_id = shifts.staff_id AND x.project_id = shifts.project_id
+          AND x.work_date BETWEEN substr(shifts.work_date, 1, 7) || '-01' AND substr(shifts.work_date, 1, 7) || '-31'
+          AND x.company_id = shifts.company_id AND x.pay_unit_type = 'monthly' AND x.status IN ('confirmed','substitute')) ELSE 0 END
+  WHERE shifts.pay_unit_type = 'monthly' AND (shifts.staff_id = NEW.staff_id AND shifts.project_id = NEW.project_id AND shifts.company_id = NEW.company_id
+        AND shifts.work_date BETWEEN substr(NEW.work_date, 1, 7) || '-01' AND substr(NEW.work_date, 1, 7) || '-31')
+    AND (shifts.shift_id = NEW.shift_id OR (COALESCE(shifts.settle_status, 'planned') != 'confirmed'
+        AND NOT EXISTS (SELECT 1 FROM settlement_closings k WHERE k.company_id = shifts.company_id AND k.reopened_at IS NULL
+          AND shifts.work_date BETWEEN k.period_from AND k.period_to)))
+    AND (shifts.pay_amount IS NOT CASE WHEN shifts.pay_rate IS NULL THEN NULL WHEN shifts.status IN ('confirmed','substitute')
+        THEN CAST(shifts.pay_rate AS INTEGER) / (SELECT COUNT(*) FROM shifts x WHERE x.staff_id = shifts.staff_id AND x.project_id = shifts.project_id
+          AND x.work_date BETWEEN substr(shifts.work_date, 1, 7) || '-01' AND substr(shifts.work_date, 1, 7) || '-31'
+          AND x.company_id = shifts.company_id AND x.pay_unit_type = 'monthly' AND x.status IN ('confirmed','substitute'))
+          + CASE WHEN NOT EXISTS (SELECT 1 FROM shifts x WHERE x.staff_id = shifts.staff_id AND x.project_id = shifts.project_id
+          AND x.work_date BETWEEN substr(shifts.work_date, 1, 7) || '-01' AND substr(shifts.work_date, 1, 7) || '-31'
+          AND x.company_id = shifts.company_id AND x.pay_unit_type = 'monthly' AND x.status IN ('confirmed','substitute')
+          AND (x.work_date > shifts.work_date OR (x.work_date = shifts.work_date AND (COALESCE(x.start_time, '') > COALESCE(shifts.start_time, '')
+            OR (COALESCE(x.start_time, '') = COALESCE(shifts.start_time, '') AND x.shift_id > shifts.shift_id))))) THEN CAST(shifts.pay_rate AS INTEGER) % (SELECT COUNT(*) FROM shifts x WHERE x.staff_id = shifts.staff_id AND x.project_id = shifts.project_id
+          AND x.work_date BETWEEN substr(shifts.work_date, 1, 7) || '-01' AND substr(shifts.work_date, 1, 7) || '-31'
+          AND x.company_id = shifts.company_id AND x.pay_unit_type = 'monthly' AND x.status IN ('confirmed','substitute')) ELSE 0 END
+        ELSE 0 END
+      OR shifts.pay_qty IS NOT CASE WHEN shifts.status IN ('confirmed','substitute') THEN 1.0 / (SELECT COUNT(*) FROM shifts x WHERE x.staff_id = shifts.staff_id AND x.project_id = shifts.project_id
+          AND x.work_date BETWEEN substr(shifts.work_date, 1, 7) || '-01' AND substr(shifts.work_date, 1, 7) || '-31'
+          AND x.company_id = shifts.company_id AND x.pay_unit_type = 'monthly' AND x.status IN ('confirmed','substitute')) ELSE 0 END);
+END
+```
+
+<a id="trigger-trg_shifts_monthly_update"></a>
+#### trg_shifts_monthly_update（shifts・AFTER UPDATE OF status, work_date, start_time, staff_id, project_id, settle_status, bill_unit_type, bill_rate, unit_price, bill_qty, pay_unit_type, pay_rate, pay_amount, pay_qty）
+
+```sql
+CREATE TRIGGER trg_shifts_monthly_update
+AFTER UPDATE OF status, work_date, start_time, staff_id, project_id, settle_status, bill_unit_type, bill_rate, unit_price, bill_qty, pay_unit_type, pay_rate, pay_amount, pay_qty ON shifts
+WHEN NEW.bill_unit_type = 'monthly' OR NEW.pay_unit_type = 'monthly' OR OLD.bill_unit_type = 'monthly' OR OLD.pay_unit_type = 'monthly'
+BEGIN
+  UPDATE shifts SET unit_price = CASE WHEN shifts.status IN ('confirmed','substitute')
+        THEN CAST(COALESCE(shifts.bill_rate, 0) AS INTEGER) / (SELECT COUNT(*) FROM shifts x WHERE x.staff_id = shifts.staff_id AND x.project_id = shifts.project_id
+          AND x.work_date BETWEEN substr(shifts.work_date, 1, 7) || '-01' AND substr(shifts.work_date, 1, 7) || '-31'
+          AND x.company_id = shifts.company_id AND x.bill_unit_type = 'monthly' AND x.status IN ('confirmed','substitute'))
+          + CASE WHEN NOT EXISTS (SELECT 1 FROM shifts x WHERE x.staff_id = shifts.staff_id AND x.project_id = shifts.project_id
+          AND x.work_date BETWEEN substr(shifts.work_date, 1, 7) || '-01' AND substr(shifts.work_date, 1, 7) || '-31'
+          AND x.company_id = shifts.company_id AND x.bill_unit_type = 'monthly' AND x.status IN ('confirmed','substitute')
+          AND (x.work_date > shifts.work_date OR (x.work_date = shifts.work_date AND (COALESCE(x.start_time, '') > COALESCE(shifts.start_time, '')
+            OR (COALESCE(x.start_time, '') = COALESCE(shifts.start_time, '') AND x.shift_id > shifts.shift_id))))) THEN CAST(COALESCE(shifts.bill_rate, 0) AS INTEGER) % (SELECT COUNT(*) FROM shifts x WHERE x.staff_id = shifts.staff_id AND x.project_id = shifts.project_id
+          AND x.work_date BETWEEN substr(shifts.work_date, 1, 7) || '-01' AND substr(shifts.work_date, 1, 7) || '-31'
+          AND x.company_id = shifts.company_id AND x.bill_unit_type = 'monthly' AND x.status IN ('confirmed','substitute')) ELSE 0 END
+        ELSE 0 END,
+    bill_qty = CASE WHEN shifts.status IN ('confirmed','substitute') THEN 1.0 / (SELECT COUNT(*) FROM shifts x WHERE x.staff_id = shifts.staff_id AND x.project_id = shifts.project_id
+          AND x.work_date BETWEEN substr(shifts.work_date, 1, 7) || '-01' AND substr(shifts.work_date, 1, 7) || '-31'
+          AND x.company_id = shifts.company_id AND x.bill_unit_type = 'monthly' AND x.status IN ('confirmed','substitute')) ELSE 0 END
+  WHERE shifts.bill_unit_type = 'monthly' AND ((shifts.staff_id = NEW.staff_id AND shifts.project_id = NEW.project_id AND shifts.company_id = NEW.company_id
+        AND shifts.work_date BETWEEN substr(NEW.work_date, 1, 7) || '-01' AND substr(NEW.work_date, 1, 7) || '-31')
+      OR (shifts.staff_id = OLD.staff_id AND shifts.project_id = OLD.project_id AND shifts.company_id = OLD.company_id
+        AND shifts.work_date BETWEEN substr(OLD.work_date, 1, 7) || '-01' AND substr(OLD.work_date, 1, 7) || '-31'))
+    AND ((shifts.shift_id = NEW.shift_id AND NOT (COALESCE(OLD.settle_status, 'planned') = 'confirmed' AND COALESCE(NEW.settle_status, 'planned') = 'confirmed'))
+      OR (shifts.shift_id != NEW.shift_id AND COALESCE(shifts.settle_status, 'planned') != 'confirmed'
+        AND NOT EXISTS (SELECT 1 FROM settlement_closings k WHERE k.company_id = shifts.company_id AND k.reopened_at IS NULL
+          AND shifts.work_date BETWEEN k.period_from AND k.period_to)))
+    AND (shifts.unit_price IS NOT CASE WHEN shifts.status IN ('confirmed','substitute')
+        THEN CAST(COALESCE(shifts.bill_rate, 0) AS INTEGER) / (SELECT COUNT(*) FROM shifts x WHERE x.staff_id = shifts.staff_id AND x.project_id = shifts.project_id
+          AND x.work_date BETWEEN substr(shifts.work_date, 1, 7) || '-01' AND substr(shifts.work_date, 1, 7) || '-31'
+          AND x.company_id = shifts.company_id AND x.bill_unit_type = 'monthly' AND x.status IN ('confirmed','substitute'))
+          + CASE WHEN NOT EXISTS (SELECT 1 FROM shifts x WHERE x.staff_id = shifts.staff_id AND x.project_id = shifts.project_id
+          AND x.work_date BETWEEN substr(shifts.work_date, 1, 7) || '-01' AND substr(shifts.work_date, 1, 7) || '-31'
+          AND x.company_id = shifts.company_id AND x.bill_unit_type = 'monthly' AND x.status IN ('confirmed','substitute')
+          AND (x.work_date > shifts.work_date OR (x.work_date = shifts.work_date AND (COALESCE(x.start_time, '') > COALESCE(shifts.start_time, '')
+            OR (COALESCE(x.start_time, '') = COALESCE(shifts.start_time, '') AND x.shift_id > shifts.shift_id))))) THEN CAST(COALESCE(shifts.bill_rate, 0) AS INTEGER) % (SELECT COUNT(*) FROM shifts x WHERE x.staff_id = shifts.staff_id AND x.project_id = shifts.project_id
+          AND x.work_date BETWEEN substr(shifts.work_date, 1, 7) || '-01' AND substr(shifts.work_date, 1, 7) || '-31'
+          AND x.company_id = shifts.company_id AND x.bill_unit_type = 'monthly' AND x.status IN ('confirmed','substitute')) ELSE 0 END
+        ELSE 0 END
+      OR shifts.bill_qty IS NOT CASE WHEN shifts.status IN ('confirmed','substitute') THEN 1.0 / (SELECT COUNT(*) FROM shifts x WHERE x.staff_id = shifts.staff_id AND x.project_id = shifts.project_id
+          AND x.work_date BETWEEN substr(shifts.work_date, 1, 7) || '-01' AND substr(shifts.work_date, 1, 7) || '-31'
+          AND x.company_id = shifts.company_id AND x.bill_unit_type = 'monthly' AND x.status IN ('confirmed','substitute')) ELSE 0 END);
+  UPDATE shifts SET pay_amount = CASE WHEN shifts.pay_rate IS NULL THEN NULL WHEN shifts.status IN ('confirmed','substitute')
+        THEN CAST(shifts.pay_rate AS INTEGER) / (SELECT COUNT(*) FROM shifts x WHERE x.staff_id = shifts.staff_id AND x.project_id = shifts.project_id
+          AND x.work_date BETWEEN substr(shifts.work_date, 1, 7) || '-01' AND substr(shifts.work_date, 1, 7) || '-31'
+          AND x.company_id = shifts.company_id AND x.pay_unit_type = 'monthly' AND x.status IN ('confirmed','substitute'))
+          + CASE WHEN NOT EXISTS (SELECT 1 FROM shifts x WHERE x.staff_id = shifts.staff_id AND x.project_id = shifts.project_id
+          AND x.work_date BETWEEN substr(shifts.work_date, 1, 7) || '-01' AND substr(shifts.work_date, 1, 7) || '-31'
+          AND x.company_id = shifts.company_id AND x.pay_unit_type = 'monthly' AND x.status IN ('confirmed','substitute')
+          AND (x.work_date > shifts.work_date OR (x.work_date = shifts.work_date AND (COALESCE(x.start_time, '') > COALESCE(shifts.start_time, '')
+            OR (COALESCE(x.start_time, '') = COALESCE(shifts.start_time, '') AND x.shift_id > shifts.shift_id))))) THEN CAST(shifts.pay_rate AS INTEGER) % (SELECT COUNT(*) FROM shifts x WHERE x.staff_id = shifts.staff_id AND x.project_id = shifts.project_id
+          AND x.work_date BETWEEN substr(shifts.work_date, 1, 7) || '-01' AND substr(shifts.work_date, 1, 7) || '-31'
+          AND x.company_id = shifts.company_id AND x.pay_unit_type = 'monthly' AND x.status IN ('confirmed','substitute')) ELSE 0 END
+        ELSE 0 END,
+    pay_qty = CASE WHEN shifts.status IN ('confirmed','substitute') THEN 1.0 / (SELECT COUNT(*) FROM shifts x WHERE x.staff_id = shifts.staff_id AND x.project_id = shifts.project_id
+          AND x.work_date BETWEEN substr(shifts.work_date, 1, 7) || '-01' AND substr(shifts.work_date, 1, 7) || '-31'
+          AND x.company_id = shifts.company_id AND x.pay_unit_type = 'monthly' AND x.status IN ('confirmed','substitute')) ELSE 0 END
+  WHERE shifts.pay_unit_type = 'monthly' AND ((shifts.staff_id = NEW.staff_id AND shifts.project_id = NEW.project_id AND shifts.company_id = NEW.company_id
+        AND shifts.work_date BETWEEN substr(NEW.work_date, 1, 7) || '-01' AND substr(NEW.work_date, 1, 7) || '-31')
+      OR (shifts.staff_id = OLD.staff_id AND shifts.project_id = OLD.project_id AND shifts.company_id = OLD.company_id
+        AND shifts.work_date BETWEEN substr(OLD.work_date, 1, 7) || '-01' AND substr(OLD.work_date, 1, 7) || '-31'))
+    AND ((shifts.shift_id = NEW.shift_id AND NOT (COALESCE(OLD.settle_status, 'planned') = 'confirmed' AND COALESCE(NEW.settle_status, 'planned') = 'confirmed'))
+      OR (shifts.shift_id != NEW.shift_id AND COALESCE(shifts.settle_status, 'planned') != 'confirmed'
+        AND NOT EXISTS (SELECT 1 FROM settlement_closings k WHERE k.company_id = shifts.company_id AND k.reopened_at IS NULL
+          AND shifts.work_date BETWEEN k.period_from AND k.period_to)))
+    AND (shifts.pay_amount IS NOT CASE WHEN shifts.pay_rate IS NULL THEN NULL WHEN shifts.status IN ('confirmed','substitute')
+        THEN CAST(shifts.pay_rate AS INTEGER) / (SELECT COUNT(*) FROM shifts x WHERE x.staff_id = shifts.staff_id AND x.project_id = shifts.project_id
+          AND x.work_date BETWEEN substr(shifts.work_date, 1, 7) || '-01' AND substr(shifts.work_date, 1, 7) || '-31'
+          AND x.company_id = shifts.company_id AND x.pay_unit_type = 'monthly' AND x.status IN ('confirmed','substitute'))
+          + CASE WHEN NOT EXISTS (SELECT 1 FROM shifts x WHERE x.staff_id = shifts.staff_id AND x.project_id = shifts.project_id
+          AND x.work_date BETWEEN substr(shifts.work_date, 1, 7) || '-01' AND substr(shifts.work_date, 1, 7) || '-31'
+          AND x.company_id = shifts.company_id AND x.pay_unit_type = 'monthly' AND x.status IN ('confirmed','substitute')
+          AND (x.work_date > shifts.work_date OR (x.work_date = shifts.work_date AND (COALESCE(x.start_time, '') > COALESCE(shifts.start_time, '')
+            OR (COALESCE(x.start_time, '') = COALESCE(shifts.start_time, '') AND x.shift_id > shifts.shift_id))))) THEN CAST(shifts.pay_rate AS INTEGER) % (SELECT COUNT(*) FROM shifts x WHERE x.staff_id = shifts.staff_id AND x.project_id = shifts.project_id
+          AND x.work_date BETWEEN substr(shifts.work_date, 1, 7) || '-01' AND substr(shifts.work_date, 1, 7) || '-31'
+          AND x.company_id = shifts.company_id AND x.pay_unit_type = 'monthly' AND x.status IN ('confirmed','substitute')) ELSE 0 END
+        ELSE 0 END
+      OR shifts.pay_qty IS NOT CASE WHEN shifts.status IN ('confirmed','substitute') THEN 1.0 / (SELECT COUNT(*) FROM shifts x WHERE x.staff_id = shifts.staff_id AND x.project_id = shifts.project_id
+          AND x.work_date BETWEEN substr(shifts.work_date, 1, 7) || '-01' AND substr(shifts.work_date, 1, 7) || '-31'
+          AND x.company_id = shifts.company_id AND x.pay_unit_type = 'monthly' AND x.status IN ('confirmed','substitute')) ELSE 0 END);
 END
 ```
 

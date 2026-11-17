@@ -723,14 +723,14 @@ window.renderRosterPanels = async function (sid, p) {
               <span class="ml-auto text-neutral-500">今月の稼働 ${Number(l.month_days) || 0}日${Number(l.month_planned_days) > Number(l.month_days) ? `（予定を含め ${Number(l.month_planned_days)}日）` : ''} / 最終稼働 ${l.last_work_date ? dayjs(l.last_work_date).format('M/D') : '-'}</span>
             </div>
             ${l.site_evaluation || l.work_memo ? `
-              <p class="text-xs text-neutral-700 mt-1 whitespace-pre-wrap break-words"><span class="text-neutral-400">現場評価:</span> ${esc(l.site_evaluation || '-')}</p>
-              <p class="text-xs text-neutral-700 whitespace-pre-wrap break-words"><span class="text-neutral-400">稼働メモ:</span> ${esc(l.work_memo || '-')}</p>
+              <p class="text-xs text-neutral-700 mt-1 whitespace-pre-wrap text-wrap-any"><span class="text-neutral-400">現場評価:</span> ${esc(l.site_evaluation || '-')}</p>
+              <p class="text-xs text-neutral-700 whitespace-pre-wrap text-wrap-any"><span class="text-neutral-400">稼働メモ:</span> ${esc(l.work_memo || '-')}</p>
               ${l.host_note_updated_at ? `<p class="text-2xs text-neutral-400">更新 ${esc(String(l.host_note_updated_at).slice(0, 16))}</p>` : ''}` : '<p class="text-xs text-neutral-400 mt-1">稼働先からの追記はまだありません</p>'}
             ${(l.history || []).length > 1 ? `<details class="mt-1"><summary class="text-2xs text-primary-600 cursor-pointer">変更の履歴（${l.history.length}件${l.history.length >= 10 ? '・新しい10件' : ''}）</summary>
               <div class="mt-1 space-y-1">${l.history.map(h => `<div class="text-2xs text-neutral-600 border-l-2 border-neutral-200 pl-2">
                 <p class="text-neutral-400">${esc(String(h.created_at || '').slice(0, 16))}</p>
-                <p class="whitespace-pre-wrap break-words">現場評価: ${esc(h.site_evaluation || '-')}</p>
-                <p class="whitespace-pre-wrap break-words">稼働メモ: ${esc(h.work_memo || '-')}</p></div>`).join('')}</div></details>` : ''}
+                <p class="whitespace-pre-wrap text-wrap-any">現場評価: ${esc(h.site_evaluation || '-')}</p>
+                <p class="whitespace-pre-wrap text-wrap-any">稼働メモ: ${esc(h.work_memo || '-')}</p></div>`).join('')}</div></details>` : ''}
             <div class="flex justify-end mt-1">${l.link_revoked_at
               ? (p.link_shareable ? `<button class="btn btn-outline text-xs" data-action="rosterResumeLink" data-sid="${Number(sid)}" data-linked="${Number(l.linked_staff_id)}"><i class="fas fa-rotate-left"></i>連携を再開</button>` : '')
               : `<button class="btn btn-outline text-xs text-danger-600" data-action="rosterEndLink" data-sid="${Number(sid)}" data-linked="${Number(l.linked_staff_id)}"><i class="fas fa-link-slash"></i>連携を終了</button>`}</div>
@@ -774,8 +774,8 @@ window.renderRosterHostNotes = async function () {
   try { d = (await axios.get('/api/admin/roster/host-notes', { params: { unseen: HOST_NOTES_VIEW.unseen ? 1 : undefined, offset: HOST_NOTES_VIEW.offset || undefined } })).data } catch (e) {
     $app.innerHTML = `<div class="card p-6 text-center text-sm text-danger-500">${esc(showApiError(e, '読み込みに失敗しました'))}</div>`; return
   }
-  const diff = (label, now, prev, first) => `<p class="text-sm whitespace-pre-wrap break-words"><span class="text-xs text-neutral-400">${label}:</span> ${esc(now || '-')}</p>
-    ${!first && (prev || '') !== (now || '') ? `<p class="text-2xs text-neutral-400 whitespace-pre-wrap break-words line-through">前: ${esc(prev || '（空欄）')}</p>` : ''}`
+  const diff = (label, now, prev, first) => `<p class="text-sm whitespace-pre-wrap text-wrap-any"><span class="text-xs text-neutral-400">${label}:</span> ${esc(now || '-')}</p>
+    ${!first && (prev || '') !== (now || '') ? `<p class="text-2xs text-neutral-400 whitespace-pre-wrap text-wrap-any line-through">前: ${esc(prev || '（空欄）')}</p>` : ''}`
   $app.innerHTML = `
     <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
       <h2 class="text-xl font-bold text-neutral-900">連携先からの追記</h2>
@@ -885,7 +885,7 @@ window.renderPartners = async function () {
             <td class="whitespace-nowrap">${Number(p.active_staff_count) || 0}名${Number(p.staff_count) > Number(p.active_staff_count) ? `<span class="text-2xs text-neutral-400">（退職等を含め ${Number(p.staff_count)}名）</span>` : ''}</td>
             <td class="whitespace-nowrap text-xs">${Number(p.month_shifts) || 0}件（${Number(p.month_staff) || 0}名）</td>
             <td class="text-xs">${p.client_id ? `<a href="#clients/${Number(p.client_id)}" class="badge badge-blue hover:underline"><i class="fas fa-link mr-1"></i>${esc(p.client_name)}</a>` : '<span class="text-neutral-300">-</span>'}</td>
-            <td class="text-xs max-w-[240px] whitespace-pre-wrap break-words">${esc(p.memo || '')}</td>
+            <td class="text-xs max-w-[240px] whitespace-pre-wrap text-wrap-any">${esc(p.memo || '')}</td>
             <td class="whitespace-nowrap text-right">
               <a class="btn btn-outline text-xs" href="#partners/${Number(p.affiliation_id)}">詳細</a>
               <button class="btn btn-outline text-xs" data-action="partnerEdit" data-id="${Number(p.affiliation_id)}">編集</button>
@@ -972,13 +972,13 @@ function partnerBasicHtml(p, editing) {
           <div class="flex"><dt class="w-24 text-neutral-400 shrink-0">支店</dt><dd class="break-all">${esc(p.branch_name || '-')}</dd></div>
           <div class="flex"><dt class="w-24 text-neutral-400 shrink-0">部門</dt><dd class="break-all">${esc(p.department_name || '-')}</dd></div>
           <div class="flex"><dt class="w-24 text-neutral-400 shrink-0">連絡先</dt><dd class="text-xs">${esc(p.company_phone || '-')}<br>${esc(p.company_email || '')}</dd></div>
-          <div class="flex"><dt class="w-24 text-neutral-400 shrink-0">住所</dt><dd class="whitespace-pre-wrap">${esc(partnerAddress(p) || '-')}</dd></div>
+          <div class="flex"><dt class="w-24 text-neutral-400 shrink-0">住所</dt><dd class="whitespace-pre-wrap text-wrap-any">${esc(partnerAddress(p) || '-')}</dd></div>
           <div class="flex"><dt class="w-24 text-neutral-400 shrink-0">ホームページ</dt><dd class="min-w-0">${websiteLinkHtml(p.website_url)}</dd></div>
           <div class="flex"><dt class="w-24 text-neutral-400 shrink-0">種別</dt><dd>${esc(clientKindLabel(p.partner_kind))}</dd></div>
-          <div class="flex"><dt class="w-24 text-neutral-400 shrink-0">支払条件</dt><dd class="whitespace-pre-wrap">${esc(p.payment_rule || '-')}</dd></div>
+          <div class="flex"><dt class="w-24 text-neutral-400 shrink-0">支払条件</dt><dd class="whitespace-pre-wrap text-wrap-any">${esc(p.payment_rule || '-')}</dd></div>
           <div class="flex"><dt class="w-24 text-neutral-400 shrink-0">評価</dt><dd>${p.partner_rating ? ratingStars(p.partner_rating) : '<span class="text-neutral-400">未評価</span>'}</dd></div>
           <div class="flex"><dt class="w-24 text-neutral-400 shrink-0">社内担当者</dt><dd class="min-w-0">${assigneesViewHtml(p.assignees, p.internal_contact_name)}</dd></div>
-          <div><dt class="text-neutral-400 mb-1">備考</dt><dd class="text-xs text-neutral-600 whitespace-pre-wrap">${esc(p.memo || '-')}</dd></div>
+          <div><dt class="text-neutral-400 mb-1">備考</dt><dd class="text-xs text-neutral-600 whitespace-pre-wrap text-wrap-any">${esc(p.memo || '-')}</dd></div>
         </dl>
         <div class="mt-3 pt-3 border-t border-neutral-100">
           <p class="text-xs text-neutral-500 mb-1"><i class="fas fa-receipt text-neutral-400 mr-1"></i>インボイス情報</p>

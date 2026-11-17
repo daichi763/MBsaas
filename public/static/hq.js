@@ -641,7 +641,7 @@ function hqSupportLogSection(data, cid) {
         ${logs.map(l => `
           <div class="border-l-2 border-hq-accent-700 pl-2 text-xs">
             <div class="text-hq-400">${esc(dayjs(String(l.created_at).replace(' ', 'T')).format('YYYY/M/D HH:mm'))}・${esc(l.actor_name || '（担当者の記録なし）')}${l.next_action_date ? `<span class="ml-2 text-warning-300">次回 ${esc(dayjs(l.next_action_date).format('YYYY/M/D'))}</span>` : ''}</div>
-            <div class="whitespace-pre-wrap break-words">${esc(l.body)}</div>
+            <div class="whitespace-pre-wrap text-wrap-any">${esc(l.body)}</div>
           </div>`).join('') || '<p class="text-xs text-hq-400">記録はまだありません</p>'}
       </div>
     </section>`
@@ -1574,7 +1574,7 @@ async function renderSupport() {
             <td class="px-2 py-2 whitespace-nowrap">${esc(hqTime(r.created_at, true))}</td>
             <td class="px-2 py-2"><a href="#companies/${Number(r.company_id)}" class="text-hq-accent-400 hover:underline">${esc(r.company_name)}</a><span class="block text-hq-400">${esc(r.requester_name || '')}</span></td>
             <td class="px-2 py-2 whitespace-nowrap">${esc((reqs.menus || {})[r.menu] || r.menu)}</td>
-            <td class="px-2 py-2 max-w-xs"><p class="whitespace-pre-wrap">${esc(r.detail)}</p>${r.hq_note ? `<p class="text-hq-400 mt-1 whitespace-pre-wrap">対応メモ: ${esc(r.hq_note)}</p>` : ''}</td>
+            <td class="px-2 py-2 max-w-xs"><p class="whitespace-pre-wrap text-wrap-any">${esc(r.detail)}</p>${r.hq_note ? `<p class="text-hq-400 mt-1 whitespace-pre-wrap text-wrap-any">対応メモ: ${esc(r.hq_note)}</p>` : ''}</td>
             <td class="px-2 py-2 text-hq-300">${esc(r.preferred_at || '-')}<span class="block text-hq-400">${esc(r.contact || '')}</span></td>
             <td class="px-2 py-2 whitespace-nowrap">${SUPPORT_STATUS_BADGE[r.status] || esc(r.status)}${r.handled_by_name ? `<span class="block text-hq-500 mt-1">${esc(r.handled_by_name)}</span>` : ''}</td>
             <td class="px-2 py-2"><button class="text-hq-accent-400 hover:underline whitespace-nowrap" data-action="hqEditSupport" data-id="${Number(r.request_id)}">対応</button></td>
