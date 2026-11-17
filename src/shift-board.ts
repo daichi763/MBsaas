@@ -111,6 +111,11 @@ export function rateError(items: [string, any, any?][]): string | null {
   }
   return null
 }
+// 単価 × (n / d) を円に丸める（#9985）。小数の単価をそのまま掛けると 1,024.6 × 7.5 = 7,684.4999… のように誤差で .5 が切り下がるので、
+// 単価を銭（×100）の整数にして、整数どうしで掛けてから割る（整数の単価では今までと同じ値）。n・d は整数（分 / 60 など）
+export const rateTimes = (rate: number, n: number, d: number) => Math.round(Math.round(Number(rate) * 100) * n / (100 * d))
+// 数量（時間。小数）を掛けるとき。数量は小数第4位までで見る
+const rateTimesQty = (rate: number, qty: number) => rateTimes(rate, Math.round(qty * 10000), 10000)
 export const unitOf = (v: any): 'daily' | 'hourly' | 'monthly' => (v === 'hourly' ? 'hourly' : v === 'monthly' ? 'monthly' : 'daily')
 // 入力の単位（日額・時給・月額のどれでもなければ d）
 const unitIn = (v: any, d: string) => ((UNIT_TYPES as readonly string[]).includes(v) ? v : d)
@@ -390,7 +395,7 @@ export function calcAmounts(price: Pick<ResolvedPrice, 'bill_unit_type' | 'bill_
   const payMin = toMinutes(typeof hoursOverride === 'object' && hoursOverride ? hoursOverride.pay : hoursOverride as number | null | undefined)
   const hourly = (u: string) => u === 'hourly'
   const qty = (u: string, minutes: number) => (hourly(u) ? Math.round(minutes / 60 * 100) / 100 : 1)
-  const amount = (u: string, rate: number, minutes: number) => (hourly(u) ? Math.round(rate * minutes / 60) : Math.round(rate))
+  const amount = (u: string, rate: number, minutes: number) => (hourly(u) ? rateTimes(rate, minutes, 60) : Math.round(rate))
   return {
     bill_qty: qty(price.bill_unit_type, billMin), unit_price: amount(price.bill_unit_type, price.bill_rate || 0, billMin),
     pay_qty: qty(price.pay_unit_type, payMin), pay_amount: price.pay_rate == null ? null : amount(price.pay_unit_type, price.pay_rate, payMin),
@@ -2100,8 +2105,8 @@ app.put('/shifts/:id/price', async (c) => {
   const billQty = billQtyIn ? Number(b.bill_qty) : amt.bill_qty
   const payQty = payQtyIn ? Number(b.pay_qty) : amt.pay_qty
   const sameQty = (q: number, calc: number) => Math.abs(q - calc) < 0.005
-  const billAmount = billQtyIn && !sameQty(billQty, amt.bill_qty) ? Math.round((billRate || 0) * billQty) : amt.unit_price
-  const payAmount = payRate == null ? null : payQtyIn && !sameQty(payQty, amt.pay_qty) ? Math.round(payRate * payQty) : amt.pay_amount
+  const billAmount = billQtyIn && !sameQty(billQty, amt.bill_qty) ? rateTimesQty(billRate || 0, billQty) : amt.unit_price
+  const payAmount = payRate == null ? null : payQtyIn && !sameQty(payQty, amt.pay_qty) ? rateTimesQty(payRate, payQty) : amt.pay_amount
   const bt = BILL_TRANSPORT_TYPES.includes(b.bill_transport_type) ? b.bill_transport_type : s.bill_transport_type
   const pt = PAY_TRANSPORT_TYPES.includes(b.pay_transport_type) ? b.pay_transport_type : s.pay_transport_type
   const btAmt = b.bill_transport_amount !== undefined ? (intOrNull(b.bill_transport_amount) ?? 0) : s.bill_transport_amount
