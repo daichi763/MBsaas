@@ -1107,7 +1107,7 @@ delegate('dashShiftReport', el => {
 const OP_LOG_VALUE = {
   status: { requested: '希望（仮）', confirmed: '確定', absent: '欠勤', substitute: '代打' },
   settle_status: { confirmed: '確定済み', planned: '未確定' },
-  bill_unit_type: { daily: '日額', hourly: '時給' }, pay_unit_type: { daily: '日額', hourly: '時給' },
+  bill_unit_type: { daily: '日額', hourly: '時給', monthly: '月額' }, pay_unit_type: { daily: '日額', hourly: '時給', monthly: '月額' },
   bill_transport_type: { actual: '実費', fixed: '定額', included: '単価に含む' },
   pay_transport_type: { actual: '実費', capped: '上限あり', fixed: '定額', none: '支給なし' },
   payee_type: { payroll: '自社給与', payroll_daily: '日雇い給与', freelance: '個人事業主', partner: '協力会社', linked: '他社（連携元）' },
@@ -2670,13 +2670,14 @@ window.addFollowLog = async function (sid, button) {
 delegate('addFollowLog', el => addFollowLog(Number(el.dataset.id), el))
 
 // ============ 案件 ============
-// 請求の標準単価の単位（時給の案件を日単価に見せない #91。日額・時給以外の古い値は日額として計算している）
-function priceUnitLabel(t) { return t === 'hourly' ? '/時' : '/日' }
-// 案件の請求単価の表示。月額（固定。#9702）の案件は「¥300,000/月」、シフトの単価もあれば「¥16,000/日 ＋ 月額 ¥300,000」
+// 請求の標準単価の単位（時給の案件を日単価に見せない #91。月額 #9984 は「/月」。それ以外の古い値は日額として計算している）
+function priceUnitLabel(t) { return t === 'hourly' ? '/時' : t === 'monthly' ? '/月' : '/日' }
+// 案件の請求単価の表示。以前の月額（固定。#9702。単位の「月額」に移せなかったもの）がある案件は「¥300,000/月（固定）」、
+// シフトの単価もあれば「¥16,000/日 ＋ 月額（固定） ¥300,000」
 function projectPriceText(p) {
   const m = p.monthly_amount == null ? null : Number(p.monthly_amount)
   if (m == null) return `${yen(p.unit_price)}${priceUnitLabel(p.unit_price_type)}`
-  return Number(p.unit_price || 0) ? `${yen(p.unit_price)}${priceUnitLabel(p.unit_price_type)} ＋ 月額 ${yen(m)}` : `${yen(m)}/月`
+  return Number(p.unit_price || 0) ? `${yen(p.unit_price)}${priceUnitLabel(p.unit_price_type)} ＋ 月額（固定） ${yen(m)}` : `${yen(m)}/月（固定）`
 }
 // 月の切り替え（案件一覧・案件詳細・クライアント詳細で共通。#450）
 function monthNavHtml(action, month) {
@@ -2867,9 +2868,9 @@ window.showAddProject = async function () {
       <div><label class="text-sm text-neutral-600 block mb-1">稼働場所</label><input id="np-loc" class="inp"></div>
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div><label class="text-sm text-neutral-600 block mb-1">請求単価（円）</label>
-          <div class="flex gap-2"><select id="np-price-unit" class="inp w-32 shrink-0"><option value="daily">日額</option><option value="hourly">時給</option><option value="monthly">月額（固定）</option></select>
+          <div class="flex gap-2"><select id="np-price-unit" class="inp w-32 shrink-0"><option value="daily">日額</option><option value="hourly">時給</option><option value="monthly">月額</option></select>
             <input id="np-price" type="number" min="0" class="inp" value="16000" inputmode="numeric"></div>
-          <p id="np-price-monthly-note" class="text-2xs text-primary-700 mt-1 hidden">月額（固定）は、その月にシフトが1件以上あれば月に1回だけ請求します（シフトの数・時間には左右されません）。シフトごとの請求単価は 0円 になります</p>
+          <p id="np-price-monthly-note" class="text-2xs text-primary-700 mt-1 hidden">月額は、スタッフごとに、その月に働いた日数（確定・代打のシフトの数）で割った額を1日分の請求額にします（1円未満は切り捨て、余りは月の最後の稼働日に足します）</p>
           <p class="text-2xs text-neutral-400 mt-1">支払単価・交通費・スタッフ別の単価は、登録後に精算画面の「単価の設定」で設定します</p></div>
         <div><label class="text-sm text-neutral-600 block mb-1">日報テンプレート</label>
           <select id="np-tpl" class="inp">${tp.templates.map(t => `<option value="${Number(t.template_id)}" ${t.template_id === defaultTpl ? 'selected' : ''}>${esc(t.template_name)}</option>`).join('')}</select>
@@ -4495,7 +4496,7 @@ window.showAddShift = async function (defaultDate) {
 // ---------- シフト登録の単価（9306） ----------
 // 直近のシフト（常勤: 同じスタッフ×同じ案件、スポット: 同じ案件）の単価を引き継ぐ。引き継ぐときはその旨と前回の日付を出し、その場で単価を変えられる
 let ADD_SHIFT_PRICE = { inherit: true, base: null, preview: null, seq: 0 }
-const ADD_SHIFT_UNIT = { daily: '日額', hourly: '時給' }
+const ADD_SHIFT_UNIT = { daily: '日額', hourly: '時給', monthly: '月額' }
 async function addShiftPriceLoad() {
   const box = document.getElementById('sh-price'); if (!box) return
   const v = (id) => document.getElementById(id).value

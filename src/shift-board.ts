@@ -29,7 +29,8 @@ type Variables = { user: any }
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
 // ---------- 定数 ----------
-export const UNIT_TYPES = ['daily', 'hourly'] as const
+// 単位: 日額・時給・月額（#9984。月額は「月額 ÷ その月の働いた日数」を1日分にする。割るのは migrations/0114 のトリガー）
+export const UNIT_TYPES = ['daily', 'hourly', 'monthly'] as const
 export const BILL_TRANSPORT_TYPES = ['actual', 'fixed', 'included'] as const
 export const PAY_TRANSPORT_TYPES = ['actual', 'capped', 'fixed', 'none'] as const
 const MAX_RANGE_DAYS = 31
@@ -95,7 +96,9 @@ export function rangeError(items: [string, any, number, number][]): string | nul
   }
   return null
 }
-const unitOf = (v: any): 'daily' | 'hourly' => (v === 'hourly' ? 'hourly' : 'daily')
+export const unitOf = (v: any): 'daily' | 'hourly' | 'monthly' => (v === 'hourly' ? 'hourly' : v === 'monthly' ? 'monthly' : 'daily')
+// 入力の単位（日額・時給・月額のどれでもなければ d）
+const unitIn = (v: any, d: string) => ((UNIT_TYPES as readonly string[]).includes(v) ? v : d)
 
 // =========================================================
 // 単価の解決
@@ -362,6 +365,8 @@ export function inheritView(ih: InheritSource | null | undefined) {
 // 時給の金額は、分単位の時間に単価を掛けてから円に丸める（小数2桁に丸めた時間に掛けると、分単位の勤務で数円ずれるため）。
 // 数量は表示用に小数2桁に丸める。hoursOverride は workHours の hours（小数2桁）でよい（実働は分単位なので、60 を掛けて丸めると元の分数に戻る）
 // 請求と支払で時間が違う（支払は丸めない #220）ときは { bill, pay } で渡す（workHours の hours と pay_hours）
+// 月額（#9984）は、ここでは日額と同じ（数量 1・金額 = 月額）にしておく。書き込むと migrations/0114 のトリガーが、その月のグループの
+// 1日分（月額 ÷ 働いた日数。余りは最後の稼働日）と数量（1/働いた日数）に直す。時間・実働・丸めは月額の金額に効かない
 export function calcAmounts(price: Pick<ResolvedPrice, 'bill_unit_type' | 'bill_rate' | 'pay_unit_type' | 'pay_rate'>, start: string, end: string, breakMin: number,
   hoursOverride?: number | { bill: number; pay: number } | null) {
   const planned = Math.max(0, spanMinutes(start, end) - (breakMin || 0))
@@ -376,6 +381,20 @@ export function calcAmounts(price: Pick<ResolvedPrice, 'bill_unit_type' | 'bill_
     pay_qty: qty(price.pay_unit_type, payMin), pay_amount: price.pay_rate == null ? null : amount(price.pay_unit_type, price.pay_rate, payMin),
   }
 }
+// 月額（#9984）: 単位と月額が前と同じなら、保存済みの1日分と数量を保つ（時間・休憩の変更などで計算し直しても、トリガーの割った値を
+// 日額の値で書き戻さない）。s は今のシフトの行（新しい行なら金額の列はない）
+export function keepMonthlyAmounts<T extends { bill_qty: number; unit_price: number; pay_qty: number; pay_amount: number | null }>(s: any,
+  price: { bill_unit_type: string; bill_rate: number | null; pay_unit_type: string; pay_rate: number | null }, amt: T): T {
+  const same = (side: 'bill' | 'pay') => price[`${side}_unit_type`] === 'monthly' && s?.[`${side}_unit_type`] === 'monthly'
+    && Number(s?.[`${side}_rate`] ?? NaN) === Number(price[`${side}_rate`] ?? NaN)
+  const out = { ...amt }
+  if (same('bill') && s.unit_price != null && s.bill_qty != null) { out.unit_price = Number(s.unit_price); out.bill_qty = Number(s.bill_qty) }
+  if (same('pay') && s.pay_amount != null && s.pay_qty != null) { out.pay_amount = Number(s.pay_amount); out.pay_qty = Number(s.pay_qty) }
+  return out
+}
+// 月額のシフトの、その月の働いた日数（数量 = 1/日数 から戻す。数えないシフト（希望・欠勤）は 0）
+export const monthlyDays = (qty: any): number => (Number(qty) > 0 ? Math.round(1 / Number(qty)) : 0)
+
 // ---------- 実働時間（第3段階） ----------
 // hours_basis: clipped（実績。ただし予定の範囲内）/ actual（実績どおり）/ scheduled（予定どおり）
 export const HOURS_BASIS = ['clipped', 'actual', 'scheduled'] as const
@@ -494,7 +513,7 @@ export function computeShiftPricing(companyId: number, s: any, slotRole: any, pa
   const source = { ...price.sources, basis: settingsBasis(ctx, data), ...(inherited ? { inherit: { shift_id: ih!.shift_id, work_date: ih!.work_date, ...(ih!.other_staff ? { other_staff: true } : {}) } } : {}) }
   const proj = data.projects.get(Number(s.project_id)) || {}
   const brk = s.break_minutes ?? proj.default_break_minutes ?? 0
-  const amt = calcAmounts(price, s.start_time, s.end_time, brk, hoursForAmounts(workHours({ ...s, break_minutes: brk }, proj)))
+  const amt = keepMonthlyAmounts(s, price, calcAmounts(price, s.start_time, s.end_time, brk, hoursForAmounts(workHours({ ...s, break_minutes: brk }, proj))))
   return {
     bill_unit_type: price.bill_unit_type, bill_rate: price.bill_rate, bill_qty: amt.bill_qty, unit_price: amt.unit_price,
     pay_unit_type: price.pay_unit_type, pay_rate: price.pay_rate, pay_qty: amt.pay_qty, pay_amount: amt.pay_amount,
@@ -2043,17 +2062,18 @@ app.put('/shifts/:id/price', async (c) => {
     ['休憩', b.break_minutes, 0, BREAK_MAX], ['交通費の実費', b.transportation_fee, 0, MONEY_MAX], ['交通費の請求額', b.bill_transport_amount, 0, MONEY_MAX], ['交通費の支払額', b.pay_transport_amount, 0, MONEY_MAX],
     ['請求の調整', b.bill_adjust, -MONEY_MAX, MONEY_MAX], ['支払の調整', b.pay_adjust, -MONEY_MAX, MONEY_MAX]])
   if (err) return c.json({ error: err }, 400)
-  const unit = (v: any, d: string) => (v === 'hourly' ? 'hourly' : v === 'daily' ? 'daily' : d)
-  const billUnit = unit(b.bill_unit_type, s.bill_unit_type || 'daily'), payUnit = unit(b.pay_unit_type, s.pay_unit_type || 'daily')
+  const billUnit = unitIn(b.bill_unit_type, s.bill_unit_type || 'daily'), payUnit = unitIn(b.pay_unit_type, s.pay_unit_type || 'daily')
   const billRate = b.bill_rate !== undefined ? intOrNull(b.bill_rate) : s.bill_rate
   const payRate = b.pay_rate !== undefined ? intOrNull(b.pay_rate) : s.pay_rate
   const brk = b.break_minutes !== undefined ? intOrNull(b.break_minutes) : s.break_minutes
   const pdata = await loadPricingData(db, u.company_id, [s.project_id])
-  const amt = calcAmounts({ bill_unit_type: billUnit, bill_rate: billRate, pay_unit_type: payUnit, pay_rate: payRate }, s.start_time, s.end_time, brk || 0,
-    hoursForAmounts(workHours({ ...s, break_minutes: brk }, pdata.projects.get(Number(s.project_id)) || {})))
+  const nextPrice = { bill_unit_type: billUnit, bill_rate: billRate, pay_unit_type: payUnit, pay_rate: payRate }
+  const amt = keepMonthlyAmounts(s, nextPrice, calcAmounts(nextPrice, s.start_time, s.end_time, brk || 0,
+    hoursForAmounts(workHours({ ...s, break_minutes: brk }, pdata.projects.get(Number(s.project_id)) || {}))))
   // 数量を直接指定した場合（実働時間など）はそちらを優先
-  // 数量を指定しないとき、または計算どおりの数量のときは、calcAmounts の金額（分単位で計算）を使う
-  const billQtyIn = b.bill_qty != null && b.bill_qty !== '', payQtyIn = b.pay_qty != null && b.pay_qty !== ''
+  // 数量を指定しないとき、または計算どおりの数量のときは、calcAmounts の金額（分単位で計算）を使う。
+  // 月額（#9984）の数量は 1/働いた日数で決まるので、送られてきても使わない（固定しない）
+  const billQtyIn = billUnit !== 'monthly' && b.bill_qty != null && b.bill_qty !== '', payQtyIn = payUnit !== 'monthly' && b.pay_qty != null && b.pay_qty !== ''
   const billQty = billQtyIn ? Number(b.bill_qty) : amt.bill_qty
   const payQty = payQtyIn ? Number(b.pay_qty) : amt.pay_qty
   const sameQty = (q: number, calc: number) => Math.abs(q - calc) < 0.005
@@ -2116,12 +2136,47 @@ async function repriceRows(db: D1Database, companyId: number, rows: any[], keepI
 // 計算するのは日付順に PREVIEW_MAX 件まで（超えたら truncated）。一覧は PREVIEW_LIST 件まで返す
 const PREVIEW_MAX = 3000, PREVIEW_LIST = 200
 const sameValue = (a: any, b: any) => (a == null || b == null) ? (a == null) === (b == null) : (typeof a === 'number' || typeof b === 'number') ? Math.abs(Number(a) - Number(b)) < 0.005 : String(a) === String(b)
+// 再適用の確認での月額（#9984）の見込み: 書き込んだ後にトリガー（migrations/0114）が入れる1日分（月額 ÷ 同じ月の働いた日数、余りは最後の稼働日）を、
+// 同じ割り方で upd に入れる（calcAmounts のままだと1件ごとに月額まるごとになり、増減の合計が日数倍に見えるため）。
+// 日数には、確認の対象でない同じ月の月額のシフト（手動変更・確定済み・期間の外）も数える
+async function estimateMonthlyPreview(db: D1Database, companyId: number, part: any[], upd: Record<string, any>[]) {
+  const idx = part.map((_, i) => i).filter(i => upd[i].bill_unit_type === 'monthly' || upd[i].pay_unit_type === 'monthly')
+  if (!idx.length) return
+  const counted = (s: any) => s.status === 'confirmed' || s.status === 'substitute'
+  const ym = (d: any) => String(d).slice(0, 7)
+  const months = idx.map(i => ym(part[i].work_date)).sort()
+  const inPart = new Set(part.map(s => Number(s.shift_id)))
+  const others = ((await db.prepare(`SELECT shift_id, staff_id, project_id, work_date, start_time, bill_unit_type, pay_unit_type FROM shifts
+      WHERE company_id = ? AND staff_id IN ${JSON_IN} AND project_id IN ${JSON_IN} AND work_date BETWEEN ? AND ? AND status IN ('confirmed','substitute')
+        AND (bill_unit_type = 'monthly' OR pay_unit_type = 'monthly')`)
+    .bind(companyId, bindJsonArray(idx.map(i => part[i].staff_id)), bindJsonArray(idx.map(i => part[i].project_id)), months[0] + '-01', months[months.length - 1] + '-31')
+    .all()).results as any[]).filter(x => !inPart.has(Number(x.shift_id)))
+  const key = (s: any) => `${s.staff_id}:${s.project_id}:${ym(s.work_date)}`
+  const later = (a: any, b: any) => String(a.work_date).localeCompare(String(b.work_date)) || String(a.start_time || '').localeCompare(String(b.start_time || '')) || Number(a.shift_id) - Number(b.shift_id)
+  for (const [unitCol, rateCol, amtCol, qtyCol] of [['bill_unit_type', 'bill_rate', 'unit_price', 'bill_qty'], ['pay_unit_type', 'pay_rate', 'pay_amount', 'pay_qty']]) {
+    // グループ（スタッフ・案件・月）ごとの日数と、余りを足す最後のシフト
+    const groups = new Map<string, { n: number; last: any }>()
+    const add = (s: any) => { const g = groups.get(key(s)); if (!g) groups.set(key(s), { n: 1, last: s }); else { g.n++; if (later(s, g.last) > 0) g.last = s } }
+    part.forEach((s, i) => { if (upd[i][unitCol] === 'monthly' && counted(s)) add(s) })
+    for (const x of others) if (x[unitCol] === 'monthly' && groups.has(key(x))) add(x)
+    for (const i of idx) {
+      if (upd[i][unitCol] !== 'monthly') continue
+      const s = part[i], rate = upd[i][rateCol], g = groups.get(key(s))
+      if (rate == null) { if (amtCol === 'pay_amount') upd[i][amtCol] = null; continue }
+      if (!counted(s) || !g) { upd[i][amtCol] = 0; upd[i][qtyCol] = 0; continue }
+      const each = Math.floor(Number(rate) / g.n)
+      upd[i][amtCol] = each + (Number(g.last.shift_id) === Number(s.shift_id) ? Number(rate) - each * g.n : 0)
+      upd[i][qtyCol] = 1 / g.n
+    }
+  }
+}
 async function repricePreview(db: D1Database, companyId: number, where: string[], binds: any[]) {
   const rows = (await db.prepare(`SELECT * FROM shifts WHERE ${where.join(' AND ')} ORDER BY work_date, shift_id LIMIT ?`).bind(...binds, PREVIEW_MAX + 1).all()).results as any[]
   const part = rows.slice(0, PREVIEW_MAX)
   const out = { checked: part.length, truncated: rows.length > PREVIEW_MAX, changed: 0, bill_diff: 0, pay_diff: 0, payee_changed: 0, pay_set_changed: 0, changes: [] as any[] }
   if (!part.length) return out
   const { upd, staff } = await planReprice(db, companyId, part)
+  await estimateMonthlyPreview(db, companyId, part, upd as Record<string, any>[])
   const names = new Map(((await db.prepare(`SELECT project_id, project_name FROM projects WHERE company_id = ? AND project_id IN ${JSON_IN}`)
     .bind(companyId, bindJsonArray(part.map(s => s.project_id))).all()).results as any[]).map(p => [p.project_id, p.project_name]))
   const compared = PRICE_COLUMNS.filter(k => k !== 'price_source' && k !== 'price_locked')
@@ -2300,7 +2355,8 @@ app.post('/shifts/bulk', async (c) => {
     await notifyShiftChanges(c, u.company_id, [], made, nt, [op])
   } else await notifyShiftChanges(c, u.company_id, [], [], nt, [op]) // 途中の回: 知らせるのは最後の回。送らないときの「通知なし」だけ残す（#9906）
   // inherited: 直近のシフトの単価を引き継いだ件数、inherited_from: スタッフごとの引き継ぎ元（日付と金額。9306）
-  return c.json({ ok: true, created: changesOf(res), skipped, total: items.length, processed: start + part.length, next_cursor: next,
+  // 件数は RETURNING で数える（月額のトリガー（0114）が同じ月のシフトを書き直すと meta.changes が増えるため。#9984）
+  return c.json({ ok: true, created: returnedIds(res, 'shift_id').length, skipped, total: items.length, processed: start + part.length, next_cursor: next,
     inherited: inheritedCount, inherited_from: [...inheritedFrom.values()] })
 })
 
@@ -2508,7 +2564,7 @@ app.post('/shifts/copy-week', async (c) => {
       return { ...row, ...computeShiftPricing(cid, row, role, payeeOn(staff.get(s.staff_id), hist.get(s.staff_id), p.date), pdata) }
     })
     const insRes = await batchInChunks(db, insertRowsStmts(db, 'shifts', SHIFT_INSERT_COLUMNS, rows, { orIgnore: true, returning: 'shift_id' }))
-    shiftsCreated = changesOf(insRes)
+    shiftsCreated = returnedIds(insRes, 'shift_id').length // 月額のトリガー（0114）の更新を数えない
     const op = await logCreatedShifts(db, u, 'copy_week', returnedIds(insRes, 'shift_id')) // 操作履歴（#159）
     // コピーで登録したシフトを本人に知らせる（スタッフごとに1件にまとめる。#155）。
     // 同時に実行されて一部が作られなかったとき（どの行を作ったか分からない）は、作った側の呼び出しが知らせるので、ここでは送らない
@@ -2845,9 +2901,10 @@ app.delete('/sites/:id', async (c) => {
 function ruleValues(b: any) {
   return {
     // 単価を指定して単位を省略した場合は日額（案件の単位を引き継ぐと、日額の金額が時給として計算されるため）
-    bill_unit_type: b.bill_unit_type === 'hourly' ? 'hourly' : b.bill_unit_type === 'daily' || intOrNull(b.bill_rate) != null ? 'daily' : null,
+    // 月額（#9984）も選べる
+    bill_unit_type: b.bill_unit_type === 'hourly' || b.bill_unit_type === 'monthly' ? b.bill_unit_type : b.bill_unit_type === 'daily' || intOrNull(b.bill_rate) != null ? 'daily' : null,
     bill_rate: intOrNull(b.bill_rate),
-    pay_unit_type: b.pay_unit_type === 'hourly' ? 'hourly' : b.pay_unit_type === 'daily' || intOrNull(b.pay_rate) != null ? 'daily' : null,
+    pay_unit_type: b.pay_unit_type === 'hourly' || b.pay_unit_type === 'monthly' ? b.pay_unit_type : b.pay_unit_type === 'daily' || intOrNull(b.pay_rate) != null ? 'daily' : null,
     pay_rate: intOrNull(b.pay_rate),
     bill_transport_type: BILL_TRANSPORT_TYPES.includes(b.bill_transport_type) ? b.bill_transport_type : null,
     bill_transport_amount: intOrNull(b.bill_transport_amount),
@@ -3046,21 +3103,21 @@ app.put('/projects/:id/pricing', async (c) => {
   const validFrom = optDate(b.price_valid_from)
   if (validFrom && !isISODate(validFrom)) return c.json({ error: '適用開始日が正しくありません' }, 400)
   const eng = b.engagement_type === 'spot' ? 'spot' : b.engagement_type === 'regular' ? 'regular' : (p.engagement_type || 'regular')
-  const unit = (v: any, d: string) => (v === 'hourly' ? 'hourly' : v === 'daily' ? 'daily' : d)
+  const unit = unitIn
   const basis = HOURS_BASIS.includes(b.hours_basis) ? b.hours_basis : (p.hours_basis || 'clipped')
   const roundMin = [0, 1, 5, 10, 15, 30].includes(Number(b.time_round_minutes)) ? Number(b.time_round_minutes) : (p.time_round_minutes || 0)
   // 支払側の丸め（#220）: none = 支払は丸めない / same = 請求と同じく丸める
   const payRound = b.pay_time_round === 'same' || b.pay_time_round === 'none' ? b.pay_time_round : (p.pay_time_round || 'none')
   const next: Record<string, any> = {
-    unit_price_type: unit(b.unit_price_type, p.unit_price_type === 'hourly' ? 'hourly' : 'daily'), unit_price: intOrNull(b.unit_price) ?? p.unit_price ?? 0,
-    pay_unit_type: unit(b.pay_unit_type, p.pay_unit_type || 'daily'), pay_rate: b.pay_rate !== undefined ? intOrNull(b.pay_rate) : p.pay_rate,
+    unit_price_type: unit(b.unit_price_type, unitOf(p.unit_price_type)), unit_price: intOrNull(b.unit_price) ?? p.unit_price ?? 0,
+    pay_unit_type: unit(b.pay_unit_type, unitOf(p.pay_unit_type)), pay_rate: b.pay_rate !== undefined ? intOrNull(b.pay_rate) : p.pay_rate,
     bill_transport_type: BILL_TRANSPORT_TYPES.includes(b.bill_transport_type) ? b.bill_transport_type : (p.bill_transport_type || 'actual'),
     bill_transport_amount: intOrNull(b.bill_transport_amount) ?? p.bill_transport_amount ?? 0,
     pay_transport_type: PAY_TRANSPORT_TYPES.includes(b.pay_transport_type) ? b.pay_transport_type : (p.pay_transport_type || 'actual'),
     pay_transport_amount: intOrNull(b.pay_transport_amount) ?? p.pay_transport_amount ?? 0,
   }
   const cur: Record<string, any> = {
-    unit_price_type: p.unit_price_type === 'hourly' ? 'hourly' : 'daily', unit_price: p.unit_price ?? 0, pay_unit_type: p.pay_unit_type || 'daily', pay_rate: p.pay_rate,
+    unit_price_type: unitOf(p.unit_price_type), unit_price: p.unit_price ?? 0, pay_unit_type: unitOf(p.pay_unit_type), pay_rate: p.pay_rate,
     bill_transport_type: p.bill_transport_type || 'actual', bill_transport_amount: p.bill_transport_amount ?? 0,
     pay_transport_type: p.pay_transport_type || 'actual', pay_transport_amount: p.pay_transport_amount ?? 0,
   }

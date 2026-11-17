@@ -4,10 +4,45 @@
 //   3. 精算（集計・請求のタブ・請求の CSV・請求明細書・締め）、請求前確認、案件詳細・案件一覧・クライアント詳細の売上に「月額」の行として足す
 //   4. スタッフ別の月額・金額の改定（適用開始月）・期間の重なり・締めた期間の変更の禁止
 //   5. 時給・日額のシフトの金額は変わらない（月額のある案件でも、ない案件と同じ）
+// Sprint 29（#9984）で月額（固定）は単位の「月額」に置き換え、新しいルールは作れなくなった（POST は 400）。単位の「月額」に移せなかった
+// ルール（migrated_at・migrated_from が NULL）は今までどおり請求するので、このテストはその形のルールをローカルの D1 に直接入れて、
+// 以前の行の出し方（2〜5）を確かめる。案件の登録の「月額」・新しい月額の計算は scripts/test-w29-monthly.mjs
 // 前提: bash scripts/setup-test-db.sh <保存先> でローカルの D1 を作り直し、`wrangler dev --local --persist-to <保存先>` で起動していること（追加の起動オプションはない）
-// 実行: BASE=http://127.0.0.1:8813 node scripts/test-w15-monthly-billing.mjs
-//   日付は過去の期間（2018年5〜7月）を使い、締めは最後に解除する（ほかのテストの日付と重ならないように）
+// 実行: BASE=http://127.0.0.1:8813 PERSIST=<保存先> node --import ./scripts/fetch-origin.mjs scripts/test-w15-monthly-billing.mjs
+//   日付は過去の期間（2018年5〜7月）を使い、締めは最後に解除する（ほかのテストの日付と重ならないように）。wrangler d1 execute は --local のみ
+import { execFileSync } from 'node:child_process'
+import { mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 const BASE = process.env.BASE || 'http://127.0.0.1:8813'
+const PERSIST = process.env.PERSIST || ''
+if (!PERSIST) { console.log('PERSIST（--persist-to の保存先）を指定してください'); process.exit(1) }
+const CLI = fileURLToPath(new URL('../node_modules/wrangler/bin/wrangler.js', import.meta.url))
+const SQL_DIR = mkdtempSync(join(tmpdir(), 'w15m-'))
+let sqlSeq = 0
+async function sql(command) {
+  const file = join(SQL_DIR, `q${++sqlSeq}.sql`)
+  writeFileSync(file, command)
+  let out
+  for (let i = 0; ; i++) {
+    try { out = execFileSync(process.execPath, [CLI, 'd1', 'execute', 'mbsaas-production', '--local', '--persist-to', PERSIST, '--json', `--file=${file}`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }); break } catch (e) {
+      const msg = String(e.stdout || '') + String(e.stderr || '')
+      if (i >= 3 || !/internal error|SQLITE_BUSY|database is locked|bad_alloc|write EOF/i.test(msg)) throw new Error(msg.slice(0, 600))
+      await new Promise(r => setTimeout(r, 2000))
+    }
+  }
+  for (let i = 0; i < 30; i++) { try { if ((await fetch(`${BASE}/login`)).ok) break } catch { } await new Promise(r => setTimeout(r, 1000)) }
+  return JSON.parse(out.slice(out.indexOf('['))).at(-1).results
+}
+// 移せなかった月額（固定）のルールを入れる（以前の API の登録と同じ列）。戻り値は rule_id
+const q = (v) => (v == null ? 'NULL' : typeof v === 'number' ? String(v) : `'${String(v).replace(/'/g, "''")}'`)
+async function addRule(r) {
+  const rows = await sql(`INSERT INTO monthly_bill_rules (company_id, project_id, staff_id, amount, valid_from, valid_to, memo, created_by, created_at)
+    SELECT company_id, project_id, ${q(r.staff_id ?? null)}, ${q(r.amount)}, ${q(r.valid_from ?? null)}, ${q(r.valid_to ?? null)}, ${q(r.memo ?? null)}, 1, datetime('now')
+    FROM projects WHERE project_id = ${Number(r.project_id)} RETURNING rule_id;`)
+  return Number(rows[0].rule_id)
+}
 const results = []
 const ok = (name, cond, detail) => { results.push({ name, pass: !!cond }); console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}${!cond && detail !== undefined ? '  → ' + JSON.stringify(detail).slice(0, 600) : ''}`) }
 
@@ -36,11 +71,11 @@ const admin = client(await login('sample', 'admin'))
 // ---------- 画面のコード ----------
 {
   const a = await staticJs('admin.js'), st = await staticJs('settlement.js')
-  ok('案件の登録の請求単価に「月額（固定）」がある', a.includes('<option value="monthly">月額（固定）</option>') && a.includes('np-price-monthly-note'))
-  ok('案件一覧・案件詳細の請求単価は月額を「/月」で出す', a.includes('function projectPriceText(p)') && a.includes('/月（固定）') && a.includes('うち月額'))
+  ok('案件の登録の請求単価は「月額」（月額（固定）は選べない。#9984）', a.includes('<option value="monthly">月額</option>') && !a.includes('<option value="monthly">月額（固定）</option>'))
+  ok('案件一覧・案件詳細の請求単価は、以前の月額を「/月（固定）」で出す', a.includes('function projectPriceText(p)') && a.includes('/月（固定）') && a.includes('うち月額'))
   ok('請求前確認に月額の列と CSV の列がある', a.includes("hasMonthly ? '<th>月額</th>' : ''") && a.includes("'スタッフID', '月額'"))
-  ok('精算の単価の設定のタブに月額の欄（登録・変更・削除）がある', st.includes('settle-monthly-panel') && st.includes('/api/admin/settlement/monthly-rules')
-    && ['monthlyAdd', 'monthlyEdit', 'monthlySave', 'monthlyDelete'].every(k => st.includes(`delegate('${k}'`)))
+  ok('精算の単価の設定のタブに以前の月額の欄（変更・削除。追加はできない）がある', st.includes('settle-monthly-panel') && st.includes('/api/admin/settlement/monthly-rules')
+    && ['monthlyEdit', 'monthlySave', 'monthlyDelete'].every(k => st.includes(`delegate('${k}'`)) && !st.includes("delegate('monthlyAdd'"))
   ok('精算の請求のタブに月額の行、集計に月額の内訳がある', st.includes('function monthlyRowHtml(l)') && st.includes('settle-monthly-total') && st.includes('settle-monthly-note'))
   ok('月額の操作はイベント属性に値を埋め込まない', !/onclick="[^"]*monthly/i.test(st) && !/onclick="[^"]*monthly/i.test(a))
 }
@@ -49,11 +84,13 @@ const admin = client(await login('sample', 'admin'))
 must(await admin.post('/api/admin/clients', { client_name: `${PFX} クライアント` }), 'client')
 const opts0 = must(await admin.get('/api/admin/settlement/options'), 'options')
 const CL = opts0.clients.find(c => c.client_name === `${PFX} クライアント`).client_id
+// 以前の「月額（固定）」で登録した案件と同じ形（日額 0 の案件 ＋ 案件全体・期限なしのルール）
+const PM = must(await admin.post('/api/admin/projects', { project_name: `${PFX}-月額案件`, client_id: CL, unit_price_type: 'daily', unit_price: 0 }), 'monthly project').project_id
+await addRule({ project_id: PM, amount: 300000 })
 {
-  const bad = await admin.post('/api/admin/projects', { project_name: `${PFX}-月額0`, client_id: CL, unit_price_type: 'monthly', unit_price: 0 })
-  ok('月額（固定）は1円以上（0円は登録しない）', bad.status === 400 && /月額/.test(bad.data?.error || ''), bad)
+  const bad = await admin.post('/api/admin/settlement/monthly-rules', { project_id: PM, amount: 1000 })
+  ok('月額（固定）の新しいルールは作れない（#9984）', bad.status === 400 && bad.data?.replaced === true, bad)
 }
-const PM = must(await admin.post('/api/admin/projects', { project_name: `${PFX}-月額案件`, client_id: CL, unit_price_type: 'monthly', unit_price: 300000 }), 'monthly project').project_id
 // 時給・日額との混在: 日額 16000 の案件に月額 100000 も足す。比べる用に、同じ日額で月額のない案件
 const PD = must(await admin.post('/api/admin/projects', { project_name: `${PFX}-日額＋月額`, client_id: CL, unit_price_type: 'daily', unit_price: 16000 }), 'daily project').project_id
 const PC = must(await admin.post('/api/admin/projects', { project_name: `${PFX}-日額のみ`, client_id: CL, unit_price_type: 'daily', unit_price: 16000 }), 'control project').project_id
@@ -69,7 +106,7 @@ const PH = must(await admin.post('/api/admin/projects', { project_name: `${PFX}-
   const pd = must(await admin.get(`/api/admin/projects/${PD}`), 'detail').project
   ok('日額の案件は今までどおり（日額 16000）', pd.unit_price_type === 'daily' && Number(pd.unit_price) === 16000, pd)
 }
-must(await admin.post('/api/admin/settlement/monthly-rules', { project_id: PD, amount: 100000, memo: '管理費' }), 'rule PD')
+await addRule({ project_id: PD, amount: 100000, memo: '管理費' })
 
 const newStaff = async (n) => must(await admin.post('/api/admin/staff-quick', { name: `${PFX} スタッフ${n}`, phone: phone(n), affiliation_type: 'daily_worker' }), 'staff-quick').staff_id
 const A = await newStaff(1), B = await newStaff(2)
@@ -111,7 +148,7 @@ const settle = async (from, to, extra = '') => must(await admin.get(`/api/admin/
 
 // ---------- 4. スタッフ別の月額・改定・重なり ----------
 {
-  const r1 = must(await admin.post('/api/admin/settlement/monthly-rules', { project_id: PM, staff_id: A, amount: 50000, valid_from: '2018-05' }), 'staff rule')
+  const r1 = { rule_id: await addRule({ project_id: PM, staff_id: A, amount: 50000, valid_from: '2018-05' }) }
   const s = await settle('2018-05-01', '2018-07-31')
   const a = s.monthly_lines.filter(l => l.project_id === PM && l.staff_id === A).map(l => [l.ym, l.amount, l.shifts])
   ok('スタッフ別の月額は、そのスタッフのシフトがある月に1回（5月 2件・7月 1件）', JSON.stringify(a) === JSON.stringify([['2018-05', 50000, 2], ['2018-07', 50000, 1]]), a)
@@ -119,26 +156,21 @@ const settle = async (from, to, extra = '') => must(await admin.get(`/api/admin/
   ok('シフトのないスタッフ（B は7月なし）のスタッフ別の月額は出ない', !s.monthly_lines.some(l => l.staff_id === B))
   const sa = await settle('2018-05-01', '2018-05-31', `&staff_id=${A}`)
   ok('スタッフで絞ると、そのスタッフのスタッフ別の月額だけ', sa.monthly_lines.length === 1 && sa.monthly_lines[0].staff_id === A, sa.monthly_lines)
-  const dup = await admin.post('/api/admin/settlement/monthly-rules', { project_id: PM, staff_id: A, amount: 60000, valid_from: '2018-04', valid_to: '2018-05' })
-  ok('同じ対象の期間が重なる月額は登録できない', dup.status === 409 && /重なって/.test(dup.data?.error || ''), dup)
-  // 改定: 案件全体を7月から 350000 にする（前の月額は6月まで）
-  const rev = must(await admin.post('/api/admin/settlement/monthly-rules', { project_id: PM, amount: 350000, valid_from: '2018-07' }), 'revise')
-  const rules = must(await admin.get(`/api/admin/settlement/monthly-rules?project_id=${PM}`), 'rules').rules.filter(r => r.staff_id == null)
-  ok('適用開始月を付けて追加すると、前の月額をその前の月までにする（改定）', rev.revised_rule_id && rules.some(r => r.rule_id === rev.revised_rule_id && r.valid_to === '2018-06') && rules.some(r => r.rule_id === rev.rule_id && r.valid_from === '2018-07'), rules)
+  // 改定（以前の API で登録したときと同じ形）: 案件全体を7月から 350000 にする（前の月額は6月まで）
+  const prev = must(await admin.get(`/api/admin/settlement/monthly-rules?project_id=${PM}`), 'rules').rules.find(r => r.staff_id == null)
+  must(await admin.put(`/api/admin/settlement/monthly-rules/${prev.rule_id}`, { valid_to: '2018-06' }), 'end prev')
+  const rev = { rule_id: await addRule({ project_id: PM, amount: 350000, valid_from: '2018-07' }) }
+  const dup = await admin.put(`/api/admin/settlement/monthly-rules/${rev.rule_id}`, { valid_from: '2018-06' })
+  ok('同じ対象の期間が重なる月額には変えられない', dup.status === 409 && /重なって/.test(dup.data?.error || ''), dup)
   const s2 = await settle('2018-05-01', '2018-07-31')
   const amounts = s2.monthly_lines.filter(l => l.project_id === PM && l.staff_id == null).map(l => [l.ym, l.amount])
   ok('改定の前の月は前の月額、後の月は新しい月額（月の途中では変えない）', JSON.stringify(amounts) === JSON.stringify([['2018-05', 300000], ['2018-07', 350000]]), amounts)
-  const gap = await admin.post('/api/admin/settlement/monthly-rules', { project_id: PM, amount: 1000, valid_from: '2030-01', valid_to: '2030-02' })
-  const after = must(await admin.get(`/api/admin/settlement/monthly-rules?project_id=${PM}`), 'rules').rules
-  ok('終了月のある月額では、期限のない月額を切らない（後に隙間ができるので重なりとして断る）', gap.status === 409 && after.some(r => r.rule_id === rev.rule_id && !r.valid_to), [gap.status, after])
-  const badYm = await admin.post('/api/admin/settlement/monthly-rules', { project_id: PM, amount: 1000, valid_from: '2018-13' })
+  const badYm = await admin.put(`/api/admin/settlement/monthly-rules/${rev.rule_id}`, { valid_from: '2018-13' })
   ok('適用する月の形が違うと 400', badYm.status === 400, badYm.status)
   const badAmt = await admin.put(`/api/admin/settlement/monthly-rules/${r1.rule_id}`, { amount: -5 })
   ok('月額のマイナスは 400', badAmt.status === 400, badAmt.status)
   const none = await admin.put('/api/admin/settlement/monthly-rules/99999999', { amount: 5 })
   ok('ない月額の変更は 404', none.status === 404, none.status)
-  const noProject = await admin.post('/api/admin/settlement/monthly-rules', { project_id: 99999999, amount: 5 })
-  ok('ない案件には登録できない（404）', noProject.status === 404, noProject.status)
 }
 
 // ---------- 3. 請求前確認・案件詳細・クライアント詳細 ----------
@@ -205,9 +237,9 @@ let closingId = null
 {
   const S1 = await newStaff(11), T1 = await newStaff(12), S2 = await newStaff(13), T2 = await newStaff(14)
   await newShift(PM, S1, '2018-09-05'); await newShift(PM, S2, '2018-09-06')
-  const r1 = must(await admin.post('/api/admin/settlement/monthly-rules', { project_id: PM, staff_id: S1, amount: 7000, valid_from: '2018-09' }), 'rule S1').rule_id
-  const r2 = must(await admin.post('/api/admin/settlement/monthly-rules', { project_id: PM, staff_id: S2, amount: 8000, valid_from: '2018-09' }), 'rule S2').rule_id
-  const t2 = must(await admin.post('/api/admin/settlement/monthly-rules', { project_id: PM, staff_id: T2, amount: 9000, valid_from: '2018-01' }), 'rule T2').rule_id
+  const r1 = await addRule({ project_id: PM, staff_id: S1, amount: 7000, valid_from: '2018-09' })
+  const r2 = await addRule({ project_id: PM, staff_id: S2, amount: 8000, valid_from: '2018-09' })
+  const t2 = await addRule({ project_id: PM, staff_id: T2, amount: 9000, valid_from: '2018-01' })
   const m1 = await admin.post(`/api/admin/staff/${S1}/merge`, { target_staff_id: T1, force: true })
   const m2 = await admin.post(`/api/admin/staff/${S2}/merge`, { target_staff_id: T2, force: true })
   const rules = must(await admin.get(`/api/admin/settlement/monthly-rules?project_id=${PM}`), 'rules').rules
@@ -220,7 +252,8 @@ let closingId = null
 
 // ---------- 案件の削除で月額のルールも消す ----------
 {
-  const P2 = must(await admin.post('/api/admin/projects', { project_name: `${PFX}-削除用`, unit_price_type: 'monthly', unit_price: 1000 }), 'p2').project_id
+  const P2 = must(await admin.post('/api/admin/projects', { project_name: `${PFX}-削除用`, unit_price_type: 'daily', unit_price: 0 }), 'p2').project_id
+  await addRule({ project_id: P2, amount: 1000 })
   const del = await admin.del(`/api/admin/projects/${P2}`)
   ok('使われていない月額の案件は削除でき、月額のルールも一緒に消える', del.status === 200 && (await admin.get(`/api/admin/settlement/monthly-rules?project_id=${P2}`)).status === 404, del)
 }

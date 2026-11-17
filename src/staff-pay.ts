@@ -11,7 +11,7 @@
 // 管理者 API（/api/admin/pay-requests*・/api/admin/staff-pay/settings）は api.ts から権限ミドルウェアの後に登録する。
 // =========================================================
 import { Hono } from 'hono'
-import { shiftTotals, workHours } from './shift-board'
+import { monthlyDays, shiftTotals, workHours } from './shift-board'
 import { closedMessage, refreshShiftAmounts } from './settlement'
 import { correctionDeadlineDays } from './corrections'
 import { personStaffRows } from './roster'
@@ -146,7 +146,9 @@ staffPayStaffApi.get('/pay', async (c) => {
       if (cancel) pay = { unit_type: null, rate: null, qty: null, base: s.cx_pay == null ? null : Number(s.cx_pay), transport: 0, adjust: 0, total: s.cx_pay == null ? null : Number(s.cx_pay) }
       else {
         const t = shiftTotals(s)
+        // month_days: 月額（#9984）のシフトの、その月の働いた日数（1日分 = 月額 ÷ この日数）。月額でなければ null
         pay = { unit_type: s.pay_unit_type || 'daily', rate: s.pay_rate ?? null, qty: s.pay_qty ?? null, base: s.pay_amount == null ? null : Number(s.pay_amount),
+          month_days: s.pay_unit_type === 'monthly' ? monthlyDays(s.pay_qty) : null,
           transport: t.pay_transport, adjust: Number(s.pay_adjust || 0), premium: t.pay_premium,
           premium_minutes: { night: s.premium_night_minutes ?? null, overtime: s.premium_overtime_minutes ?? null, holiday: s.premium_holiday_minutes ?? null }, total: t.pay_total }
       }

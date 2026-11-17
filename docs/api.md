@@ -73,7 +73,7 @@ Mobital のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 <!-- BEGIN GENERATED: api-summary -->
 - エンドポイント: 569（GET 258・POST 196・PUT 79・PATCH 0・DELETE 36）
 - ミドルウェア: 24・画面などのルート（src/index.tsx）: 13
-- 画面の JS（public/static）から呼んでいる形が見つかったもの: 557・見つからないもの: 12
+- 画面の JS（public/static）から呼んでいる形が見つかったもの: 556・見つからないもの: 13
 
 | 区分 | 数 |
 |---|---|
@@ -120,7 +120,7 @@ Mobital のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 | 18 | `/api/admin/staff-requests/leave` | [staff-self-service.ts:532](../src/staff-self-service.ts#L532) | 会社管理者・事務だけ（権限の表の hr.manage: 労務情報（従業員管理・入社時書類・休暇の申請・自社雇用の最寄駅の変更の承認・ダッシュボードの労務の知らせ）） |
 | 19 | `/api/admin/staff-requests/leave/*` | [staff-self-service.ts:533](../src/staff-self-service.ts#L533) | 会社管理者・事務だけ（権限の表の hr.manage: 労務情報（従業員管理・入社時書類・休暇の申請・自社雇用の最寄駅の変更の承認・ダッシュボードの労務の知らせ）） |
 | 20 | `/api/admin/roster-chat/*` | [roster-chat.ts:22](../src/roster-chat.ts#L22) | 管理系の4ロールだけ（権限の表の roster_chat.use: 企業間チャット） |
-| 21 | `/api/admin/shift-slots/roles/:id/assign` | [shift-board.ts:1622](../src/shift-board.ts#L1622) | テスト用の仕掛け（TEST_HOOKS のローカルだけ。D1 の回数。src/lib/d1-retry.ts） |
+| 21 | `/api/admin/shift-slots/roles/:id/assign` | [shift-board.ts:1641](../src/shift-board.ts#L1641) | テスト用の仕掛け（TEST_HOOKS のローカルだけ。D1 の回数。src/lib/d1-retry.ts） |
 | 22 | `/api/admin/recruit-applications/:id/decide` | [recruit.ts:869](../src/recruit.ts#L869) | テスト用の仕掛け（TEST_HOOKS のローカルだけ。D1 の回数。src/lib/d1-retry.ts） |
 | 23 | `/api/staff/attendance` | [api.ts:1790](../src/api.ts#L1790) | テスト用の仕掛け（TEST_HOOKS のローカルだけ。D1 の回数・過負荷のまね。src/lib/d1-retry.ts） |
 | 24 | `/api/staff/attendance-photo` | [api.ts:1791](../src/api.ts#L1791) | テスト用の仕掛け（TEST_HOOKS のローカルだけ。D1 の回数・過負荷のまね。src/lib/d1-retry.ts） |
@@ -244,10 +244,10 @@ Mobital のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 | POST | `/api/staff/notifications/read-all` | スタッフ | [notifications.ts:439](../src/notifications.ts#L439) | 〔見出し〕アプリ内通知 API（本人あてのみ）。管理者は /api/admin/notifications、スタッフは /api/staff/notifications | staff-attendance.js |
 | GET | `/api/staff/notifications/unread-count` | スタッフ | [notifications.ts:438](../src/notifications.ts#L438) | 〔見出し〕アプリ内通知 API（本人あてのみ）。管理者は /api/admin/notifications、スタッフは /api/staff/notifications |  |
 | GET | `/api/staff/pay` | スタッフ | [staff-pay.ts:101](../src/staff-pay.ts#L101) | 月（month=YYYY-MM。既定は今月）の自分のシフトの実働時間・支払額・申請と、月の集計 | staff-attendance.js |
-| POST | `/api/staff/pay/requests` | スタッフ | [staff-pay.ts:185](../src/staff-pay.ts#L185) | 申請: { shift_id, kind: 'transport', amount, route, round_trip, reason } / { shift_id, kind: 'overtime', new_end_time, instructed_by, reason } | staff-attendance.js |
-| POST | `/api/staff/pay/requests/:id{[0-9]+}/cancel` | スタッフ | [staff-pay.ts:282](../src/staff-pay.ts#L282) | 本人の取り消し（承認待ちのものだけ） | staff-attendance.js |
-| GET | `/api/staff/pay/requests/:id{[0-9]+}/receipt` | スタッフ | [staff-pay.ts:274](../src/staff-pay.ts#L274) | 自分の申請の領収書の写真 | staff-attendance.js |
-| POST | `/api/staff/pay/requests/:id{[0-9]+}/receipt` | スタッフ | [staff-pay.ts:240](../src/staff-pay.ts#L240) | 領収書の写真を付ける・差し替える（#273。本人の、承認待ちの交通費の申請だけ）。multipart/form-data: photo（画面で圧縮した JPEG/PNG） | staff-attendance.js |
+| POST | `/api/staff/pay/requests` | スタッフ | [staff-pay.ts:187](../src/staff-pay.ts#L187) | 申請: { shift_id, kind: 'transport', amount, route, round_trip, reason } / { shift_id, kind: 'overtime', new_end_time, instructed_by, reason } | staff-attendance.js |
+| POST | `/api/staff/pay/requests/:id{[0-9]+}/cancel` | スタッフ | [staff-pay.ts:284](../src/staff-pay.ts#L284) | 本人の取り消し（承認待ちのものだけ） | staff-attendance.js |
+| GET | `/api/staff/pay/requests/:id{[0-9]+}/receipt` | スタッフ | [staff-pay.ts:276](../src/staff-pay.ts#L276) | 自分の申請の領収書の写真 | staff-attendance.js |
+| POST | `/api/staff/pay/requests/:id{[0-9]+}/receipt` | スタッフ | [staff-pay.ts:242](../src/staff-pay.ts#L242) | 領収書の写真を付ける・差し替える（#273。本人の、承認待ちの交通費の申請だけ）。multipart/form-data: photo（画面で圧縮した JPEG/PNG） | staff-attendance.js |
 | GET | `/api/staff/pending-daily-reports` | スタッフ | [api.ts:1942](../src/api.ts#L1942) | 〔見出し〕打刻（#427 #9939。本体は src/attendance-punch.ts） | staff.js |
 | GET | `/api/staff/performance` | スタッフ | [api.ts:2403](../src/api.ts#L2403) | 〔見出し〕打刻（#427 #9939。本体は src/attendance-punch.ts） | staff.js |
 | GET | `/api/staff/photo-options` | スタッフ | [api.ts:1862](../src/api.ts#L1862) | 写真が送れないときの扱い（#535）。スタッフ: シフトの所有企業が写真なしの報告を許可しているかと、理由の選択肢 | staff.js |
@@ -280,9 +280,9 @@ Mobital のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 
 | メソッド | パス | 通すロール | 定義 | 用途（直前のコメント・なければ見出し） | 画面の JS |
 |---|---|---|---|---|---|
-| GET | `/api/admin/analytics` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:6486](../src/api.ts#L6486) | 〔見出し〕確定した過去の月の実績分析（#9972。src/lib/monthly-summary.ts） | admin.js |
-| GET | `/api/admin/analytics/csv` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:6668](../src/api.ts#L6668) | 〔見出し〕確定した過去の月の実績分析（#9972。src/lib/monthly-summary.ts） | admin.js |
-| GET | `/api/admin/analytics/series` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:6526](../src/api.ts#L6526) | 〔見出し〕確定した過去の月の実績分析（#9972。src/lib/monthly-summary.ts） | admin.js |
+| GET | `/api/admin/analytics` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:6485](../src/api.ts#L6485) | 〔見出し〕確定した過去の月の実績分析（#9972。src/lib/monthly-summary.ts） | admin.js |
+| GET | `/api/admin/analytics/csv` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:6667](../src/api.ts#L6667) | 〔見出し〕確定した過去の月の実績分析（#9972。src/lib/monthly-summary.ts） | admin.js |
+| GET | `/api/admin/analytics/series` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:6525](../src/api.ts#L6525) | 〔見出し〕確定した過去の月の実績分析（#9972。src/lib/monthly-summary.ts） | admin.js |
 | GET | `/api/admin/assignees` | 管理者（4ロール）＋本部の閲覧（GET） | [assignees.ts:111](../src/assignees.ts#L111) | アカウントごとの「担当している会社」（主・副の区別つき）。?user_id= で1人に絞る。 統合済み・消した協力会社とクライアントの行は出さない | admin.js |
 | GET | `/api/admin/assignees/options` | 管理者（4ロール）＋本部の閲覧（GET） | [assignees.ts:103](../src/assignees.ts#L103) | 担当に選べるアカウント（自社の利用中の管理者）。同姓の人を見分けられるよう ID と権限も返す | admin.js |
 | GET | `/api/admin/attendance-photo/:attendanceId` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:1844](../src/api.ts#L1844) | 管理者: 勤怠報告の写真の取得。報告のシフトが自社のものかを確かめてから返す（写真のキーは画面に出さない #217） | admin.js corrections.js |
@@ -293,7 +293,7 @@ Mobital のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 | POST | `/api/admin/availability/remind` | 管理者（4ロール） | [staff-schedule.ts:401](../src/staff-schedule.ts#L401) | 未提出の人（ログインできるスタッフ。回収の対象外の人を除く）へアプリ内通知で提出を頼む | admin.js |
 | PUT | `/api/admin/availability/targets` | 管理者（4ロール） | [staff-schedule.ts:437](../src/staff-schedule.ts#L437) | 〔見出し〕管理者（/api/admin/*） | admin.js staff-lifecycle.js |
 | GET | `/api/admin/badges` | 管理者（4ロール）＋本部の閲覧（GET）<br>＋本文で確認: CHAT_ROLES | [admin-badges.ts:23](../src/admin-badges.ts#L23) | 〔見出し〕管理画面のバッジ（左のメニュー・スマホのメニューの件数）をまとめて返す（#9935） | admin.js |
-| GET | `/api/admin/billing-check` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:7673](../src/api.ts#L7673) | 請求前確認 | admin.js |
+| GET | `/api/admin/billing-check` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:7672](../src/api.ts#L7672) | 請求前確認 | admin.js |
 | GET | `/api/admin/board/posts` | 管理者（4ロール）＋本部の閲覧（GET） | [board.ts:127](../src/board.ts#L127) | scope: open（全企業の掲載中）/ mine（自社の掲載すべて） | board.js |
 | POST | `/api/admin/board/posts` | 管理者（4ロール） | [board.ts:216](../src/board.ts#L216) | 〔見出し〕作成・更新 | board.js |
 | DELETE | `/api/admin/board/posts/:id` | 管理者（4ロール） | [board.ts:318](../src/board.ts#L318) | 削除は下書きのみ（掲載したものは履歴として残し、締切・充足で閉じる） | board.js |
@@ -323,7 +323,7 @@ Mobital のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 | POST | `/api/admin/clients` | 管理者（4ロール） | [api.ts:4330](../src/api.ts#L4330) | 〔見出し〕スタッフ履歴書ファイル管理 | admin.js tour.js |
 | GET | `/api/admin/clients/:id` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:4370](../src/api.ts#L4370) | 〔見出し〕スタッフ履歴書ファイル管理 | admin.js |
 | PUT | `/api/admin/clients/:id` | 管理者（4ロール） | [api.ts:4465](../src/api.ts#L4465) | 〔見出し〕スタッフ履歴書ファイル管理 | admin.js |
-| DELETE | `/api/admin/clients/:id{[0-9]+}` | 管理者（4ロール） | [api.ts:5260](../src/api.ts#L5260) | 〔見出し〕使われていない案件・クライアントの削除（#359。二度押しなどで重複して登録したものを消す） | admin.js |
+| DELETE | `/api/admin/clients/:id{[0-9]+}` | 管理者（4ロール） | [api.ts:5259](../src/api.ts#L5259) | 〔見出し〕使われていない案件・クライアントの削除（#359。二度押しなどで重複して登録したものを消す） | admin.js |
 | POST | `/api/admin/clients/:id/contacts` | 管理者（4ロール） | [api.ts:4581](../src/api.ts#L4581) | 〔見出し〕顧客担当者（1会社に複数登録可、支店・部署は自由入力） | admin.js |
 | GET | `/api/admin/clients/:id/documents` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:4861](../src/api.ts#L4861) | ファイル一覧 | admin.js |
 | POST | `/api/admin/clients/:id/documents` | 管理者（4ロール） | [api.ts:4872](../src/api.ts#L4872) | アップロード（複数ファイル対応。履歴書機能と同一の検証ロジックを再利用） | admin.js |
@@ -334,9 +334,9 @@ Mobital のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 | DELETE | `/api/admin/clients/documents/:docId` | 管理者（4ロール） | [api.ts:4887](../src/api.ts#L4887) | 削除（D1を先に消し、R2はベストエフォート。履歴書機能と同じ順序方針） | admin.js |
 | GET | `/api/admin/clients/documents/:docId/download` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:4883](../src/api.ts#L4883) | ダウンロード | admin.js |
 | GET | `/api/admin/consultation-photo/:id{[0-9]+}` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:1853](../src/api.ts#L1853) | 管理者: 相談の写真の取得。自社あての相談の写真だけ（#429） | admin.js |
-| GET | `/api/admin/consultations` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:7517](../src/api.ts#L7517) | 〔見出し〕お知らせ既読率レポート | admin.js |
-| PUT | `/api/admin/consultations/:id` | 管理者（4ロール） | [api.ts:7546](../src/api.ts#L7546) | 返信・状態の変更。返信したら、スタッフ本人にアプリ内通知（consult_reply）で知らせ、ホームのバナーに出す（#320） | admin.js |
-| GET | `/api/admin/contract-usage` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:8398](../src/api.ts#L8398) | 契約ユーザー数（本部が決めた上限）と今の利用数。企業の管理画面（アカウント設定）に表示する（#321 #9928。登録は止めず、表示のみ） 数え方は本部の企業一覧・企業詳細と同じ（HQ_BILLABLE_SQL）。near_limit: 上限の9割以上で、まだ超えていない | admin.js |
+| GET | `/api/admin/consultations` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:7516](../src/api.ts#L7516) | 〔見出し〕お知らせ既読率レポート | admin.js |
+| PUT | `/api/admin/consultations/:id` | 管理者（4ロール） | [api.ts:7545](../src/api.ts#L7545) | 返信・状態の変更。返信したら、スタッフ本人にアプリ内通知（consult_reply）で知らせ、ホームのバナーに出す（#320） | admin.js |
+| GET | `/api/admin/contract-usage` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:8397](../src/api.ts#L8397) | 契約ユーザー数（本部が決めた上限）と今の利用数。企業の管理画面（アカウント設定）に表示する（#321 #9928。登録は止めず、表示のみ） 数え方は本部の企業一覧・企業詳細と同じ（HQ_BILLABLE_SQL）。near_limit: 上限の9割以上で、まだ超えていない | admin.js |
 | GET | `/api/admin/corrections` | 管理者（4ロール）＋本部の閲覧（GET） | [corrections.ts:739](../src/corrections.ts#L739) | 〔見出し〕管理者 API（/api/admin/*。自社のシフトの申請のみ） | corrections.js |
 | POST | `/api/admin/corrections` | 管理者（4ロール） | [corrections.ts:884](../src/corrections.ts#L884) | 〔見出し〕管理者 API（/api/admin/*。自社のシフトの申請のみ） | corrections.js |
 | GET | `/api/admin/corrections/:id{[0-9]+}` | 管理者（4ロール）＋本部の閲覧（GET） | [corrections.ts:844](../src/corrections.ts#L844) | 〔見出し〕管理者 API（/api/admin/*。自社のシフトの申請のみ） | corrections.js |
@@ -352,18 +352,18 @@ Mobital のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 | GET | `/api/admin/corrections/pending-count` | 管理者（4ロール）＋本部の閲覧（GET） | [corrections.ts:713](../src/corrections.ts#L713) | 〔見出し〕管理者 API（/api/admin/*。自社のシフトの申請のみ） | corrections.js |
 | GET | `/api/admin/corrections/shift-candidates` | 管理者（4ロール）＋本部の閲覧（GET） | [corrections.ts:855](../src/corrections.ts#L855) | 〔見出し〕管理者 API（/api/admin/*。自社のシフトの申請のみ） | corrections.js |
 | GET | `/api/admin/corrections/shift/:shiftId` | 管理者（4ロール）＋本部の閲覧（GET） | [corrections.ts:879](../src/corrections.ts#L879) | 管理者による申請（自社のシフト）。dry_run で確認のみ | corrections.js |
-| GET | `/api/admin/daily-reports` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:5621](../src/api.ts#L5621) | 〔見出し〕使われていない案件・クライアントの削除（#359。二度押しなどで重複して登録したものを消す） | admin.js |
-| GET | `/api/admin/daily-reports-csv` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:8580](../src/api.ts#L8580) | 〔見出し〕日報の書き出しと保存期間の案内（導入企業向け。#417） | admin.js |
-| GET | `/api/admin/daily-reports-retention` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:8638](../src/api.ts#L8638) | 日報の保存期間と、今後30日のうちに3年を過ぎて削除される件数（日報一覧の案内に出す） | admin.js |
-| PUT | `/api/admin/daily-reports/:id` | 管理者（4ロール） | [api.ts:5837](../src/api.ts#L5837) | 日報の確認（#360）と、以前の形のコメント（古い画面・外部から。#9965 の後も受け付ける） - manager_comment: 最新のコメントが自分のものならそれを直し（空欄は削除）、そうでなければコメントを追加する。 ほかの人のコメントを空欄で消そうとしたら 403。expected_comment（開いた… | admin.js |
-| POST | `/api/admin/daily-reports/:id{[0-9]+}/comments` | 管理者（4ロール） | [api.ts:5795](../src/api.ts#L5795) | コメントを追加する。body: { body } | admin.js |
-| DELETE | `/api/admin/daily-reports/:id{[0-9]+}/comments/:cid{[0-9]+}` | 管理者（4ロール） | [api.ts:5824](../src/api.ts#L5824) | 自分のコメントを消す | admin.js |
-| PUT | `/api/admin/daily-reports/:id{[0-9]+}/comments/:cid{[0-9]+}` | 管理者（4ロール） | [api.ts:5810](../src/api.ts#L5810) | 自分のコメントを直す。body: { body }（空欄は受け付けない。消すときは DELETE） |  |
-| GET | `/api/admin/daily-reports/:id{[0-9]+}/edits` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:5913](../src/api.ts#L5913) | 修正の画面の内容と、修正の履歴（新しい順） | admin.js |
-| PUT | `/api/admin/daily-reports/:id{[0-9]+}/values` | 管理者（4ロール） | [api.ts:5941](../src/api.ts#L5941) | 値を直す。values は項目のキー → 値（送らなかった項目は今の値のまま）、reason は理由（任意）。 expected_submitted_at・expected_admin_edited_at（画面を開いたときの値）を送ると、その後にスタッフが出し直した・ほかの管理者が直したときは 409 を返して書かない | admin.js |
-| PUT | `/api/admin/daily-reports/:id/incident` | 管理者（4ロール） | [api.ts:5981](../src/api.ts#L5981) | 〔見出し〕日報の実績の修正（利用者の決定 Sprint 15。#9707。lib/daily-report.ts・migrations/0097） | admin.js |
-| POST | `/api/admin/daily-reports/check` | 管理者（4ロール） | [api.ts:5734](../src/api.ts#L5734) | 表示中の日報をまとめて確認済みにする（#183）。ids は最大 DAILY_REPORT_PAGE_MAX 件。すでに確認済みのものは変えない | admin.js |
-| GET | `/api/admin/daily-reports/missing` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:5564](../src/api.ts#L5564) | 〔見出し〕使われていない案件・クライアントの削除（#359。二度押しなどで重複して登録したものを消す） | admin.js |
+| GET | `/api/admin/daily-reports` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:5620](../src/api.ts#L5620) | 〔見出し〕使われていない案件・クライアントの削除（#359。二度押しなどで重複して登録したものを消す） | admin.js |
+| GET | `/api/admin/daily-reports-csv` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:8579](../src/api.ts#L8579) | 〔見出し〕日報の書き出しと保存期間の案内（導入企業向け。#417） | admin.js |
+| GET | `/api/admin/daily-reports-retention` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:8637](../src/api.ts#L8637) | 日報の保存期間と、今後30日のうちに3年を過ぎて削除される件数（日報一覧の案内に出す） | admin.js |
+| PUT | `/api/admin/daily-reports/:id` | 管理者（4ロール） | [api.ts:5836](../src/api.ts#L5836) | 日報の確認（#360）と、以前の形のコメント（古い画面・外部から。#9965 の後も受け付ける） - manager_comment: 最新のコメントが自分のものならそれを直し（空欄は削除）、そうでなければコメントを追加する。 ほかの人のコメントを空欄で消そうとしたら 403。expected_comment（開いた… | admin.js |
+| POST | `/api/admin/daily-reports/:id{[0-9]+}/comments` | 管理者（4ロール） | [api.ts:5794](../src/api.ts#L5794) | コメントを追加する。body: { body } | admin.js |
+| DELETE | `/api/admin/daily-reports/:id{[0-9]+}/comments/:cid{[0-9]+}` | 管理者（4ロール） | [api.ts:5823](../src/api.ts#L5823) | 自分のコメントを消す | admin.js |
+| PUT | `/api/admin/daily-reports/:id{[0-9]+}/comments/:cid{[0-9]+}` | 管理者（4ロール） | [api.ts:5809](../src/api.ts#L5809) | 自分のコメントを直す。body: { body }（空欄は受け付けない。消すときは DELETE） |  |
+| GET | `/api/admin/daily-reports/:id{[0-9]+}/edits` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:5912](../src/api.ts#L5912) | 修正の画面の内容と、修正の履歴（新しい順） | admin.js |
+| PUT | `/api/admin/daily-reports/:id{[0-9]+}/values` | 管理者（4ロール） | [api.ts:5940](../src/api.ts#L5940) | 値を直す。values は項目のキー → 値（送らなかった項目は今の値のまま）、reason は理由（任意）。 expected_submitted_at・expected_admin_edited_at（画面を開いたときの値）を送ると、その後にスタッフが出し直した・ほかの管理者が直したときは 409 を返して書かない | admin.js |
+| PUT | `/api/admin/daily-reports/:id/incident` | 管理者（4ロール） | [api.ts:5980](../src/api.ts#L5980) | 〔見出し〕日報の実績の修正（利用者の決定 Sprint 15。#9707。lib/daily-report.ts・migrations/0097） | admin.js |
+| POST | `/api/admin/daily-reports/check` | 管理者（4ロール） | [api.ts:5733](../src/api.ts#L5733) | 表示中の日報をまとめて確認済みにする（#183）。ids は最大 DAILY_REPORT_PAGE_MAX 件。すでに確認済みのものは変えない | admin.js |
+| GET | `/api/admin/daily-reports/missing` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:5563](../src/api.ts#L5563) | 〔見出し〕使われていない案件・クライアントの削除（#359。二度押しなどで重複して登録したものを消す） | admin.js |
 | GET | `/api/admin/dashboard` | 管理者（4ロール）＋本部の閲覧（GET）<br>＋本文で確認: 権限の表: hr.manage | [api.ts:2821](../src/api.ts#L2821) | 管理者ダッシュボード 問い合わせは1回の db.batch（と、並べて行う人員不足・月額の読み込み）にまとめる（#9904。1つずつ待つと D1 の往復の数だけ遅くなる）。 案件の絞り込み（#9905）: project_id（その案件）か client_id（そのクライアントの案件）。どちらもなければ全案件。 絞り… | admin.js |
 | DELETE | `/api/admin/dashboard/todos` | 管理者（4ロール） | [api.ts:3391](../src/api.ts#L3391) | 元に戻す（もう一度 ToDo に出す） | admin.js |
 | POST | `/api/admin/dashboard/todos` | 管理者（4ロール） | [api.ts:3369](../src/api.ts#L3369) | 〔見出し〕管理者ToDo (ルールベース。会社全体) | admin.js |
@@ -379,33 +379,33 @@ Mobital のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 | DELETE | `/api/admin/employees/documents/:docId` | 会社管理者・事務 | [api.ts:4850](../src/api.ts#L4850) | 〔見出し〕入社時書類（履歴書と同一パターン。既存DOCUMENTSバケットを別キー接頭辞で再利用） | admin.js |
 | GET | `/api/admin/employees/documents/:docId/download` | 会社管理者・事務 | [api.ts:4847](../src/api.ts#L4847) | 〔見出し〕入社時書類（履歴書と同一パターン。既存DOCUMENTSバケットを別キー接頭辞で再利用） | admin.js |
 | GET | `/api/admin/employees/export` | 会社管理者・事務<br>＋本文で確認: 権限の表: roster_export.pay | [api.ts:4666](../src/api.ts#L4666) | 〔見出し〕従業員管理（社員名簿）: 自社雇用者のみ | admin.js |
-| GET | `/api/admin/follow-logs` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:7592](../src/api.ts#L7592) | 〔見出し〕お知らせ既読率レポート | admin.js |
-| POST | `/api/admin/follow-logs` | 管理者（4ロール） | [api.ts:7636](../src/api.ts#L7636) | 〔見出し〕お知らせ既読率レポート | admin.js |
-| PUT | `/api/admin/follow-logs/:id` | 管理者（4ロール） | [api.ts:7655](../src/api.ts#L7655) | 〔見出し〕お知らせ既読率レポート | admin.js |
+| GET | `/api/admin/follow-logs` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:7591](../src/api.ts#L7591) | 〔見出し〕お知らせ既読率レポート | admin.js |
+| POST | `/api/admin/follow-logs` | 管理者（4ロール） | [api.ts:7635](../src/api.ts#L7635) | 〔見出し〕お知らせ既読率レポート | admin.js |
+| PUT | `/api/admin/follow-logs/:id` | 管理者（4ロール） | [api.ts:7654](../src/api.ts#L7654) | 〔見出し〕お知らせ既読率レポート | admin.js |
 | GET | `/api/admin/hq-access` | 管理者（4ロール）＋本部の閲覧（GET）<br>＋本文で確認: 権限の表: hq_view.allow | [hq-support.ts:323](../src/hq-support.ts#L323) | 本部の閲覧の許可と、これまでの閲覧の記録（いつ・誰が・何のために） | hq-support.js |
 | PUT | `/api/admin/hq-access` | 管理者（4ロール）<br>＋本文で確認: 権限の表: hq_view.allow | [hq-support.ts:333](../src/hq-support.ts#L333) | 閲覧の許可の切り替え（会社管理者のみ）。取り消したときは、閲覧中のものもその場で終える | hq-support.js |
 | POST | `/api/admin/hq-announcements/:id/read` | 管理者（4ロール） | [hq-support.ts:271](../src/hq-support.ts#L271) | 〔見出し〕管理画面の API（/api/admin に登録する） | hq-support.js |
 | GET | `/api/admin/hq-support/status` | 管理者（4ロール）＋本部の閲覧（GET）<br>＋本文で確認: 権限の表: hq_view.allow | [hq-support.ts:257](../src/hq-support.ts#L257) | 管理画面の上部に出すもの: 未確認の本部のお知らせ、本部が閲覧中かどうか、閲覧の許可の状態 | hq-support.js |
 | GET | `/api/admin/login-history` | 会社管理者 | [api.ts:1148](../src/api.ts#L1148) | 自社のログインの履歴（自社の会社コードで試みられた失敗を含む）と、失敗が続いている ID | security.js |
-| GET | `/api/admin/notice-reports/:fiscalYear` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:7423](../src/api.ts#L7423) | 年度別（会社サマリ + スタッフ別）。長期保存されたレポートテーブルから取得する。 再集計できるかどうか（確定済み・保存期間外ならできない #48 #49）と、年度の途中かどうか（#481）も返す | admin.js |
-| GET | `/api/admin/notice-reports/:fiscalYear/csv` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:7494](../src/api.ts#L7494) | CSV出力（スタッフ別レポート。人事評価の参考資料用）。共通の toCsv でエスケープする（#72）。 並びは画面の初期表示と同じ既読率の低い順（order=name で氏名順）。スタッフID・社員番号の列も出す（#518） | admin.js |
-| POST | `/api/admin/notice-reports/:fiscalYear/recalculate` | 管理者（4ロール） | [api.ts:7450](../src/api.ts#L7450) | 再集計（管理者が年度を指定して即時更新）。確定済み・保存期間外の年度は 409 で断る（長期保存した値を上書きしない #48） | admin.js |
-| GET | `/api/admin/notice-reports/:fiscalYear/staff/:staffId` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:7465](../src/api.ts#L7465) | スタッフ別・お知らせ単位の詳細。対象の判定は年度のレポートと同じ（公開した時点の対象者 #49 #481）。 既読の記録を削除したお知らせは is_read = null（記録なし）で返す | admin.js |
-| GET | `/api/admin/notices` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:6701](../src/api.ts#L6701) | 〔見出し〕確定した過去の月の実績分析（#9972。src/lib/monthly-summary.ts） | admin.js |
-| POST | `/api/admin/notices` | 管理者（4ロール） | [api.ts:6875](../src/api.ts#L6875) | 〔見出し〕確定した過去の月の実績分析（#9972。src/lib/monthly-summary.ts） | admin.js |
-| DELETE | `/api/admin/notices/:id{[0-9]+}` | 管理者（4ロール） | [api.ts:7308](../src/api.ts#L7308) | 下書き・予約（配信前）の削除。配信したものは取り消す（記録を残すため削除しない） | admin.js |
-| PUT | `/api/admin/notices/:id{[0-9]+}` | 管理者（4ロール） | [api.ts:7203](../src/api.ts#L7203) | 修正（#157）。配信した後も、タイトル・本文・配信先・重要度・確認必須・掲載期限・回答の設定を直せる。 配信済みのものは修正の前の内容を notice_revisions に残し、タイトル・本文を変えたらスタッフの画面に「更新」の印を出す（updated_at）。 notify: 今の配信対象の人に、修正したことを… | admin.js |
-| POST | `/api/admin/notices/:id{[0-9]+}/attachments` | 管理者（4ロール） | [api.ts:7375](../src/api.ts#L7375) | 添付の追加（複数可。1ファイルずつ検証し、成功した分だけ保存する）。配信済みのものに足したら「更新」の印を付ける | admin.js |
-| DELETE | `/api/admin/notices/:id{[0-9]+}/attachments/:aid{[0-9]+}` | 管理者（4ロール） | [api.ts:7401](../src/api.ts#L7401) | 添付の削除（D1 を先に消し、R2 は後で消す） | admin.js |
-| GET | `/api/admin/notices/:id{[0-9]+}/attachments/:aid{[0-9]+}` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:7393](../src/api.ts#L7393) | 〔見出し〕添付（#555）: 画像・PDF を R2（DOCUMENTS）に置き、配信先の本人と自社の管理者だけが取得できる | admin.js |
-| GET | `/api/admin/notices/:id{[0-9]+}/email-deliveries` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:6957](../src/api.ts#L6957) | お知らせメールの送信結果（1人ずつ）。メールアドレスは返さない（連携スタッフの所属元のアドレスを見せないため） | admin.js |
-| POST | `/api/admin/notices/:id{[0-9]+}/publish` | 管理者（4ロール） | [api.ts:7258](../src/api.ts#L7258) | 下書き・予約を配信する（#291）。scheduled_at があれば予約にし、無ければすぐに配信する | admin.js |
-| POST | `/api/admin/notices/:id{[0-9]+}/remind` | 管理者（4ロール） | [api.ts:6920](../src/api.ts#L6920) | 〔見出し〕確定した過去の月の実績分析（#9972。src/lib/monthly-summary.ts） | admin.js |
-| GET | `/api/admin/notices/:id{[0-9]+}/responses.csv` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:7010](../src/api.ts#L7010) | 回答の CSV（#554。出欠の集計などに使う）。今の配信対象の人を全員出し、まだ答えていない人は回答の列を空にする | admin.js |
-| GET | `/api/admin/notices/:id{[0-9]+}/revisions` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:7328](../src/api.ts#L7328) | 修正・取消の履歴（#157） | admin.js |
-| POST | `/api/admin/notices/:id{[0-9]+}/withdraw` | 管理者（4ロール） | [api.ts:7284](../src/api.ts#L7284) | 取消（#157。論理削除）。スタッフの一覧・ホーム・未読の数から外し、個別画面には「取り消されました」と出す。 内容・既読・回答の記録は残す（管理画面では「取消」として見える）。notify なら、今の配信対象の人にアプリ内通知で知らせる | admin.js |
-| GET | `/api/admin/notices/:id/reads` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:6969](../src/api.ts#L6969) | お知らせ既読状況。既読・未読とも、今の配信対象の人だけを出す（#7）。 既読の時刻は UTC で保存している（列の既定値）ので、日本時間にして返す（#104） | admin.js |
-| GET | `/api/admin/notices/recipients` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:6757](../src/api.ts#L6757) | 個人あての配信先の候補（#157）。いま在籍中で、ログインのあるスタッフ（お知らせが届く人。NOTICE_MEMBER_NOW_SQL と同じ条件） | admin.js |
+| GET | `/api/admin/notice-reports/:fiscalYear` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:7422](../src/api.ts#L7422) | 年度別（会社サマリ + スタッフ別）。長期保存されたレポートテーブルから取得する。 再集計できるかどうか（確定済み・保存期間外ならできない #48 #49）と、年度の途中かどうか（#481）も返す | admin.js |
+| GET | `/api/admin/notice-reports/:fiscalYear/csv` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:7493](../src/api.ts#L7493) | CSV出力（スタッフ別レポート。人事評価の参考資料用）。共通の toCsv でエスケープする（#72）。 並びは画面の初期表示と同じ既読率の低い順（order=name で氏名順）。スタッフID・社員番号の列も出す（#518） | admin.js |
+| POST | `/api/admin/notice-reports/:fiscalYear/recalculate` | 管理者（4ロール） | [api.ts:7449](../src/api.ts#L7449) | 再集計（管理者が年度を指定して即時更新）。確定済み・保存期間外の年度は 409 で断る（長期保存した値を上書きしない #48） | admin.js |
+| GET | `/api/admin/notice-reports/:fiscalYear/staff/:staffId` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:7464](../src/api.ts#L7464) | スタッフ別・お知らせ単位の詳細。対象の判定は年度のレポートと同じ（公開した時点の対象者 #49 #481）。 既読の記録を削除したお知らせは is_read = null（記録なし）で返す | admin.js |
+| GET | `/api/admin/notices` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:6700](../src/api.ts#L6700) | 〔見出し〕確定した過去の月の実績分析（#9972。src/lib/monthly-summary.ts） | admin.js |
+| POST | `/api/admin/notices` | 管理者（4ロール） | [api.ts:6874](../src/api.ts#L6874) | 〔見出し〕確定した過去の月の実績分析（#9972。src/lib/monthly-summary.ts） | admin.js |
+| DELETE | `/api/admin/notices/:id{[0-9]+}` | 管理者（4ロール） | [api.ts:7307](../src/api.ts#L7307) | 下書き・予約（配信前）の削除。配信したものは取り消す（記録を残すため削除しない） | admin.js |
+| PUT | `/api/admin/notices/:id{[0-9]+}` | 管理者（4ロール） | [api.ts:7202](../src/api.ts#L7202) | 修正（#157）。配信した後も、タイトル・本文・配信先・重要度・確認必須・掲載期限・回答の設定を直せる。 配信済みのものは修正の前の内容を notice_revisions に残し、タイトル・本文を変えたらスタッフの画面に「更新」の印を出す（updated_at）。 notify: 今の配信対象の人に、修正したことを… | admin.js |
+| POST | `/api/admin/notices/:id{[0-9]+}/attachments` | 管理者（4ロール） | [api.ts:7374](../src/api.ts#L7374) | 添付の追加（複数可。1ファイルずつ検証し、成功した分だけ保存する）。配信済みのものに足したら「更新」の印を付ける | admin.js |
+| DELETE | `/api/admin/notices/:id{[0-9]+}/attachments/:aid{[0-9]+}` | 管理者（4ロール） | [api.ts:7400](../src/api.ts#L7400) | 添付の削除（D1 を先に消し、R2 は後で消す） | admin.js |
+| GET | `/api/admin/notices/:id{[0-9]+}/attachments/:aid{[0-9]+}` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:7392](../src/api.ts#L7392) | 〔見出し〕添付（#555）: 画像・PDF を R2（DOCUMENTS）に置き、配信先の本人と自社の管理者だけが取得できる | admin.js |
+| GET | `/api/admin/notices/:id{[0-9]+}/email-deliveries` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:6956](../src/api.ts#L6956) | お知らせメールの送信結果（1人ずつ）。メールアドレスは返さない（連携スタッフの所属元のアドレスを見せないため） | admin.js |
+| POST | `/api/admin/notices/:id{[0-9]+}/publish` | 管理者（4ロール） | [api.ts:7257](../src/api.ts#L7257) | 下書き・予約を配信する（#291）。scheduled_at があれば予約にし、無ければすぐに配信する | admin.js |
+| POST | `/api/admin/notices/:id{[0-9]+}/remind` | 管理者（4ロール） | [api.ts:6919](../src/api.ts#L6919) | 〔見出し〕確定した過去の月の実績分析（#9972。src/lib/monthly-summary.ts） | admin.js |
+| GET | `/api/admin/notices/:id{[0-9]+}/responses.csv` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:7009](../src/api.ts#L7009) | 回答の CSV（#554。出欠の集計などに使う）。今の配信対象の人を全員出し、まだ答えていない人は回答の列を空にする | admin.js |
+| GET | `/api/admin/notices/:id{[0-9]+}/revisions` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:7327](../src/api.ts#L7327) | 修正・取消の履歴（#157） | admin.js |
+| POST | `/api/admin/notices/:id{[0-9]+}/withdraw` | 管理者（4ロール） | [api.ts:7283](../src/api.ts#L7283) | 取消（#157。論理削除）。スタッフの一覧・ホーム・未読の数から外し、個別画面には「取り消されました」と出す。 内容・既読・回答の記録は残す（管理画面では「取消」として見える）。notify なら、今の配信対象の人にアプリ内通知で知らせる | admin.js |
+| GET | `/api/admin/notices/:id/reads` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:6968](../src/api.ts#L6968) | お知らせ既読状況。既読・未読とも、今の配信対象の人だけを出す（#7）。 既読の時刻は UTC で保存している（列の既定値）ので、日本時間にして返す（#104） | admin.js |
+| GET | `/api/admin/notices/recipients` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:6756](../src/api.ts#L6756) | 個人あての配信先の候補（#157）。いま在籍中で、ログインのあるスタッフ（お知らせが届く人。NOTICE_MEMBER_NOW_SQL と同じ条件） | admin.js |
 | GET | `/api/admin/notification-emails` | 管理者（4ロール）＋本部の閲覧（GET） | [notifications.ts:489](../src/notifications.ts#L489) | 〔見出し〕メール送信失敗の一覧・再送（管理者） | notifications.js |
 | POST | `/api/admin/notification-emails/:id{[0-9]+}/resend` | 管理者（4ロール） | [notifications.ts:555](../src/notifications.ts#L555) | 〔見出し〕メール送信失敗の一覧・再送（管理者） | notifications.js |
 | GET | `/api/admin/notification-emails/export` | 管理者（4ロール）＋本部の閲覧（GET） | [notifications.ts:517](../src/notifications.ts#L517) | 〔見出し〕メール送信失敗の一覧・再送（管理者） | notifications.js |
@@ -417,24 +417,24 @@ Mobital のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 | POST | `/api/admin/notifications/read-all` | 管理者（4ロール） | [notifications.ts:439](../src/notifications.ts#L439) | 〔見出し〕アプリ内通知 API（本人あてのみ）。管理者は /api/admin/notifications、スタッフは /api/staff/notifications | notifications.js |
 | POST | `/api/admin/notifications/read-related` | 管理者（4ロール） | [notifications.ts:448](../src/notifications.ts#L448) | 〔見出し〕アプリ内通知 API（本人あてのみ）。管理者は /api/admin/notifications、スタッフは /api/staff/notifications | recruit.js |
 | GET | `/api/admin/notifications/unread-count` | 管理者（4ロール）＋本部の閲覧（GET） | [notifications.ts:438](../src/notifications.ts#L438) | 〔見出し〕アプリ内通知 API（本人あてのみ）。管理者は /api/admin/notifications、スタッフは /api/staff/notifications |  |
-| GET | `/api/admin/operation-logs` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:5503](../src/api.ts#L5503) | 〔見出し〕使われていない案件・クライアントの削除（#359。二度押しなどで重複して登録したものを消す） | admin.js |
-| GET | `/api/admin/pay-requests` | 管理者（4ロール）＋本部の閲覧（GET） | [staff-pay.ts:300](../src/staff-pay.ts#L300) | 一覧（status=pending: 承認待ち（既定）/ all: 直近の申請）。承認できない理由（shift_issue）も付ける | settlement.js |
-| POST | `/api/admin/pay-requests/:id{[0-9]+}/approve` | 管理者（4ロール） | [staff-pay.ts:351](../src/staff-pay.ts#L351) | 承認: 交通費は { amount?（直した金額）, note? }、延長は { end_time?（直した終了時刻）, note? } | settlement.js |
-| GET | `/api/admin/pay-requests/:id{[0-9]+}/receipt` | 管理者（4ロール）＋本部の閲覧（GET） | [staff-pay.ts:327](../src/staff-pay.ts#L327) | 申請の領収書の写真（自社の申請のみ。#273） | settlement.js |
-| POST | `/api/admin/pay-requests/:id{[0-9]+}/reject` | 管理者（4ロール） | [staff-pay.ts:410](../src/staff-pay.ts#L410) | 却下: { note（理由。必須） } | settlement.js |
-| GET | `/api/admin/project-goals` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:6068](../src/api.ts#L6068) | 案件の月間目標（#292）。稼働中の案件と、日報テンプレートの数値項目・設定済みの目標 | admin.js |
-| GET | `/api/admin/projects` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:4895](../src/api.ts#L4895) | 案件一覧 ?month=YYYY-MM で集計する月を選べる（#450。無ければ今月）。月は範囲の条件で絞る（#212）。monthly_amount: その月の案件全体の月額（#9702） | admin.js attendance-history.js board.js corrections.js recruit.js shift-board.js tour.js |
-| POST | `/api/admin/projects` | 管理者（4ロール） | [api.ts:4992](../src/api.ts#L4992) | 案件登録 | admin.js tour.js |
-| GET | `/api/admin/projects/:id` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:4915](../src/api.ts#L4915) | 案件詳細 | admin.js |
-| PUT | `/api/admin/projects/:id` | 管理者（4ロール） | [api.ts:5112](../src/api.ts#L5112) | 案件の編集・終了（#153）。送られた項目だけを変える。単価・区分は単価パネル（PUT /admin/projects/:id/pricing）で変える。 - status: active（稼働中）/ closed（終了）。終了した案件には新しいシフトを入れられない（lib/staff-eligibility.ts … | admin.js |
-| DELETE | `/api/admin/projects/:id{[0-9]+}` | 管理者（4ロール） | [api.ts:5258](../src/api.ts#L5258) | 〔見出し〕使われていない案件・クライアントの削除（#359。二度押しなどで重複して登録したものを消す） | admin.js |
-| PUT | `/api/admin/projects/:id/goals` | 管理者（4ロール） | [api.ts:6081](../src/api.ts#L6081) | goals: { 項目のキー: 件数 }。空欄・0 の項目は目標なしにする。テンプレートの数値項目に無いキーは受け付けない | admin.js |
+| GET | `/api/admin/operation-logs` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:5502](../src/api.ts#L5502) | 〔見出し〕使われていない案件・クライアントの削除（#359。二度押しなどで重複して登録したものを消す） | admin.js |
+| GET | `/api/admin/pay-requests` | 管理者（4ロール）＋本部の閲覧（GET） | [staff-pay.ts:302](../src/staff-pay.ts#L302) | 一覧（status=pending: 承認待ち（既定）/ all: 直近の申請）。承認できない理由（shift_issue）も付ける | settlement.js |
+| POST | `/api/admin/pay-requests/:id{[0-9]+}/approve` | 管理者（4ロール） | [staff-pay.ts:353](../src/staff-pay.ts#L353) | 承認: 交通費は { amount?（直した金額）, note? }、延長は { end_time?（直した終了時刻）, note? } | settlement.js |
+| GET | `/api/admin/pay-requests/:id{[0-9]+}/receipt` | 管理者（4ロール）＋本部の閲覧（GET） | [staff-pay.ts:329](../src/staff-pay.ts#L329) | 申請の領収書の写真（自社の申請のみ。#273） | settlement.js |
+| POST | `/api/admin/pay-requests/:id{[0-9]+}/reject` | 管理者（4ロール） | [staff-pay.ts:412](../src/staff-pay.ts#L412) | 却下: { note（理由。必須） } | settlement.js |
+| GET | `/api/admin/project-goals` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:6067](../src/api.ts#L6067) | 案件の月間目標（#292）。稼働中の案件と、日報テンプレートの数値項目・設定済みの目標 | admin.js |
+| GET | `/api/admin/projects` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:4897](../src/api.ts#L4897) | 案件一覧 ?month=YYYY-MM で集計する月を選べる（#450。無ければ今月）。月は範囲の条件で絞る（#212）。monthly_amount: その月の案件全体の月額（#9702） | admin.js attendance-history.js board.js corrections.js recruit.js shift-board.js tour.js |
+| POST | `/api/admin/projects` | 管理者（4ロール） | [api.ts:4994](../src/api.ts#L4994) | 案件登録 | admin.js tour.js |
+| GET | `/api/admin/projects/:id` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:4917](../src/api.ts#L4917) | 案件詳細 | admin.js |
+| PUT | `/api/admin/projects/:id` | 管理者（4ロール） | [api.ts:5111](../src/api.ts#L5111) | 案件の編集・終了（#153）。送られた項目だけを変える。単価・区分は単価パネル（PUT /admin/projects/:id/pricing）で変える。 - status: active（稼働中）/ closed（終了）。終了した案件には新しいシフトを入れられない（lib/staff-eligibility.ts … | admin.js |
+| DELETE | `/api/admin/projects/:id{[0-9]+}` | 管理者（4ロール） | [api.ts:5257](../src/api.ts#L5257) | 〔見出し〕使われていない案件・クライアントの削除（#359。二度押しなどで重複して登録したものを消す） | admin.js |
+| PUT | `/api/admin/projects/:id/goals` | 管理者（4ロール） | [api.ts:6080](../src/api.ts#L6080) | goals: { 項目のキー: 件数 }。空欄・0 の項目は目標なしにする。テンプレートの数値項目に無いキーは受け付けない | admin.js |
 | PUT | `/api/admin/projects/:id/lateness` | 管理者（4ロール）<br>＋本文で確認: 勤怠の設定の権限 | [api.ts:3458](../src/api.ts#L3458) | 案件ごとの遅刻の猶予の上書き（#497）。grace_minutes: 0〜MAX_LATE_GRACE_MINUTES の整数、null なら会社の値に従う。これから記録する報告に効く | admin.js |
-| PUT | `/api/admin/projects/:id/photo-required` | 管理者（4ロール）<br>＋本文で確認: 勤怠の設定の権限 | [api.ts:5077](../src/api.ts#L5077) | 案件ごとの入店/退店報告 写真添付オーバーライド更新 | admin.js |
-| GET | `/api/admin/projects/:id/price-history` | 管理者（4ロール）＋本部の閲覧（GET） | [shift-board.ts:3001](../src/shift-board.ts#L3001) | 案件の標準単価の改定履歴（#210） | shift-board.js |
-| PUT | `/api/admin/projects/:id/pricing` | 管理者（4ロール） | [shift-board.ts:3038](../src/shift-board.ts#L3038) | 区分・標準単価・交通費ルール・時間の数え方。 price_valid_from（適用開始日）を付けて単価を変えると、その前日までの稼働日には今の単価を使い続ける（改定前の単価を project_price_history に残す。#210）。 付けずに変えると、今の単価の適用期間（price_valid_from 以… | shift-board.js |
+| PUT | `/api/admin/projects/:id/photo-required` | 管理者（4ロール）<br>＋本文で確認: 勤怠の設定の権限 | [api.ts:5076](../src/api.ts#L5076) | 案件ごとの入店/退店報告 写真添付オーバーライド更新 | admin.js |
+| GET | `/api/admin/projects/:id/price-history` | 管理者（4ロール）＋本部の閲覧（GET） | [shift-board.ts:3058](../src/shift-board.ts#L3058) | 案件の標準単価の改定履歴（#210） | shift-board.js |
+| PUT | `/api/admin/projects/:id/pricing` | 管理者（4ロール） | [shift-board.ts:3095](../src/shift-board.ts#L3095) | 区分・標準単価・交通費ルール・時間の数え方。 price_valid_from（適用開始日）を付けて単価を変えると、その前日までの稼働日には今の単価を使い続ける（改定前の単価を project_price_history に残す。#210）。 付けずに変えると、今の単価の適用期間（price_valid_from 以… | shift-board.js |
 | PUT | `/api/admin/projects/:id/report-settings` | 管理者（4ロール） | [staff-lifecycle.ts:824](../src/staff-lifecycle.ts#L824) | 〔見出し〕提出設定 | staff-lifecycle.js |
-| PUT | `/api/admin/projects/:id/required-skills` | 管理者（4ロール） | [api.ts:5065](../src/api.ts#L5065) | 案件の必要スキル（#556。シフトボードの候補一覧の『スキル n/m』に使う）。カンマ・読点で区切り、空欄なら消す | admin.js |
+| PUT | `/api/admin/projects/:id/required-skills` | 管理者（4ロール） | [api.ts:5064](../src/api.ts#L5064) | 案件の必要スキル（#556。シフトボードの候補一覧の『スキル n/m』に使う）。カンマ・読点で区切り、空欄なら消す | admin.js |
 | GET | `/api/admin/proxy-attendance/bulk` | 管理者（4ロール）＋本部の閲覧（GET） | [staff-lifecycle.ts:1186](../src/staff-lifecycle.ts#L1186) | 日付（と案件）を選ぶと、勤務のシフトと報告の状況を返す。ログインのない人を先頭に並べる | staff-lifecycle.js |
 | POST | `/api/admin/proxy-attendance/bulk` | 管理者（4ロール） | [staff-lifecycle.ts:1219](../src/staff-lifecycle.ts#L1219) | チェックしたシフトに「予定どおり」で記録する。scope: start = 入店・勤務開始だけ / all = 予定どおり全部（休憩・勤務終了・退店も）。 人ごとに start・end（'HH:MM'）で開始・終了の時刻を直せる。1件の代理入力と同じ確認（確定済み・欠勤・稼働日より前・報告済み・順序）をして、 記録で… | staff-lifecycle.js |
 | GET | `/api/admin/push/config` | 管理者（4ロール）＋本部の閲覧（GET） | [notifications.ts:1963](../src/notifications.ts#L1963) | 〔見出し〕プッシュ通知（#178） | notifications.js |
@@ -442,10 +442,10 @@ Mobital のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 | POST | `/api/admin/push/subscribe` | 管理者（4ロール） | [notifications.ts:1976](../src/notifications.ts#L1976) | 〔見出し〕プッシュ通知（#178） | notifications.js |
 | POST | `/api/admin/push/test` | 管理者（4ロール） | [notifications.ts:2023](../src/notifications.ts#L2023) | テスト通知: この端末にだけ、その場で送る（端末が取りに来たときにテストの文面を返す） | notifications.js |
 | POST | `/api/admin/push/unsubscribe` | 管理者（4ロール） | [notifications.ts:2015](../src/notifications.ts#L2015) | 〔見出し〕プッシュ通知（#178） | notifications.js |
-| GET | `/api/admin/rate-rules` | 管理者（4ロール）＋本部の閲覧（GET） | [shift-board.ts:2860](../src/shift-board.ts#L2860) | 〔見出し〕単価ルール・案件の単価設定 | shift-board.js |
-| POST | `/api/admin/rate-rules` | 管理者（4ロール） | [shift-board.ts:2927](../src/shift-board.ts#L2927) | 〔見出し〕単価ルール・案件の単価設定 | shift-board.js |
-| DELETE | `/api/admin/rate-rules/:id` | 管理者（4ロール） | [shift-board.ts:2956](../src/shift-board.ts#L2956) | 〔見出し〕単価ルール・案件の単価設定 | shift-board.js |
-| PUT | `/api/admin/rate-rules/:id` | 管理者（4ロール） | [shift-board.ts:2939](../src/shift-board.ts#L2939) | 〔見出し〕単価ルール・案件の単価設定 | shift-board.js |
+| GET | `/api/admin/rate-rules` | 管理者（4ロール）＋本部の閲覧（GET） | [shift-board.ts:2917](../src/shift-board.ts#L2917) | 〔見出し〕単価ルール・案件の単価設定 | shift-board.js |
+| POST | `/api/admin/rate-rules` | 管理者（4ロール） | [shift-board.ts:2984](../src/shift-board.ts#L2984) | 〔見出し〕単価ルール・案件の単価設定 | shift-board.js |
+| DELETE | `/api/admin/rate-rules/:id` | 管理者（4ロール） | [shift-board.ts:3013](../src/shift-board.ts#L3013) | 〔見出し〕単価ルール・案件の単価設定 | shift-board.js |
+| PUT | `/api/admin/rate-rules/:id` | 管理者（4ロール） | [shift-board.ts:2996](../src/shift-board.ts#L2996) | 〔見出し〕単価ルール・案件の単価設定 | shift-board.js |
 | GET | `/api/admin/recruit-applications` | 管理者（4ロール）＋本部の閲覧（GET） | [recruit.ts:633](../src/recruit.ts#L633) | 応募一覧（枠の情報・残り人数・重複の警告・電話番号が一致する登録済みスタッフ） 絞り込み: status（pending / done / cancelled / waitlist: 見送りにした勤務日前の日時がある / all）、page_id、slot_role_id（シフトボードの「応募n」から。#303）、 … | recruit.js |
 | POST | `/api/admin/recruit-applications/:id/decide` | 管理者（4ロール） | [recruit.ts:870](../src/recruit.ts#L870) | 〔見出し〕応募の対応メモ（#478）。電話済み・不在・面談予定などを、書いた人・日時と一緒に残して管理者どうしで共有する | recruit.js |
 | POST | `/api/admin/recruit-applications/:id/notes` | 管理者（4ロール） | [recruit.ts:723](../src/recruit.ts#L723) | 〔見出し〕応募の対応メモ（#478）。電話済み・不在・面談予定などを、書いた人・日時と一緒に残して管理者どうしで共有する | recruit.js |
@@ -527,67 +527,67 @@ Mobital のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 | POST | `/api/admin/settings/photo-skip` | 管理者（4ロール）<br>＋本文で確認: 勤怠の設定の権限 | [api.ts:1885](../src/api.ts#L1885) | 〔見出し〕打刻（#427 #9939。本体は src/attendance-punch.ts） | admin.js |
 | GET | `/api/admin/settings/reminders` | 管理者（4ロール）＋本部の閲覧（GET）<br>＋本文で確認: 権限の表: settings.reminders | [notifications.ts:1062](../src/notifications.ts#L1062) | 〔見出し〕本人あての自動リマインド（#160）。対象の選び方と送る時点の判定は services/reminders.ts（15分おきの cron） | report-settings.js |
 | PUT | `/api/admin/settings/reminders` | 管理者（4ロール）<br>＋本文で確認: 権限の表: settings.reminders | [notifications.ts:1067](../src/notifications.ts#L1067) | 〔見出し〕本人あての自動リマインド（#160）。対象の選び方と送る時点の判定は services/reminders.ts（15分おきの cron） | report-settings.js |
-| GET | `/api/admin/settings/shift-notify` | 管理者（4ロール）＋本部の閲覧（GET）<br>＋本文で確認: 権限の表: settings.shift_notify | [api.ts:6053](../src/api.ts#L6053) | 〔見出し〕日報の実績の修正（利用者の決定 Sprint 15。#9707。lib/daily-report.ts・migrations/0097） | admin.js shift-board.js |
-| PUT | `/api/admin/settings/shift-notify` | 管理者（4ロール）<br>＋本文で確認: 権限の表: settings.shift_notify | [api.ts:6057](../src/api.ts#L6057) | 〔見出し〕日報の実績の修正（利用者の決定 Sprint 15。#9707。lib/daily-report.ts・migrations/0097） | shift-board.js |
+| GET | `/api/admin/settings/shift-notify` | 管理者（4ロール）＋本部の閲覧（GET）<br>＋本文で確認: 権限の表: settings.shift_notify | [api.ts:6052](../src/api.ts#L6052) | 〔見出し〕日報の実績の修正（利用者の決定 Sprint 15。#9707。lib/daily-report.ts・migrations/0097） | admin.js shift-board.js |
+| PUT | `/api/admin/settings/shift-notify` | 管理者（4ロール）<br>＋本文で確認: 権限の表: settings.shift_notify | [api.ts:6056](../src/api.ts#L6056) | 〔見出し〕日報の実績の修正（利用者の決定 Sprint 15。#9707。lib/daily-report.ts・migrations/0097） | shift-board.js |
 | GET | `/api/admin/settings/site-contact` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:3482](../src/api.ts#L3482) | 会社の緊急連絡先（#173）と、入店の位置が現場から離れているとみなす距離（m。0 は判定しない。#277） | admin.js |
 | PUT | `/api/admin/settings/site-contact` | 管理者（4ロール） | [api.ts:3488](../src/api.ts#L3488) | 〔見出し〕管理者ToDo (ルールベース。会社全体) | admin.js |
-| GET | `/api/admin/settings/staff-view` | 管理者（4ロール）＋本部の閲覧（GET）<br>＋本文で確認: 権限の表: settings.staff_view | [api.ts:6026](../src/api.ts#L6026) | 〔見出し〕日報の実績の修正（利用者の決定 Sprint 15。#9707。lib/daily-report.ts・migrations/0097） | admin.js |
-| PUT | `/api/admin/settings/staff-view` | 管理者（4ロール）<br>＋本文で確認: 権限の表: settings.staff_view | [api.ts:6031](../src/api.ts#L6031) | 〔見出し〕日報の実績の修正（利用者の決定 Sprint 15。#9707。lib/daily-report.ts・migrations/0097） | admin.js |
-| GET | `/api/admin/settlement` | 管理者（4ロール）＋本部の閲覧（GET）<br>＋本文で確認: 権限の表: closing.reopen | [settlement.ts:585](../src/settlement.ts#L585) | 〔見出し〕月額（固定）の請求（#9702。src/lib/monthly-billing.ts） | settlement.js |
-| POST | `/api/admin/settlement/acks` | 管理者（4ロール） | [settlement.ts:856](../src/settlement.ts#L856) | shift_ids のシフトの確認事項を確認済みにする（undo: true で確認済みを取り消す） | settlement.js |
-| GET | `/api/admin/settlement/cancellations/:id` | 管理者（4ロール）＋本部の閲覧（GET） | [settlement.ts:1290](../src/settlement.ts#L1290) | 入力欄の初期値に使う、予定の金額（請求基本額・支払基本額）と案件の規定を返す | settlement.js |
-| PUT | `/api/admin/settlement/cancellations/:id` | 管理者（4ロール） | [settlement.ts:1307](../src/settlement.ts#L1307) | 欠勤のシフトのキャンセル料・補償を保存する（remove: true で取り消し、精算の対象から外す） | settlement.js |
-| PUT | `/api/admin/settlement/clients/:id/closing-day` | 管理者（4ロール） | [settlement.ts:1223](../src/settlement.ts#L1223) | day: 1〜31（31 = 月末）。空欄で未設定（暦月）に戻す | settlement.js |
-| GET | `/api/admin/settlement/closings` | 管理者（4ロール）＋本部の閲覧（GET）<br>＋本文で確認: 権限の表: closing.reopen | [settlement.ts:1234](../src/settlement.ts#L1234) | 〔見出し〕締め（#170） | settlement.js |
-| POST | `/api/admin/settlement/closings` | 管理者（4ロール） | [settlement.ts:1247](../src/settlement.ts#L1247) | 期間を締める。期間内の精算の対象（確定・代打・キャンセル料を入れた欠勤）がすべて確定済みのときだけ締められる。 確定後に対応が必要な事項（確定後の打刻修正など）があるときは、確認してから force で締める | settlement.js |
-| POST | `/api/admin/settlement/closings/:id/reopen` | 管理者（4ロール）<br>＋本文で確認: 権限の表: closing.reopen | [settlement.ts:1269](../src/settlement.ts#L1269) | 締めの解除は会社管理者だけ。理由を必ず残す（行は消さない） | settlement.js |
-| POST | `/api/admin/settlement/confirm` | 管理者（4ロール） | [settlement.ts:774](../src/settlement.ts#L774) | 〔見出し〕確定・取り消し | settlement.js |
-| GET | `/api/admin/settlement/export` | 管理者（4ロール）＋本部の閲覧（GET）<br>＋本文で確認: 権限の表: payout.manage | [settlement.ts:911](../src/settlement.ts#L911) | 〔見出し〕CSV | settlement.js |
-| GET | `/api/admin/settlement/monthly-rules` | 管理者（4ロール）＋本部の閲覧（GET） | [settlement.ts:1534](../src/settlement.ts#L1534) | 〔見出し〕月額（固定）の請求のルール（#9702。monthly_bill_rules） | settlement.js |
-| POST | `/api/admin/settlement/monthly-rules` | 管理者（4ロール） | [settlement.ts:1548](../src/settlement.ts#L1548) | 〔見出し〕月額（固定）の請求のルール（#9702。monthly_bill_rules） | settlement.js |
-| DELETE | `/api/admin/settlement/monthly-rules/:id` | 管理者（4ロール） | [settlement.ts:1592](../src/settlement.ts#L1592) | 〔見出し〕月額（固定）の請求のルール（#9702。monthly_bill_rules） | settlement.js |
-| PUT | `/api/admin/settlement/monthly-rules/:id` | 管理者（4ロール） | [settlement.ts:1572](../src/settlement.ts#L1572) | 〔見出し〕月額（固定）の請求のルール（#9702。monthly_bill_rules） | settlement.js |
-| GET | `/api/admin/settlement/options` | 管理者（4ロール）＋本部の閲覧（GET） | [settlement.ts:1212](../src/settlement.ts#L1212) | 精算画面を開くたびに取り直す（後から登録した案件・クライアントも選べるように）。締め日（#168）も返す | settlement.js |
-| GET | `/api/admin/settlement/payout` | 管理者（4ロール）＋本部の閲覧（GET）<br>＋本文で確認: payoutForbidden() | [settlement.ts:1085](../src/settlement.ts#L1085) | 〔見出し〕振込データ（#471） | settlement.js |
-| DELETE | `/api/admin/settlement/payout/accounts/:staffId` | 管理者（4ロール）<br>＋本文で確認: payoutForbidden() | [settlement.ts:1203](../src/settlement.ts#L1203) | 〔見出し〕振込データ（#471） | settlement.js |
-| GET | `/api/admin/settlement/payout/accounts/:staffId` | 管理者（4ロール）＋本部の閲覧（GET）<br>＋本文で確認: payoutForbidden() | [settlement.ts:1169](../src/settlement.ts#L1169) | 〔見出し〕振込データ（#471） | settlement.js |
-| PUT | `/api/admin/settlement/payout/accounts/:staffId` | 管理者（4ロール）<br>＋本文で確認: payoutForbidden() | [settlement.ts:1180](../src/settlement.ts#L1180) | 〔見出し〕振込データ（#471） | settlement.js |
-| GET | `/api/admin/settlement/payout/export` | 管理者（4ロール）＋本部の閲覧（GET）<br>＋本文で確認: payoutForbidden() | [settlement.ts:1099](../src/settlement.ts#L1099) | 〔見出し〕振込データ（#471） | settlement.js |
-| GET | `/api/admin/settlement/payout/settings` | 管理者（4ロール）＋本部の閲覧（GET）<br>＋本文で確認: payoutForbidden() | [settlement.ts:1135](../src/settlement.ts#L1135) | 振込元（依頼人）の設定 | settlement.js |
-| PUT | `/api/admin/settlement/payout/settings` | 管理者（4ロール）<br>＋本文で確認: payoutForbidden() | [settlement.ts:1141](../src/settlement.ts#L1141) | 〔見出し〕振込データ（#471） | settlement.js |
-| GET | `/api/admin/settlement/premium-settings` | 管理者（4ロール）＋本部の閲覧（GET）<br>＋本文で確認: 権限の表: premium_settings.edit | [settlement.ts:1439](../src/settlement.ts#L1439) | 変更は給与の計算に関わるため、会社管理者と事務担当だけ（振込データと同じ）。変更は未確定のシフトにだけ効く（確定済みは確定したときの値のまま） | settlement.js |
-| PUT | `/api/admin/settlement/premium-settings` | 管理者（4ロール）<br>＋本文で確認: 権限の表: premium_settings.edit | [settlement.ts:1443](../src/settlement.ts#L1443) | 〔見出し〕深夜・時間外・休日の割増の設定（#167） | settlement.js |
-| PUT | `/api/admin/settlement/projects/:id/cancel-policy` | 管理者（4ロール） | [settlement.ts:1339](../src/settlement.ts#L1339) | 案件のキャンセル料の規定（率は 0〜100%。空欄 = 規定なし） | settlement.js |
-| POST | `/api/admin/settlement/recalc` | 管理者（4ロール） | [settlement.ts:876](../src/settlement.ts#L876) | 確認事項『数量・金額が今の計算と違う』のシフトを、今の案件の時間の設定で計算し直す（amountsForActual。単価ルールは再適用しない）。 確定済みのシフトと、手動で数量も固定したシフト（qtyFixed）は変えない。単価だけを固定したもの（qty_locked = 0）は時給の数量を合わせる（#196） | settlement.js |
-| GET | `/api/admin/settlement/statement` | 管理者（4ロール）＋本部の閲覧（GET） | [settlement.ts:1374](../src/settlement.ts#L1374) | 〔見出し〕支払明細書・請求明細書（#168） | settlement.js |
-| POST | `/api/admin/settlement/sync-actuals` | 管理者（4ロール） | [settlement.ts:656](../src/settlement.ts#L656) | 報告から実績を求める規則は actualFromReports、金額は amountsForActual（syncActualFromReports・refreshShiftAmounts と共用） | settlement.js |
-| POST | `/api/admin/settlement/transport-fill` | 管理者（4ロール） | [settlement.ts:1466](../src/settlement.ts#L1466) | shift_ids のうち、未確定・締めていない期間の勤務（確定・代打）のシフトで、交通費の実費が 0 のものに、スタッフの標準（開催場所 → スタッフ）を入れる。 入力済みの交通費は変えない。単価の手動変更（price_locked）にはしない。dry_run は件数だけを返す | settlement.js |
-| POST | `/api/admin/settlement/unconfirm` | 管理者（4ロール） | [settlement.ts:814](../src/settlement.ts#L814) | 〔見出し〕確定・取り消し | settlement.js |
-| GET | `/api/admin/shift-board` | 管理者（4ロール）＋本部の閲覧（GET） | [shift-board.ts:773](../src/shift-board.ts#L773) | 〔見出し〕シフトボード | shift-board.js |
-| GET | `/api/admin/shift-board/candidates` | 管理者（4ロール）＋本部の閲覧（GET） | [shift-board.ts:996](../src/shift-board.ts#L996) | 候補スタッフ（枠の役割に対して） | admin.js shift-board.js |
-| GET | `/api/admin/shift-board/export` | 管理者（4ロール）＋本部の閲覧（GET） | [shift-board.ts:883](../src/shift-board.ts#L883) | 〔見出し〕クライアントに出す配置表（#298） | shift-board.js |
-| GET | `/api/admin/shift-requests` | 管理者（4ロール）＋本部の閲覧（GET） | [shift-board.ts:671](../src/shift-board.ts#L671) | 〔見出し〕スタッフのシフト希望（shift_requests。#12 #353） | shift-board.js |
-| POST | `/api/admin/shift-requests/:id/respond` | 管理者（4ロール） | [shift-board.ts:692](../src/shift-board.ts#L692) | 採用（accept）・見送り（decline）の返事。返事待ちのものだけ（本人が取り下げた後や二重の返事は 409） | shift-board.js |
-| POST | `/api/admin/shift-slots` | 管理者（4ロール） | [shift-board.ts:1177](../src/shift-board.ts#L1177) | 〔見出し〕募集枠 | shift-board.js |
-| DELETE | `/api/admin/shift-slots/:id` | 管理者（4ロール） | [shift-board.ts:1390](../src/shift-board.ts#L1390) | 〔見出し〕書き込み（枠・役割・シフトをまとめて） | shift-board.js |
-| GET | `/api/admin/shift-slots/:id` | 管理者（4ロール）＋本部の閲覧（GET） | [shift-board.ts:1191](../src/shift-board.ts#L1191) | 〔見出し〕募集枠 | shift-board.js |
-| PUT | `/api/admin/shift-slots/:id` | 管理者（4ロール） | [shift-board.ts:1207](../src/shift-board.ts#L1207) | 〔見出し〕募集枠 | shift-board.js |
-| GET | `/api/admin/shift-slots/:id/band` | 管理者（4ロール）＋本部の閲覧（GET） | [shift-board.ts:1561](../src/shift-board.ts#L1561) | 〔見出し〕帯（まとめて入れた枠・シフト）の範囲（Sprint 15 #9705） | shift-board.js |
-| POST | `/api/admin/shift-slots/assign-batch` | 管理者（4ロール） | [shift-board.ts:1717](../src/shift-board.ts#L1717) | 〔見出し〕まとめて保存（Sprint 11 #9402） | shift-board.js |
-| POST | `/api/admin/shift-slots/bulk-delete` | 管理者（4ロール） | [shift-board.ts:1418](../src/shift-board.ts#L1418) | 〔見出し〕書き込み（枠・役割・シフトをまとめて） | shift-board.js |
-| POST | `/api/admin/shift-slots/roles/:id/assign` | 管理者（4ロール） | [shift-board.ts:1623](../src/shift-board.ts#L1623) | 〔見出し〕帯（まとめて入れた枠・シフト）の範囲（Sprint 15 #9705） | admin.js shift-board.js |
-| GET | `/api/admin/shifts` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:5269](../src/api.ts#L5269) | シフト管理 | admin.js |
-| POST | `/api/admin/shifts` | 管理者（4ロール） | [api.ts:5297](../src/api.ts#L5297) | 〔見出し〕使われていない案件・クライアントの削除（#359。二度押しなどで重複して登録したものを消す） | admin.js |
-| DELETE | `/api/admin/shifts/:id` | 管理者（4ロール） | [api.ts:5464](../src/api.ts#L5464) | 〔見出し〕使われていない案件・クライアントの削除（#359。二度押しなどで重複して登録したものを消す） | admin.js shift-board.js |
-| PUT | `/api/admin/shifts/:id` | 管理者（4ロール） | [api.ts:5355](../src/api.ts#L5355) | 〔見出し〕使われていない案件・クライアントの削除（#359。二度押しなどで重複して登録したものを消す） | admin.js shift-board.js |
-| PUT | `/api/admin/shifts/:id/actual` | 管理者（4ロール） | [settlement.ts:713](../src/settlement.ts#L713) | 〔見出し〕実績の手入力 | settlement.js |
-| GET | `/api/admin/shifts/:id/attendance-photos` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:5283](../src/api.ts#L5283) | シフトの勤怠報告の一覧（写真の有無つき）。写真は GET /admin/attendance-photo/:attendance_id で取得する（#217） | admin.js |
+| GET | `/api/admin/settings/staff-view` | 管理者（4ロール）＋本部の閲覧（GET）<br>＋本文で確認: 権限の表: settings.staff_view | [api.ts:6025](../src/api.ts#L6025) | 〔見出し〕日報の実績の修正（利用者の決定 Sprint 15。#9707。lib/daily-report.ts・migrations/0097） | admin.js |
+| PUT | `/api/admin/settings/staff-view` | 管理者（4ロール）<br>＋本文で確認: 権限の表: settings.staff_view | [api.ts:6030](../src/api.ts#L6030) | 〔見出し〕日報の実績の修正（利用者の決定 Sprint 15。#9707。lib/daily-report.ts・migrations/0097） | admin.js |
+| GET | `/api/admin/settlement` | 管理者（4ロール）＋本部の閲覧（GET）<br>＋本文で確認: 権限の表: closing.reopen | [settlement.ts:634](../src/settlement.ts#L634) | 〔見出し〕月額（固定）の請求（#9702。src/lib/monthly-billing.ts） | settlement.js |
+| POST | `/api/admin/settlement/acks` | 管理者（4ロール） | [settlement.ts:905](../src/settlement.ts#L905) | shift_ids のシフトの確認事項を確認済みにする（undo: true で確認済みを取り消す） | settlement.js |
+| GET | `/api/admin/settlement/cancellations/:id` | 管理者（4ロール）＋本部の閲覧（GET） | [settlement.ts:1352](../src/settlement.ts#L1352) | 入力欄の初期値に使う、予定の金額（請求基本額・支払基本額）と案件の規定を返す | settlement.js |
+| PUT | `/api/admin/settlement/cancellations/:id` | 管理者（4ロール） | [settlement.ts:1369](../src/settlement.ts#L1369) | 欠勤のシフトのキャンセル料・補償を保存する（remove: true で取り消し、精算の対象から外す） | settlement.js |
+| PUT | `/api/admin/settlement/clients/:id/closing-day` | 管理者（4ロール） | [settlement.ts:1274](../src/settlement.ts#L1274) | day: 1〜31（31 = 月末）。空欄で未設定（暦月）に戻す | settlement.js |
+| GET | `/api/admin/settlement/closings` | 管理者（4ロール）＋本部の閲覧（GET）<br>＋本文で確認: 権限の表: closing.reopen | [settlement.ts:1285](../src/settlement.ts#L1285) | 〔見出し〕締め（#170） | settlement.js |
+| POST | `/api/admin/settlement/closings` | 管理者（4ロール） | [settlement.ts:1298](../src/settlement.ts#L1298) | 期間を締める。期間内の精算の対象（確定・代打・キャンセル料を入れた欠勤）がすべて確定済みのときだけ締められる。 確定後に対応が必要な事項（確定後の打刻修正など）があるときは、確認してから force で締める | settlement.js |
+| POST | `/api/admin/settlement/closings/:id/reopen` | 管理者（4ロール）<br>＋本文で確認: 権限の表: closing.reopen | [settlement.ts:1320](../src/settlement.ts#L1320) | 締めの解除は会社管理者だけ。理由を必ず残す（行は消さない） | settlement.js |
+| POST | `/api/admin/settlement/confirm` | 管理者（4ロール） | [settlement.ts:823](../src/settlement.ts#L823) | 〔見出し〕確定・取り消し | settlement.js |
+| GET | `/api/admin/settlement/export` | 管理者（4ロール）＋本部の閲覧（GET）<br>＋本文で確認: 権限の表: payout.manage | [settlement.ts:962](../src/settlement.ts#L962) | 〔見出し〕CSV | settlement.js |
+| GET | `/api/admin/settlement/monthly-rules` | 管理者（4ロール）＋本部の閲覧（GET） | [settlement.ts:1600](../src/settlement.ts#L1600) | 〔見出し〕月額（固定）の請求のルール（#9702。monthly_bill_rules） | settlement.js |
+| POST | `/api/admin/settlement/monthly-rules` | 管理者（4ロール） | [settlement.ts:1616](../src/settlement.ts#L1616) | 〔見出し〕月額（固定）の請求のルール（#9702。monthly_bill_rules） |  |
+| DELETE | `/api/admin/settlement/monthly-rules/:id` | 管理者（4ロール） | [settlement.ts:1637](../src/settlement.ts#L1637) | 〔見出し〕月額（固定）の請求のルール（#9702。monthly_bill_rules） | settlement.js |
+| PUT | `/api/admin/settlement/monthly-rules/:id` | 管理者（4ロール） | [settlement.ts:1617](../src/settlement.ts#L1617) | 〔見出し〕月額（固定）の請求のルール（#9702。monthly_bill_rules） | settlement.js |
+| GET | `/api/admin/settlement/options` | 管理者（4ロール）＋本部の閲覧（GET） | [settlement.ts:1263](../src/settlement.ts#L1263) | 精算画面を開くたびに取り直す（後から登録した案件・クライアントも選べるように）。締め日（#168）も返す | settlement.js |
+| GET | `/api/admin/settlement/payout` | 管理者（4ロール）＋本部の閲覧（GET）<br>＋本文で確認: payoutForbidden() | [settlement.ts:1136](../src/settlement.ts#L1136) | 〔見出し〕振込データ（#471） | settlement.js |
+| DELETE | `/api/admin/settlement/payout/accounts/:staffId` | 管理者（4ロール）<br>＋本文で確認: payoutForbidden() | [settlement.ts:1254](../src/settlement.ts#L1254) | 〔見出し〕振込データ（#471） | settlement.js |
+| GET | `/api/admin/settlement/payout/accounts/:staffId` | 管理者（4ロール）＋本部の閲覧（GET）<br>＋本文で確認: payoutForbidden() | [settlement.ts:1220](../src/settlement.ts#L1220) | 〔見出し〕振込データ（#471） | settlement.js |
+| PUT | `/api/admin/settlement/payout/accounts/:staffId` | 管理者（4ロール）<br>＋本文で確認: payoutForbidden() | [settlement.ts:1231](../src/settlement.ts#L1231) | 〔見出し〕振込データ（#471） | settlement.js |
+| GET | `/api/admin/settlement/payout/export` | 管理者（4ロール）＋本部の閲覧（GET）<br>＋本文で確認: payoutForbidden() | [settlement.ts:1150](../src/settlement.ts#L1150) | 〔見出し〕振込データ（#471） | settlement.js |
+| GET | `/api/admin/settlement/payout/settings` | 管理者（4ロール）＋本部の閲覧（GET）<br>＋本文で確認: payoutForbidden() | [settlement.ts:1186](../src/settlement.ts#L1186) | 振込元（依頼人）の設定 | settlement.js |
+| PUT | `/api/admin/settlement/payout/settings` | 管理者（4ロール）<br>＋本文で確認: payoutForbidden() | [settlement.ts:1192](../src/settlement.ts#L1192) | 〔見出し〕振込データ（#471） | settlement.js |
+| GET | `/api/admin/settlement/premium-settings` | 管理者（4ロール）＋本部の閲覧（GET）<br>＋本文で確認: 権限の表: premium_settings.edit | [settlement.ts:1503](../src/settlement.ts#L1503) | 変更は給与の計算に関わるため、会社管理者と事務担当だけ（振込データと同じ）。変更は未確定のシフトにだけ効く（確定済みは確定したときの値のまま） | settlement.js |
+| PUT | `/api/admin/settlement/premium-settings` | 管理者（4ロール）<br>＋本文で確認: 権限の表: premium_settings.edit | [settlement.ts:1507](../src/settlement.ts#L1507) | 〔見出し〕深夜・時間外・休日の割増の設定（#167） | settlement.js |
+| PUT | `/api/admin/settlement/projects/:id/cancel-policy` | 管理者（4ロール） | [settlement.ts:1401](../src/settlement.ts#L1401) | 案件のキャンセル料の規定（率は 0〜100%。空欄 = 規定なし） | settlement.js |
+| POST | `/api/admin/settlement/recalc` | 管理者（4ロール） | [settlement.ts:925](../src/settlement.ts#L925) | 確認事項『数量・金額が今の計算と違う』のシフトを、今の案件の時間の設定で計算し直す（amountsForActual。単価ルールは再適用しない）。 確定済みのシフトと、手動で数量も固定したシフト（qtyFixed）は変えない。単価だけを固定したもの（qty_locked = 0）は時給の数量を合わせる（#196） | settlement.js |
+| GET | `/api/admin/settlement/statement` | 管理者（4ロール）＋本部の閲覧（GET） | [settlement.ts:1436](../src/settlement.ts#L1436) | 〔見出し〕支払明細書・請求明細書（#168） | settlement.js |
+| POST | `/api/admin/settlement/sync-actuals` | 管理者（4ロール） | [settlement.ts:705](../src/settlement.ts#L705) | 報告から実績を求める規則は actualFromReports、金額は amountsForActual（syncActualFromReports・refreshShiftAmounts と共用） | settlement.js |
+| POST | `/api/admin/settlement/transport-fill` | 管理者（4ロール） | [settlement.ts:1530](../src/settlement.ts#L1530) | shift_ids のうち、未確定・締めていない期間の勤務（確定・代打）のシフトで、交通費の実費が 0 のものに、スタッフの標準（開催場所 → スタッフ）を入れる。 入力済みの交通費は変えない。単価の手動変更（price_locked）にはしない。dry_run は件数だけを返す | settlement.js |
+| POST | `/api/admin/settlement/unconfirm` | 管理者（4ロール） | [settlement.ts:863](../src/settlement.ts#L863) | 〔見出し〕確定・取り消し | settlement.js |
+| GET | `/api/admin/shift-board` | 管理者（4ロール）＋本部の閲覧（GET） | [shift-board.ts:792](../src/shift-board.ts#L792) | 〔見出し〕シフトボード | shift-board.js |
+| GET | `/api/admin/shift-board/candidates` | 管理者（4ロール）＋本部の閲覧（GET） | [shift-board.ts:1015](../src/shift-board.ts#L1015) | 候補スタッフ（枠の役割に対して） | admin.js shift-board.js |
+| GET | `/api/admin/shift-board/export` | 管理者（4ロール）＋本部の閲覧（GET） | [shift-board.ts:902](../src/shift-board.ts#L902) | 〔見出し〕クライアントに出す配置表（#298） | shift-board.js |
+| GET | `/api/admin/shift-requests` | 管理者（4ロール）＋本部の閲覧（GET） | [shift-board.ts:690](../src/shift-board.ts#L690) | 〔見出し〕スタッフのシフト希望（shift_requests。#12 #353） | shift-board.js |
+| POST | `/api/admin/shift-requests/:id/respond` | 管理者（4ロール） | [shift-board.ts:711](../src/shift-board.ts#L711) | 採用（accept）・見送り（decline）の返事。返事待ちのものだけ（本人が取り下げた後や二重の返事は 409） | shift-board.js |
+| POST | `/api/admin/shift-slots` | 管理者（4ロール） | [shift-board.ts:1196](../src/shift-board.ts#L1196) | 〔見出し〕募集枠 | shift-board.js |
+| DELETE | `/api/admin/shift-slots/:id` | 管理者（4ロール） | [shift-board.ts:1409](../src/shift-board.ts#L1409) | 〔見出し〕書き込み（枠・役割・シフトをまとめて） | shift-board.js |
+| GET | `/api/admin/shift-slots/:id` | 管理者（4ロール）＋本部の閲覧（GET） | [shift-board.ts:1210](../src/shift-board.ts#L1210) | 〔見出し〕募集枠 | shift-board.js |
+| PUT | `/api/admin/shift-slots/:id` | 管理者（4ロール） | [shift-board.ts:1226](../src/shift-board.ts#L1226) | 〔見出し〕募集枠 | shift-board.js |
+| GET | `/api/admin/shift-slots/:id/band` | 管理者（4ロール）＋本部の閲覧（GET） | [shift-board.ts:1580](../src/shift-board.ts#L1580) | 〔見出し〕帯（まとめて入れた枠・シフト）の範囲（Sprint 15 #9705） | shift-board.js |
+| POST | `/api/admin/shift-slots/assign-batch` | 管理者（4ロール） | [shift-board.ts:1736](../src/shift-board.ts#L1736) | 〔見出し〕まとめて保存（Sprint 11 #9402） | shift-board.js |
+| POST | `/api/admin/shift-slots/bulk-delete` | 管理者（4ロール） | [shift-board.ts:1437](../src/shift-board.ts#L1437) | 〔見出し〕書き込み（枠・役割・シフトをまとめて） | shift-board.js |
+| POST | `/api/admin/shift-slots/roles/:id/assign` | 管理者（4ロール） | [shift-board.ts:1642](../src/shift-board.ts#L1642) | 〔見出し〕帯（まとめて入れた枠・シフト）の範囲（Sprint 15 #9705） | admin.js shift-board.js |
+| GET | `/api/admin/shifts` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:5268](../src/api.ts#L5268) | シフト管理 | admin.js |
+| POST | `/api/admin/shifts` | 管理者（4ロール） | [api.ts:5296](../src/api.ts#L5296) | 〔見出し〕使われていない案件・クライアントの削除（#359。二度押しなどで重複して登録したものを消す） | admin.js |
+| DELETE | `/api/admin/shifts/:id` | 管理者（4ロール） | [api.ts:5463](../src/api.ts#L5463) | 〔見出し〕使われていない案件・クライアントの削除（#359。二度押しなどで重複して登録したものを消す） | admin.js shift-board.js |
+| PUT | `/api/admin/shifts/:id` | 管理者（4ロール） | [api.ts:5354](../src/api.ts#L5354) | 〔見出し〕使われていない案件・クライアントの削除（#359。二度押しなどで重複して登録したものを消す） | admin.js shift-board.js |
+| PUT | `/api/admin/shifts/:id/actual` | 管理者（4ロール） | [settlement.ts:762](../src/settlement.ts#L762) | 〔見出し〕実績の手入力 | settlement.js |
+| GET | `/api/admin/shifts/:id/attendance-photos` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:5282](../src/api.ts#L5282) | シフトの勤怠報告の一覧（写真の有無つき）。写真は GET /admin/attendance-photo/:attendance_id で取得する（#217） | admin.js |
 | GET | `/api/admin/shifts/:id/attendance-withdrawals` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:1743](../src/api.ts#L1743) | 本人が取り消した報告の記録（シフト操作のモーダルに出す。#323） | admin.js |
-| GET | `/api/admin/shifts/:id/band` | 管理者（4ロール）＋本部の閲覧（GET） | [shift-board.ts:1597](../src/shift-board.ts#L1597) | 〔見出し〕帯（まとめて入れた枠・シフト）の範囲（Sprint 15 #9705） | shift-board.js |
+| GET | `/api/admin/shifts/:id/band` | 管理者（4ロール）＋本部の閲覧（GET） | [shift-board.ts:1616](../src/shift-board.ts#L1616) | 〔見出し〕帯（まとめて入れた枠・シフト）の範囲（Sprint 15 #9705） | shift-board.js |
 | GET | `/api/admin/shifts/:id/check-in-location` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:1755](../src/api.ts#L1755) | 入店の位置と現場の距離（シフト操作のモーダルに出す。#277）。 アプリの入店は報告のときに保存した距離、報告用URLなど距離のない報告は、いまの現場の位置で計算する。基準は会社設定（0 は判定しない） | admin.js |
 | POST | `/api/admin/shifts/:id/day-before-confirm` | 管理者（4ロール） | [api.ts:1624](../src/api.ts#L1624) | 前日確認を管理者が記録する（電話などで本人に確かめたとき。#176）。ダッシュボードの明日のシフトの一覧から使う | admin.js |
-| POST | `/api/admin/shifts/:id/move` | 管理者（4ロール） | [shift-board.ts:1843](../src/shift-board.ts#L1843) | シフトを別の枠・役割へ移動（案件が変われば単価を再計算）。slot_role_id=null なら枠から外す | shift-board.js |
-| PUT | `/api/admin/shifts/:id/price` | 管理者（4ロール） | [shift-board.ts:2027](../src/shift-board.ts#L2027) | 金額の手動変更 / ルールに戻す | settlement.js shift-board.js |
+| POST | `/api/admin/shifts/:id/move` | 管理者（4ロール） | [shift-board.ts:1862](../src/shift-board.ts#L1862) | シフトを別の枠・役割へ移動（案件が変われば単価を再計算）。slot_role_id=null なら枠から外す | shift-board.js |
+| PUT | `/api/admin/shifts/:id/price` | 管理者（4ロール） | [shift-board.ts:2046](../src/shift-board.ts#L2046) | 金額の手動変更 / ルールに戻す | settlement.js shift-board.js |
 | POST | `/api/admin/shifts/:id/proxy-attendance` | 管理者（4ロール） | [staff-lifecycle.ts:998](../src/staff-lifecycle.ts#L998) | 〔見出し〕代理入力（管理者が勤怠を記録。entry_method='proxy'） | staff-lifecycle.js |
 | DELETE | `/api/admin/shifts/:id/proxy-attendance/:type` | 管理者（4ロール） | [staff-lifecycle.ts:1034](../src/staff-lifecycle.ts#L1034) | 〔見出し〕代理入力（管理者が勤怠を記録。entry_method='proxy'） | staff-lifecycle.js |
 | POST | `/api/admin/shifts/:id/proxy-daily-report` | 管理者（4ロール） | [staff-lifecycle.ts:1381](../src/staff-lifecycle.ts#L1381) | 電話・口頭で聞いた内容や、報告用URLの期限が過ぎた日報を管理者が記録する（entry_method = 'proxy'、entered_by = 記録した管理者）。 本人が提出した日報があるときは overwrite: true のときだけ上書きする。確認済みの日報を上書きしたら、アプリと同じく確認済みを外す | staff-lifecycle.js |
@@ -595,28 +595,28 @@ Mobital のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 | POST | `/api/admin/shifts/:id/report-link` | 管理者（4ロール） | [staff-lifecycle.ts:1108](../src/staff-lifecycle.ts#L1108) | 〔見出し〕報告用URLのトークンの保存（#9969。ほかのトークンと同じく SHA-256 のハッシュだけを持つ） | staff-lifecycle.js |
 | PUT | `/api/admin/shifts/:id/report-settings` | 管理者（4ロール） | [staff-lifecycle.ts:905](../src/staff-lifecycle.ts#L905) | 〔見出し〕提出設定 | staff-lifecycle.js |
 | GET | `/api/admin/shifts/:id/report-status` | 管理者（4ロール）＋本部の閲覧（GET） | [staff-lifecycle.ts:853](../src/staff-lifecycle.ts#L853) | 〔見出し〕提出設定 | admin.js settlement.js staff-lifecycle.js |
-| POST | `/api/admin/shifts/bulk` | 管理者（4ロール） | [shift-board.ts:2177](../src/shift-board.ts#L2177) | 常勤の一括登録: スタッフ × 曜日 × 期間（枠なしのシフトとして登録）。 退職・統合・停止中・NG・同じ時間帯に別のシフトがある組み合わせはスキップし、理由を skipped で返す。 組み合わせ（日付順 → 指定したスタッフ順）を BULK_LIMIT 件ずつ処理し、残りがあれば next_cursor（次に処… | shift-board.js |
-| POST | `/api/admin/shifts/bulk-delete` | 管理者（4ロール） | [shift-board.ts:1531](../src/shift-board.ts#L1531) | 〔見出し〕シフトのまとめて削除（Sprint 15 #9705 #9706） | shift-board.js |
-| POST | `/api/admin/shifts/confirm-requested` | 管理者（4ロール） | [shift-board.ts:1889](../src/shift-board.ts#L1889) | 〔見出し〕1回の batch で登録する。同時に別の画面から同じ枠に同じ人が入った行（一意インデックス）は飛ばし、理由を返す | shift-board.js |
-| POST | `/api/admin/shifts/copy-week` | 管理者（4ロール） | [shift-board.ts:2330](../src/shift-board.ts#L2330) | 〔見出し〕退職・取引終了にするときの、今後のシフトの確認と取り外し（#500 #187） | shift-board.js |
-| GET | `/api/admin/shifts/price-preview` | 管理者（4ロール）＋本部の閲覧（GET） | [shift-board.ts:2965](../src/shift-board.ts#L2965) | 〔見出し〕単価ルール・案件の単価設定 | admin.js shift-board.js |
-| POST | `/api/admin/shifts/reprice` | 管理者（4ロール） | [shift-board.ts:2146](../src/shift-board.ts#L2146) | 〔見出し〕退職・取引終了にするときの、今後のシフトの確認と取り外し（#500 #187） | shift-board.js |
-| GET | `/api/admin/sites` | 管理者（4ロール）＋本部の閲覧（GET） | [shift-board.ts:2769](../src/shift-board.ts#L2769) | 開催場所 | shift-board.js |
-| POST | `/api/admin/sites` | 管理者（4ロール） | [shift-board.ts:2793](../src/shift-board.ts#L2793) | 〔見出し〕開催場所 | shift-board.js |
-| DELETE | `/api/admin/sites/:id` | 管理者（4ロール） | [shift-board.ts:2832](../src/shift-board.ts#L2832) | 〔見出し〕開催場所 | shift-board.js |
-| PUT | `/api/admin/sites/:id` | 管理者（4ロール） | [shift-board.ts:2802](../src/shift-board.ts#L2802) | 〔見出し〕開催場所 | shift-board.js |
-| GET | `/api/admin/slot-patterns` | 管理者（4ロール）＋本部の閲覧（GET） | [shift-board.ts:2526](../src/shift-board.ts#L2526) | 繰り返し登録 | shift-board.js |
-| POST | `/api/admin/slot-patterns` | 管理者（4ロール） | [shift-board.ts:2542](../src/shift-board.ts#L2542) | 〔見出し〕繰り返し登録 | shift-board.js |
-| DELETE | `/api/admin/slot-patterns/:id` | 管理者（4ロール） | [shift-board.ts:2742](../src/shift-board.ts#L2742) | パターンの削除: remove_future=1 なら、今日以降で割り当てのない枠も削除 | shift-board.js |
-| PUT | `/api/admin/slot-patterns/:id` | 管理者（4ロール） | [shift-board.ts:2574](../src/shift-board.ts#L2574) | 繰り返し登録の編集と延長（#456） apply_from 以降のこのパターンの枠に、変えた項目（時刻・休憩・役割の人数・役割の追加と削除）だけを反映する。 報告済み（勤怠・日報）・実績が確定済みのシフトがある枠は変えずに除外し、件数を返す。 時刻・休憩を変えた枠の割り当て済みシフトも同じ時刻にし（シフトごとに直した… | shift-board.js |
+| POST | `/api/admin/shifts/bulk` | 管理者（4ロール） | [shift-board.ts:2232](../src/shift-board.ts#L2232) | 常勤の一括登録: スタッフ × 曜日 × 期間（枠なしのシフトとして登録）。 退職・統合・停止中・NG・同じ時間帯に別のシフトがある組み合わせはスキップし、理由を skipped で返す。 組み合わせ（日付順 → 指定したスタッフ順）を BULK_LIMIT 件ずつ処理し、残りがあれば next_cursor（次に処… | shift-board.js |
+| POST | `/api/admin/shifts/bulk-delete` | 管理者（4ロール） | [shift-board.ts:1550](../src/shift-board.ts#L1550) | 〔見出し〕シフトのまとめて削除（Sprint 15 #9705 #9706） | shift-board.js |
+| POST | `/api/admin/shifts/confirm-requested` | 管理者（4ロール） | [shift-board.ts:1908](../src/shift-board.ts#L1908) | 〔見出し〕1回の batch で登録する。同時に別の画面から同じ枠に同じ人が入った行（一意インデックス）は飛ばし、理由を返す | shift-board.js |
+| POST | `/api/admin/shifts/copy-week` | 管理者（4ロール） | [shift-board.ts:2386](../src/shift-board.ts#L2386) | 〔見出し〕退職・取引終了にするときの、今後のシフトの確認と取り外し（#500 #187） | shift-board.js |
+| GET | `/api/admin/shifts/price-preview` | 管理者（4ロール）＋本部の閲覧（GET） | [shift-board.ts:3022](../src/shift-board.ts#L3022) | 〔見出し〕単価ルール・案件の単価設定 | admin.js shift-board.js |
+| POST | `/api/admin/shifts/reprice` | 管理者（4ロール） | [shift-board.ts:2201](../src/shift-board.ts#L2201) | 〔見出し〕退職・取引終了にするときの、今後のシフトの確認と取り外し（#500 #187） | shift-board.js |
+| GET | `/api/admin/sites` | 管理者（4ロール）＋本部の閲覧（GET） | [shift-board.ts:2825](../src/shift-board.ts#L2825) | 開催場所 | shift-board.js |
+| POST | `/api/admin/sites` | 管理者（4ロール） | [shift-board.ts:2849](../src/shift-board.ts#L2849) | 〔見出し〕開催場所 | shift-board.js |
+| DELETE | `/api/admin/sites/:id` | 管理者（4ロール） | [shift-board.ts:2888](../src/shift-board.ts#L2888) | 〔見出し〕開催場所 | shift-board.js |
+| PUT | `/api/admin/sites/:id` | 管理者（4ロール） | [shift-board.ts:2858](../src/shift-board.ts#L2858) | 〔見出し〕開催場所 | shift-board.js |
+| GET | `/api/admin/slot-patterns` | 管理者（4ロール）＋本部の閲覧（GET） | [shift-board.ts:2582](../src/shift-board.ts#L2582) | 繰り返し登録 | shift-board.js |
+| POST | `/api/admin/slot-patterns` | 管理者（4ロール） | [shift-board.ts:2598](../src/shift-board.ts#L2598) | 〔見出し〕繰り返し登録 | shift-board.js |
+| DELETE | `/api/admin/slot-patterns/:id` | 管理者（4ロール） | [shift-board.ts:2798](../src/shift-board.ts#L2798) | パターンの削除: remove_future=1 なら、今日以降で割り当てのない枠も削除 | shift-board.js |
+| PUT | `/api/admin/slot-patterns/:id` | 管理者（4ロール） | [shift-board.ts:2630](../src/shift-board.ts#L2630) | 繰り返し登録の編集と延長（#456） apply_from 以降のこのパターンの枠に、変えた項目（時刻・休憩・役割の人数・役割の追加と削除）だけを反映する。 報告済み（勤怠・日報）・実績が確定済みのシフトがある枠は変えずに除外し、件数を返す。 時刻・休憩を変えた枠の割り当て済みシフトも同じ時刻にし（シフトごとに直した… | shift-board.js |
 | GET | `/api/admin/staff` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:3511](../src/api.ts#L3511) | スタッフ一覧 | admin.js |
 | POST | `/api/admin/staff` | 管理者（4ロール） | [api.ts:4177](../src/api.ts#L4177) | スタッフ登録（テスト・内部用。画面からは呼ばない。画面の新規登録は名簿の登録 POST /admin/roster） |  |
 | GET | `/api/admin/staff-affiliations` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:4622](../src/api.ts#L4622) | 〔見出し〕所属会社マスタ（スタッフの「所属会社名」選択肢） | admin.js |
 | GET | `/api/admin/staff-lookup` | 管理者（4ロール）＋本部の閲覧（GET） | [staff-lifecycle.ts:183](../src/staff-lifecycle.ts#L183) | 〔見出し〕仮登録（氏名・電話だけで登録し、すぐシフトに入れられる） | admin.js staff-lifecycle.js |
-| GET | `/api/admin/staff-pay/settings` | 管理者（4ロール）＋本部の閲覧（GET）<br>＋本文で確認: 権限の表: staff_pay.visible_setting | [staff-pay.ts:428](../src/staff-pay.ts#L428) | スタッフアプリに支払額を表示するか（#290。変更は会社管理者のみ） | settlement.js |
-| PUT | `/api/admin/staff-pay/settings` | 管理者（4ロール）<br>＋本文で確認: 権限の表: staff_pay.visible_setting | [staff-pay.ts:433](../src/staff-pay.ts#L433) | 〔見出し〕管理者 API（/api/admin/pay-requests*・/api/admin/staff-pay/settings） | settlement.js |
+| GET | `/api/admin/staff-pay/settings` | 管理者（4ロール）＋本部の閲覧（GET）<br>＋本文で確認: 権限の表: staff_pay.visible_setting | [staff-pay.ts:430](../src/staff-pay.ts#L430) | スタッフアプリに支払額を表示するか（#290。変更は会社管理者のみ） | settlement.js |
+| PUT | `/api/admin/staff-pay/settings` | 管理者（4ロール）<br>＋本文で確認: 権限の表: staff_pay.visible_setting | [staff-pay.ts:435](../src/staff-pay.ts#L435) | 〔見出し〕管理者 API（/api/admin/pay-requests*・/api/admin/staff-pay/settings） | settlement.js |
 | POST | `/api/admin/staff-quick` | 管理者（4ロール） | [staff-lifecycle.ts:189](../src/staff-lifecycle.ts#L189) | 〔見出し〕仮登録（氏名・電話だけで登録し、すぐシフトに入れられる） | staff-lifecycle.js tour.js |
-| GET | `/api/admin/staff-reference-pay` | 管理者（4ロール）＋本部の閲覧（GET） | [shift-board.ts:3014](../src/shift-board.ts#L3014) | 〔見出し〕スタッフの支払の参考単価（9204） | shift-board.js |
+| GET | `/api/admin/staff-reference-pay` | 管理者（4ロール）＋本部の閲覧（GET） | [shift-board.ts:3071](../src/shift-board.ts#L3071) | 〔見出し〕スタッフの支払の参考単価（9204） | shift-board.js |
 | GET | `/api/admin/staff-requests/documents` | 管理者（4ロール）＋本部の閲覧（GET） | [staff-self-service.ts:495](../src/staff-self-service.ts#L495) | 〔見出し〕書類（本人提出の確認・種類と期限の編集・期限の一覧） | admin.js |
 | PUT | `/api/admin/staff-requests/documents/:kind/:docId` | 管理者（4ロール）<br>＋本文で確認: 人事のロール | [staff-self-service.ts:505](../src/staff-self-service.ts#L505) | 種類・有効期限の変更と、本人提出の書類の確認（kind: staff / employee / client） | admin.js |
 | GET | `/api/admin/staff-requests/leave` | 会社管理者・事務 | [staff-self-service.ts:535](../src/staff-self-service.ts#L535) | 〔見出し〕休暇（会社管理者・事務担当のみ） | admin.js |
@@ -636,15 +636,15 @@ Mobital のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 | POST | `/api/admin/staff/:id/evaluations` | 管理者（4ロール） | [api.ts:3682](../src/api.ts#L3682) | 〔見出し〕スタッフ評価（#164） | admin.js |
 | DELETE | `/api/admin/staff/:id/evaluations/:eid` | 管理者（4ロール）<br>＋本文で確認: 権限の表: hr.manage | [api.ts:3717](../src/api.ts#L3717) | 〔見出し〕スタッフ評価（#164） | admin.js |
 | POST | `/api/admin/staff/:id/finalize` | 管理者（4ロール） | [staff-lifecycle.ts:262](../src/staff-lifecycle.ts#L262) | 〔見出し〕本登録（仮登録を解除。ログイン発行は任意） | staff-lifecycle.js |
-| GET | `/api/admin/staff/:id/future-shifts` | 管理者（4ロール）＋本部の閲覧（GET） | [shift-board.ts:1970](../src/shift-board.ts#L1970) | 今後のシフトの件数と一覧。退職日を保存する前の確認に使う（from = 退職日の翌日） | admin.js |
+| GET | `/api/admin/staff/:id/future-shifts` | 管理者（4ロール）＋本部の閲覧（GET） | [shift-board.ts:1989](../src/shift-board.ts#L1989) | 今後のシフトの件数と一覧。退職日を保存する前の確認に使う（from = 退職日の翌日） | admin.js |
 | POST | `/api/admin/staff/:id/issue-login` | 管理者（4ロール） | [staff-lifecycle.ts:409](../src/staff-lifecycle.ts#L409) | 仮登録ではない、ログインのないスタッフ（ログインなしで登録した人・本登録でログインを発行しなかった人・他社連携から自社管理に切り替えた人）に、後からログインを発行する（#89） | staff-lifecycle.js |
 | GET | `/api/admin/staff/:id/lifecycle` | 管理者（4ロール）＋本部の閲覧（GET） | [staff-lifecycle.ts:759](../src/staff-lifecycle.ts#L759) | 〔見出し〕所属区分の変更（dry_run で影響範囲を確認 → 実行） | staff-lifecycle.js |
 | POST | `/api/admin/staff/:id/login-email-pending/apply` | 管理者（4ロール） | [api.ts:4157](../src/api.ts#L4157) | 〔見出し〕退職日・在籍状況（#5 #34 #139） | admin.js |
 | POST | `/api/admin/staff/:id/login-email-pending/cancel` | 管理者（4ロール） | [api.ts:4167](../src/api.ts#L4167) | 〔見出し〕退職日・在籍状況（#5 #34 #139） | admin.js |
 | POST | `/api/admin/staff/:id/merge` | 管理者（4ロール） | [staff-merge.ts:91](../src/staff-merge.ts#L91) | 統合の実行（dry_run で影響を確認） | staff-lifecycle.js |
 | GET | `/api/admin/staff/:id/merge-candidates` | 管理者（4ロール）＋本部の閲覧（GET） | [staff-merge.ts:53](../src/staff-merge.ts#L53) | 統合候補（同じ電話番号・同じ氏名・同じフリガナ）。q を渡すと氏名の部分一致でも探す | staff-lifecycle.js |
-| PUT | `/api/admin/staff/:id/reference-pay` | 管理者（4ロール） | [shift-board.ts:3020](../src/shift-board.ts#L3020) | 〔見出し〕スタッフの支払の参考単価（9204） | shift-board.js |
-| POST | `/api/admin/staff/:id/release-future-shifts` | 管理者（4ロール） | [shift-board.ts:1986](../src/shift-board.ts#L1986) | 今後のシフトをまとめて外す。記録（勤怠・日報・打刻修正・募集の承認）のないシフトは削除して枠を空きに戻し、 記録のあるシフトは残して欠勤にする。shift_ids を送ったときは、確認画面に出したものだけを処理する | admin.js |
+| PUT | `/api/admin/staff/:id/reference-pay` | 管理者（4ロール） | [shift-board.ts:3077](../src/shift-board.ts#L3077) | 〔見出し〕スタッフの支払の参考単価（9204） | shift-board.js |
+| POST | `/api/admin/staff/:id/release-future-shifts` | 管理者（4ロール） | [shift-board.ts:2005](../src/shift-board.ts#L2005) | 今後のシフトをまとめて外す。記録（勤怠・日報・打刻修正・募集の承認）のないシフトは削除して枠を空きに戻し、 記録のあるシフトは残して欠勤にする。shift_ids を送ったときは、確認画面に出したものだけを処理する | admin.js |
 | PUT | `/api/admin/staff/:id/report-settings` | 管理者（4ロール） | [staff-lifecycle.ts:813](../src/staff-lifecycle.ts#L813) | 〔見出し〕提出設定 | staff-lifecycle.js |
 | POST | `/api/admin/staff/:id/reset-password` | 管理者（4ロール） | [staff-lifecycle.ts:794](../src/staff-lifecycle.ts#L794) | 自社でログインを発行したスタッフだけが対象。他社から連携したスタッフは所属元の会社で再発行する（稼働先の行ではログインできない）。 仮パスワードはこの応答で一度だけ返し、次回ログインで本人に変更を求める。今のセッションと未使用の再設定リンクは無効にする | staff-lifecycle.js |
 | DELETE | `/api/admin/staff/:id/schedule-link` | 管理者（4ロール） | [staff-lifecycle.ts:1443](../src/staff-lifecycle.ts#L1443) | 〔見出し〕予定確認URL（#442。スタッフ単位） | staff-lifecycle.js |
@@ -659,15 +659,15 @@ Mobital のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 | GET | `/api/admin/staff/options` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:3560](../src/api.ts#L3560) | スタッフを選ぶための軽い一覧（シフト登録・シフトボード・NGスタッフの選択肢。#463）。集計はしない。 既定は今日の時点で割り当てられる人だけ。?include=all で、統合済み・スキルシートのみ以外の全員（退職・休職を含む）を返す | admin.js shift-board.js |
 | GET | `/api/admin/support-requests` | 管理者（4ロール）＋本部の閲覧（GET） | [hq-support.ts:282](../src/hq-support.ts#L282) | 自社の伴走支援の依頼の一覧（新しい順） | hq-support.js |
 | POST | `/api/admin/support-requests` | 管理者（4ロール） | [hq-support.ts:289](../src/hq-support.ts#L289) | 〔見出し〕管理画面の API（/api/admin に登録する） | hq-support.js |
-| GET | `/api/admin/templates` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:7781](../src/api.ts#L7781) | テンプレート一覧 (企業側から参照) project_count: そのテンプレートを使う自社の案件の数。has_reports: 自社のテンプレートで日報が出ているか（項目の削除・タイプの変更を止める） | admin.js |
-| POST | `/api/admin/templates` | 管理者（4ロール） | [api.ts:7846](../src/api.ts#L7846) | 〔見出し〕日報テンプレートの作成・編集（#165） | admin.js |
-| PUT | `/api/admin/templates/:id` | 管理者（4ロール） | [api.ts:7864](../src/api.ts#L7864) | 〔見出し〕日報テンプレートの作成・編集（#165） | admin.js |
+| GET | `/api/admin/templates` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:7780](../src/api.ts#L7780) | テンプレート一覧 (企業側から参照) project_count: そのテンプレートを使う自社の案件の数。has_reports: 自社のテンプレートで日報が出ているか（項目の削除・タイプの変更を止める） | admin.js |
+| POST | `/api/admin/templates` | 管理者（4ロール） | [api.ts:7845](../src/api.ts#L7845) | 〔見出し〕日報テンプレートの作成・編集（#165） | admin.js |
+| PUT | `/api/admin/templates/:id` | 管理者（4ロール） | [api.ts:7863](../src/api.ts#L7863) | 〔見出し〕日報テンプレートの作成・編集（#165） | admin.js |
 | GET | `/api/admin/tours` | 管理者（4ロール）＋本部の閲覧（GET） | [tours.ts:101](../src/tours.ts#L101) |  | tour.js |
 | PUT | `/api/admin/tours` | 管理者（4ロール） | [tours.ts:111](../src/tours.ts#L111) |  | tour.js |
 | GET | `/api/admin/tours/checklist` | 管理者（4ロール）＋本部の閲覧（GET） | [tours.ts:120](../src/tours.ts#L120) |  | tour.js |
-| GET | `/api/admin/transport-defaults` | 管理者（4ロール）＋本部の閲覧（GET） | [shift-board.ts:3097](../src/shift-board.ts#L3097) | 交通費の標準（スタッフ × 開催場所。#564）。site_id = 0 はそのスタッフのすべての開催場所の標準 割り当て・一括登録・募集の承認で、交通費の入力がなければ使う（lib/transport-defaults） | settlement.js |
-| PUT | `/api/admin/transport-defaults` | 管理者（4ロール） | [shift-board.ts:3112](../src/shift-board.ts#L3112) | 登録・変更（同じスタッフ × 開催場所の標準は1つ。あれば金額を置き換える） | settlement.js |
-| DELETE | `/api/admin/transport-defaults/:id` | 管理者（4ロール） | [shift-board.ts:3129](../src/shift-board.ts#L3129) | 〔見出し〕交通費の標準（スタッフ × 開催場所。#564）。site_id = 0 はそのスタッフのすべての開催場所の標準 | settlement.js |
+| GET | `/api/admin/transport-defaults` | 管理者（4ロール）＋本部の閲覧（GET） | [shift-board.ts:3154](../src/shift-board.ts#L3154) | 交通費の標準（スタッフ × 開催場所。#564）。site_id = 0 はそのスタッフのすべての開催場所の標準 割り当て・一括登録・募集の承認で、交通費の入力がなければ使う（lib/transport-defaults） | settlement.js |
+| PUT | `/api/admin/transport-defaults` | 管理者（4ロール） | [shift-board.ts:3169](../src/shift-board.ts#L3169) | 登録・変更（同じスタッフ × 開催場所の標準は1つ。あれば金額を置き換える） | settlement.js |
+| DELETE | `/api/admin/transport-defaults/:id` | 管理者（4ロール） | [shift-board.ts:3186](../src/shift-board.ts#L3186) | 〔見出し〕交通費の標準（スタッフ × 開催場所。#564）。site_id = 0 はそのスタッフのすべての開催場所の標準 | settlement.js |
 | GET | `/api/admin/users` | 会社管理者 | [accounts.ts:304](../src/accounts.ts#L304) | 〔見出し〕管理者アカウント（/api/admin/users。会社管理者のみ） | admin.js |
 | POST | `/api/admin/users` | 会社管理者 | [accounts.ts:308](../src/accounts.ts#L308) | 〔見出し〕管理者アカウント（/api/admin/users。会社管理者のみ） | admin.js |
 | PUT | `/api/admin/users/:id` | 会社管理者 | [accounts.ts:313](../src/accounts.ts#L313) | 〔見出し〕管理者アカウント（/api/admin/users。会社管理者のみ） | admin.js |
@@ -682,18 +682,18 @@ Mobital のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 | PUT | `/api/hq/announcements/:id` | 本部 | [hq-support.ts:425](../src/hq-support.ts#L425) | 修正（内容・配信先・掲載期間）。取り消したものは直せない。確認済みの記録は残す | hq.js |
 | GET | `/api/hq/announcements/:id/reads` | 本部 | [hq-support.ts:392](../src/hq-support.ts#L392) | 企業別の既読状況（配信先の企業ごとに、確認した管理者の人数と最初の確認日時） | hq.js |
 | POST | `/api/hq/announcements/:id/withdraw` | 本部 | [hq-support.ts:442](../src/hq-support.ts#L442) | 〔見出し〕導入企業へのお知らせ | hq.js |
-| GET | `/api/hq/audit-logs` | 本部 | [api.ts:8385](../src/api.ts#L8385) | 〔見出し〕本部の操作の履歴（#542） | hq.js |
-| POST | `/api/hq/billing/close` | 本部 | [api.ts:8283](../src/api.ts#L8283) | 指定した月の請求を記録する（締める）。利用中（active）の企業ごとに、この時点の課金対象の人数・プラン・金額を残す。 すでに記録がある企業は変えない（金額・入金状態は企業詳細で直す）。トライアル・停止中の企業は記録しない | hq.js |
-| GET | `/api/hq/companies` | 本部 | [api.ts:7954](../src/api.ts#L7954) | 〔見出し〕プランの料金（#295） | hq.js security.js |
-| POST | `/api/hq/companies` | 本部 | [api.ts:8180](../src/api.ts#L8180) | 〔見出し〕プランの料金（#295） | hq.js |
-| GET | `/api/hq/companies/:id` | 本部 | [api.ts:8044](../src/api.ts#L8044) | 〔見出し〕プランの料金（#295） | hq.js |
-| PUT | `/api/hq/companies/:id` | 本部 | [api.ts:8103](../src/api.ts#L8103) | 〔見出し〕プランの料金（#295） | hq.js |
-| PUT | `/api/hq/companies/:id/billing/:month` | 本部 | [api.ts:8315](../src/api.ts#L8315) | 1か月分の請求記録の修正（入金状態・入金日・金額・メモ） | hq.js |
-| POST | `/api/hq/companies/:id/support-logs` | 本部 | [api.ts:8356](../src/api.ts#L8356) | 追記で残す。次回の予定日を入れると、企業の次回レビュー日もその日にする | hq.js |
+| GET | `/api/hq/audit-logs` | 本部 | [api.ts:8384](../src/api.ts#L8384) | 〔見出し〕本部の操作の履歴（#542） | hq.js |
+| POST | `/api/hq/billing/close` | 本部 | [api.ts:8282](../src/api.ts#L8282) | 指定した月の請求を記録する（締める）。利用中（active）の企業ごとに、この時点の課金対象の人数・プラン・金額を残す。 すでに記録がある企業は変えない（金額・入金状態は企業詳細で直す）。トライアル・停止中の企業は記録しない | hq.js |
+| GET | `/api/hq/companies` | 本部 | [api.ts:7953](../src/api.ts#L7953) | 〔見出し〕プランの料金（#295） | hq.js security.js |
+| POST | `/api/hq/companies` | 本部 | [api.ts:8179](../src/api.ts#L8179) | 〔見出し〕プランの料金（#295） | hq.js |
+| GET | `/api/hq/companies/:id` | 本部 | [api.ts:8043](../src/api.ts#L8043) | 〔見出し〕プランの料金（#295） | hq.js |
+| PUT | `/api/hq/companies/:id` | 本部 | [api.ts:8102](../src/api.ts#L8102) | 〔見出し〕プランの料金（#295） | hq.js |
+| PUT | `/api/hq/companies/:id/billing/:month` | 本部 | [api.ts:8314](../src/api.ts#L8314) | 1か月分の請求記録の修正（入金状態・入金日・金額・メモ） | hq.js |
+| POST | `/api/hq/companies/:id/support-logs` | 本部 | [api.ts:8355](../src/api.ts#L8355) | 追記で残す。次回の予定日を入れると、企業の次回レビュー日もその日にする | hq.js |
 | POST | `/api/hq/companies/:id/users` | 本部 | [accounts.ts:342](../src/accounts.ts#L342) | 〔見出し〕本部（/api/hq/companies/:id/users の追加・変更。一覧は GET /api/hq/companies/:id の users。system_admin のみ。権限の確認は api.ts の /hq/* ミドルウェア） | hq.js |
 | PUT | `/api/hq/companies/:id/users/:uid` | 本部 | [accounts.ts:349](../src/accounts.ts#L349) | 〔見出し〕本部（/api/hq/companies/:id/users の追加・変更。一覧は GET /api/hq/companies/:id の users。system_admin のみ。権限の確認は api.ts の /hq/* ミドルウェア） | hq.js |
 | POST | `/api/hq/companies/:id/users/:uid/reset-password` | 本部 | [accounts.ts:356](../src/accounts.ts#L356) | 〔見出し〕本部（/api/hq/companies/:id/users の追加・変更。一覧は GET /api/hq/companies/:id の users。system_admin のみ。権限の確認は api.ts の /hq/* ミドルウェア） | hq.js |
-| GET | `/api/hq/cron/status` | 本部 | [api.ts:8643](../src/api.ts#L8643) | 定期処理（cron）の処理ごとの最終実行・直近の実行記録・警告（#192） | hq.js |
+| GET | `/api/hq/cron/status` | 本部 | [api.ts:8642](../src/api.ts#L8642) | 定期処理（cron）の処理ごとの最終実行・直近の実行記録・警告（#192） | hq.js |
 | GET | `/api/hq/email-logs` | 本部 | [notifications.ts:1005](../src/notifications.ts#L1005) | 〔見出し〕本部（/api/hq。system_admin のみ。api.ts のミドルウェアで確認する） | hq.js |
 | GET | `/api/hq/email-stats` | 本部 | [notifications.ts:963](../src/notifications.ts#L963) | 〔見出し〕本部（/api/hq。system_admin のみ。api.ts のミドルウェアで確認する） | hq.js |
 | GET | `/api/hq/email-suppressions` | 本部 | [notifications.ts:1015](../src/notifications.ts#L1015) | 〔見出し〕本部（/api/hq。system_admin のみ。api.ts のミドルウェアで確認する） | hq.js |
@@ -706,30 +706,30 @@ Mobital のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 | GET | `/api/hq/monitor/banner` | 本部 | [hq-monitor.ts:49](../src/hq-monitor.ts#L49) |  | hq.js |
 | POST | `/api/hq/monitor/db-size/count-tables` | 本部 | [hq-monitor.ts:69](../src/hq-monitor.ts#L69) |  | hq.js |
 | POST | `/api/hq/monitor/destinations/:key/test` | 本部 | [hq-monitor.ts:57](../src/hq-monitor.ts#L57) |  | hq.js |
-| GET | `/api/hq/offboarding` | 本部 | [api.ts:8676](../src/api.ts#L8676) | 一覧: 停止中の企業と、解約の処理の記録がある企業 | hq.js |
-| GET | `/api/hq/offboarding/:cid` | 本部 | [api.ts:8692](../src/api.ts#L8692) | 詳細: 解約の処理・操作の記録・表ごとの件数（削除の dry-run を兼ねる）・R2 のファイルの件数 | hq.js |
-| POST | `/api/hq/offboarding/:cid/cancel` | 本部 | [api.ts:8742](../src/api.ts#L8742) | 契約終了の取消（猶予中だけ。削除を始めた後は取り消せない） | hq.js |
-| POST | `/api/hq/offboarding/:cid/delete` | 本部 | [api.ts:8845](../src/api.ts#L8845) | 削除（猶予を過ぎた企業だけ。会社コードと「削除する」の入力で確かめる）。1回の要求で処理できる量だけ進め、進み具合を返す。 書き出しをしていない場合は、書き出しをしない理由（企業が不要と回答した など）を求める | hq.js |
-| GET | `/api/hq/offboarding/:cid/export/:target` | 本部 | [api.ts:8770](../src/api.ts#L8770) | 表ごとの CSV（offset から OFFBOARDING_EXPORT_PAGE 行。次があれば X-Export-Next に次の offset を入れる）。最初の取得を記録する cursor を付けると続きの位置で区切る（X-Export-Next は次の位置。空なら最後。cursor=start が最初。w… | hq.js |
-| GET | `/api/hq/offboarding/:cid/files` | 本部 | [api.ts:8802](../src/api.ts#L8802) | R2 の写真・書類の一覧（offset から OFFBOARDING_FILES_PAGE 件。cursor を付けると続きの位置で区切る） | hq.js |
-| GET | `/api/hq/offboarding/:cid/files/:source/:id` | 本部 | [api.ts:8821](../src/api.ts#L8821) | R2 のファイル1件の取得（元の表と行の ID で。その企業のものだけ）。取得を記録する | hq.js |
-| GET | `/api/hq/offboarding/:cid/record.csv` | 本部 | [api.ts:8890](../src/api.ts#L8890) | 〔見出し〕解約・停止した企業のデータの書き出しと削除（system_admin限定。作業単位 w5-hq-offboarding: #177） | hq.js |
-| POST | `/api/hq/offboarding/:cid/start` | 本部 | [api.ts:8714](../src/api.ts#L8714) | 契約終了の登録（停止中の企業だけ）。会社コードの入力で確かめる | hq.js |
-| GET | `/api/hq/plan-prices` | 本部 | [api.ts:8250](../src/api.ts#L8250) | 〔見出し〕プランの料金の設定（#295） | hq.js |
-| PUT | `/api/hq/plan-prices` | 本部 | [api.ts:8253](../src/api.ts#L8253) | 〔見出し〕プランの料金の設定（#295） | hq.js |
+| GET | `/api/hq/offboarding` | 本部 | [api.ts:8675](../src/api.ts#L8675) | 一覧: 停止中の企業と、解約の処理の記録がある企業 | hq.js |
+| GET | `/api/hq/offboarding/:cid` | 本部 | [api.ts:8691](../src/api.ts#L8691) | 詳細: 解約の処理・操作の記録・表ごとの件数（削除の dry-run を兼ねる）・R2 のファイルの件数 | hq.js |
+| POST | `/api/hq/offboarding/:cid/cancel` | 本部 | [api.ts:8741](../src/api.ts#L8741) | 契約終了の取消（猶予中だけ。削除を始めた後は取り消せない） | hq.js |
+| POST | `/api/hq/offboarding/:cid/delete` | 本部 | [api.ts:8844](../src/api.ts#L8844) | 削除（猶予を過ぎた企業だけ。会社コードと「削除する」の入力で確かめる）。1回の要求で処理できる量だけ進め、進み具合を返す。 書き出しをしていない場合は、書き出しをしない理由（企業が不要と回答した など）を求める | hq.js |
+| GET | `/api/hq/offboarding/:cid/export/:target` | 本部 | [api.ts:8769](../src/api.ts#L8769) | 表ごとの CSV（offset から OFFBOARDING_EXPORT_PAGE 行。次があれば X-Export-Next に次の offset を入れる）。最初の取得を記録する cursor を付けると続きの位置で区切る（X-Export-Next は次の位置。空なら最後。cursor=start が最初。w… | hq.js |
+| GET | `/api/hq/offboarding/:cid/files` | 本部 | [api.ts:8801](../src/api.ts#L8801) | R2 の写真・書類の一覧（offset から OFFBOARDING_FILES_PAGE 件。cursor を付けると続きの位置で区切る） | hq.js |
+| GET | `/api/hq/offboarding/:cid/files/:source/:id` | 本部 | [api.ts:8820](../src/api.ts#L8820) | R2 のファイル1件の取得（元の表と行の ID で。その企業のものだけ）。取得を記録する | hq.js |
+| GET | `/api/hq/offboarding/:cid/record.csv` | 本部 | [api.ts:8889](../src/api.ts#L8889) | 〔見出し〕解約・停止した企業のデータの書き出しと削除（system_admin限定。作業単位 w5-hq-offboarding: #177） | hq.js |
+| POST | `/api/hq/offboarding/:cid/start` | 本部 | [api.ts:8713](../src/api.ts#L8713) | 契約終了の登録（停止中の企業だけ）。会社コードの入力で確かめる | hq.js |
+| GET | `/api/hq/plan-prices` | 本部 | [api.ts:8249](../src/api.ts#L8249) | 〔見出し〕プランの料金の設定（#295） | hq.js |
+| PUT | `/api/hq/plan-prices` | 本部 | [api.ts:8252](../src/api.ts#L8252) | 〔見出し〕プランの料金の設定（#295） | hq.js |
 | GET | `/api/hq/push/config` | 本部 | [notifications.ts:1963](../src/notifications.ts#L1963) | 〔見出し〕プッシュ通知（#178） | hq.js |
 | GET | `/api/hq/push/latest` | 本部 | [notifications.ts:2094](../src/notifications.ts#L2094) | 〔見出し〕プッシュ通知（#178） |  |
 | POST | `/api/hq/push/subscribe` | 本部 | [notifications.ts:1976](../src/notifications.ts#L1976) | 〔見出し〕プッシュ通知（#178） | hq.js |
 | POST | `/api/hq/push/test` | 本部 | [notifications.ts:2023](../src/notifications.ts#L2023) | テスト通知: この端末にだけ、その場で送る（端末が取りに来たときにテストの文面を返す） | hq.js |
 | POST | `/api/hq/push/unsubscribe` | 本部 | [notifications.ts:2015](../src/notifications.ts#L2015) | 〔見出し〕プッシュ通知（#178） | hq.js |
-| POST | `/api/hq/retention/dry-run` | 本部 | [api.ts:8454](../src/api.ts#L8454) | 注意: 実際の削除はCron Triggerからのみ実行する（HTTP経由の一般APIとしては公開しない）。 ここではdry-run（削除せず対象件数のみ確認）と、過去の実行ログの閲覧のみ提供する。 全社にまたがる集計のため、各社admin(company_admin等)ではなく本部(system_admin)限定と… | hq.js |
-| DELETE | `/api/hq/retention/holds/:kind/:id` | 本部 | [api.ts:8554](../src/api.ts#L8554) | 〔見出し〕データ保持（定期削除、system_admin限定） | hq.js |
-| PUT | `/api/hq/retention/holds/:kind/:id` | 本部 | [api.ts:8543](../src/api.ts#L8543) | 〔見出し〕データ保持（定期削除、system_admin限定） | hq.js |
-| GET | `/api/hq/retention/logs` | 本部 | [api.ts:8471](../src/api.ts#L8471) | 〔見出し〕データ保持（定期削除、system_admin限定） | hq.js |
-| POST | `/api/hq/retention/orphan-photos` | 本部 | [api.ts:8564](../src/api.ts#L8564) | R2 に残った、どの勤怠にも紐づかない写真（#533 の残り）。1回に500件ずつ見て、cursor で続きを見る。 dry_run=false のときだけ、そのページの紐づかない写真を消す（消した件数は実行ログに残す） | hq.js |
-| GET | `/api/hq/retention/schedule` | 本部 | [api.ts:8462](../src/api.ts#L8462) | 次回削除予定（猶予中・猶予待ち）と、退職日より後にシフトがあるため対象外にしている退職者の一覧。 今の動作モード（RETENTION_ENABLED が 'true' なら実削除、それ以外は dry-run のみ）も返す（#365） | hq.js |
-| GET | `/api/hq/retention/settings` | 本部 | [api.ts:8520](../src/api.ts#L8520) | 在職中の保存期間の設定（位置情報と写真・相談・フォロー記録・決着した人材提案。#420 #511 #350） | hq.js |
-| PUT | `/api/hq/retention/settings` | 本部 | [api.ts:8523](../src/api.ts#L8523) | 〔見出し〕データ保持（定期削除、system_admin限定） | hq.js |
+| POST | `/api/hq/retention/dry-run` | 本部 | [api.ts:8453](../src/api.ts#L8453) | 注意: 実際の削除はCron Triggerからのみ実行する（HTTP経由の一般APIとしては公開しない）。 ここではdry-run（削除せず対象件数のみ確認）と、過去の実行ログの閲覧のみ提供する。 全社にまたがる集計のため、各社admin(company_admin等)ではなく本部(system_admin)限定と… | hq.js |
+| DELETE | `/api/hq/retention/holds/:kind/:id` | 本部 | [api.ts:8553](../src/api.ts#L8553) | 〔見出し〕データ保持（定期削除、system_admin限定） | hq.js |
+| PUT | `/api/hq/retention/holds/:kind/:id` | 本部 | [api.ts:8542](../src/api.ts#L8542) | 〔見出し〕データ保持（定期削除、system_admin限定） | hq.js |
+| GET | `/api/hq/retention/logs` | 本部 | [api.ts:8470](../src/api.ts#L8470) | 〔見出し〕データ保持（定期削除、system_admin限定） | hq.js |
+| POST | `/api/hq/retention/orphan-photos` | 本部 | [api.ts:8563](../src/api.ts#L8563) | R2 に残った、どの勤怠にも紐づかない写真（#533 の残り）。1回に500件ずつ見て、cursor で続きを見る。 dry_run=false のときだけ、そのページの紐づかない写真を消す（消した件数は実行ログに残す） | hq.js |
+| GET | `/api/hq/retention/schedule` | 本部 | [api.ts:8461](../src/api.ts#L8461) | 次回削除予定（猶予中・猶予待ち）と、退職日より後にシフトがあるため対象外にしている退職者の一覧。 今の動作モード（RETENTION_ENABLED が 'true' なら実削除、それ以外は dry-run のみ）も返す（#365） | hq.js |
+| GET | `/api/hq/retention/settings` | 本部 | [api.ts:8519](../src/api.ts#L8519) | 在職中の保存期間の設定（位置情報と写真・相談・フォロー記録・決着した人材提案。#420 #511 #350） | hq.js |
+| PUT | `/api/hq/retention/settings` | 本部 | [api.ts:8522](../src/api.ts#L8522) | 〔見出し〕データ保持（定期削除、system_admin限定） | hq.js |
 | GET | `/api/hq/security` | 本部 | [api.ts:1205](../src/api.ts#L1205) | 本部ユーザーの二段階認証の必須・接続元の制限は、本部専用の企業行の設定に持つ | security.js |
 | POST | `/api/hq/security/clear-ip` | 本部 | [api.ts:1235](../src/api.ts#L1235) | 企業の接続元の制限を外す（企業側で設定を誤って管理者が誰も入れなくなったときの窓口） | security.js |
 | POST | `/api/hq/security/reset-mfa` | 本部 | [api.ts:1218](../src/api.ts#L1218) | 端末を失くした人の二段階認証の解除（会社コード＋ID で指定。会社コードが空欄なら本部ユーザー）。会社管理者が1人で解除できないときの窓口 | security.js |
@@ -737,9 +737,9 @@ Mobital のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 | DELETE | `/api/hq/security/users/:id/sessions` | 本部 | [api.ts:1245](../src/api.ts#L1245) | 〔見出し〕本部（/api/hq/security・/api/hq/login-history） |  |
 | GET | `/api/hq/support-requests` | 本部 | [hq-support.ts:349](../src/hq-support.ts#L349) | 〔見出し〕伴走支援の依頼の受付一覧 | hq.js |
 | PUT | `/api/hq/support-requests/:id` | 本部 | [hq-support.ts:360](../src/hq-support.ts#L360) | 〔見出し〕伴走支援の依頼の受付一覧 | hq.js |
-| GET | `/api/hq/templates` | 本部 | [api.ts:8413](../src/api.ts#L8413) | 企業独自のテンプレートは会社名、どれも使っている案件の数と日報の有無（編集できる範囲の表示に使う。#165）を付ける | hq.js |
-| POST | `/api/hq/templates` | 本部 | [api.ts:8421](../src/api.ts#L8421) | 〔見出し〕本部の操作の履歴（#542） | hq.js |
-| PUT | `/api/hq/templates/:id` | 本部 | [api.ts:8439](../src/api.ts#L8439) | テンプレートの修正・配信停止（#165）。本部のテンプレートのほか、企業独自のテンプレートも直せる（規則は企業と同じ） | hq.js |
+| GET | `/api/hq/templates` | 本部 | [api.ts:8412](../src/api.ts#L8412) | 企業独自のテンプレートは会社名、どれも使っている案件の数と日報の有無（編集できる範囲の表示に使う。#165）を付ける | hq.js |
+| POST | `/api/hq/templates` | 本部 | [api.ts:8420](../src/api.ts#L8420) | 〔見出し〕本部の操作の履歴（#542） | hq.js |
+| PUT | `/api/hq/templates/:id` | 本部 | [api.ts:8438](../src/api.ts#L8438) | テンプレートの修正・配信停止（#165）。本部のテンプレートのほか、企業独自のテンプレートも直せる（規則は企業と同じ） | hq.js |
 | GET | `/api/hq/view-sessions` | 本部 | [hq-support.ts:452](../src/hq-support.ts#L452) | 企業ごとの許可の状態・自分の閲覧中のもの・最近の閲覧の記録 | hq.js |
 | POST | `/api/hq/view-sessions` | 本部 | [hq-support.ts:473](../src/hq-support.ts#L473) | 閲覧の開始。企業が許可しているときだけ。同じ本部ユーザーの閲覧中のものは終える（同時に開けるのは1社だけ） | hq.js |
 | GET | `/api/hq/view-sessions/:id/logs` | 本部 | [hq-support.ts:465](../src/hq-support.ts#L465) | 〔見出し〕管理画面の閲覧（読み取り専用） | hq.js |
