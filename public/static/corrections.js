@@ -288,7 +288,7 @@
     const target = d.reports.find(x => x.report_type === c.report_type)
     // 申請の後に打刻が変わった（時刻修正の変更前と今の記録が違う）
     const changedNow = c.status === 'pending' && c.kind === 'modify' && target && target.reported_at !== c.before_at
-    const dl = (k, v) => `<div class="flex gap-2 py-1 border-b border-neutral-50"><dt class="w-28 shrink-0 text-neutral-500">${k}</dt><dd class="flex-1 min-w-0 break-words">${v}</dd></div>`
+    const dl = (k, v) => `<div class="flex gap-2 py-1 border-b border-neutral-50"><dt class="w-28 shrink-0 text-neutral-500">${k}</dt><dd class="flex-1 min-w-0 text-wrap-any">${v}</dd></div>`
     modal(`<div class="flex items-start justify-between gap-2 mb-2"><h3 class="font-bold text-neutral-800">${LABEL[c.report_type]}（${KIND[c.kind]}） #${Number(c.correction_id)}</h3>${statusBadge(c.status)}</div>
       <dl class="text-sm">
         ${dl('案件', esc(c.project_name || '') + (c.project_status && c.project_status !== 'active' ? ' <span class="badge badge-gray text-3xs">終了</span>' : ''))}
@@ -296,12 +296,12 @@
         ${dl('勤務', `${esc(c.work_date ? dayjs(c.work_date).format('YYYY/M/D') : '')} ${esc(c.start_time || '')}〜${esc(c.end_time || '')}${c.settle_status === 'confirmed' ? ' <span class="badge badge-blue text-3xs">確定済み</span>' : ''}`)}
         ${dl('変更前', esc(fmtAt(c.before_at)))}
         ${dl(c.status === 'approved' ? '変更後（承認）' : '変更後', `<b>${esc(fmtAt(c.requested_at))}</b>${approvedEv && approvedEv.detail.adjusted ? ` <span class="badge badge-yellow text-3xs">修正して承認</span><span class="block text-xs text-neutral-500">申請の日時: ${esc(fmtAt(approvedEv.detail.requested_at_original))}</span>` : ''}${approvedEv && approvedEv.detail.rebased ? `<span class="block text-xs text-neutral-500">申請の後に変わった記録（申請時の変更前: ${esc(fmtAt(approvedEv.detail.before_at_original))}）をもとに承認</span>` : ''}`)}
-        ${dl('修正理由', `<span class="whitespace-pre-wrap">${esc(c.reason)}</span>`)}
+        ${dl('修正理由', `<span class="whitespace-pre-wrap text-wrap-any">${esc(c.reason)}</span>`)}
         ${dl('申請者', `${esc(c.requested_by_name || '')}（${ROLE[c.requested_by_role] || esc(c.requested_by_role || '')}） ${esc(fmtAt(c.created_at))}`)}
         ${c.resubmitted_from ? dl('再申請', `元の申請 <a class="text-primary-600 underline" href="#corrections/${Number(c.resubmitted_from)}">#${Number(c.resubmitted_from)}</a>`) : ''}
         ${c.decided_at && c.status !== 'cancelled' ? dl(c.status === 'rejected' ? '却下' : '承認', `${esc(c.decided_by_name || '')} ${esc(fmtAt(c.decided_at))}${c.is_exception ? ' <span class="badge badge-yellow text-3xs">例外承認</span>' : ''}`) : ''}
-        ${c.decision_comment ? dl('承認者コメント', `<span class="whitespace-pre-wrap">${esc(c.decision_comment)}</span>`) : ''}
-        ${c.reject_reason ? dl('却下理由', `<span class="whitespace-pre-wrap">${esc(c.reject_reason)}</span>`) : ''}
+        ${c.decision_comment ? dl('承認者コメント', `<span class="whitespace-pre-wrap text-wrap-any">${esc(c.decision_comment)}</span>`) : ''}
+        ${c.reject_reason ? dl('却下理由', `<span class="whitespace-pre-wrap text-wrap-any">${esc(c.reject_reason)}</span>`) : ''}
         ${c.cancelled_at ? dl('取り消し', esc(fmtAt(c.cancelled_at))) : ''}
         ${c.applied_while_settled ? dl('反映', '<span class="text-warning-700">確定済みのシフトのため、実績・金額は確定時のままです（精算で確定を取り消すと、報告の時刻が実績・金額に反映されます）</span>') : ''}
         ${appliedWhileManual ? dl('反映', `<span class="text-warning-700">${MANUAL_NOTE}</span>`) : ''}

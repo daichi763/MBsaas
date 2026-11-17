@@ -177,6 +177,11 @@
   .hq-nav.active { background: rgb(var(--color-hq-accent-700)); color: rgb(var(--color-on-primary)); font-weight: 700; }
 
   /* カード */
+  /* 長い URL・英数字（空白のない文字列）を枠の中で折り返す（#9983）。お知らせ・日報・相談・チャットなど、利用者が入力した文の表示に付ける。
+     overflow-wrap:anywhere は、flex・grid・表の幅の計算（最小の幅）にも効くので、長い文字列で列や画面が横に広がらない（break-words では広がる）。
+     word-break:break-word は anywhere が効かない古い Safari 向け。flex・grid の子でも縮むように min-width:0 も付ける。中の <a> にも引き継がれる */
+  .text-wrap-any { overflow-wrap: anywhere; word-break: break-word; min-width: 0; }
+
   .card { background: rgb(var(--color-surface)); border: 1px solid rgb(var(--color-border-subtle)); border-radius: var(--radius-card); box-shadow: var(--shadow-card); }
 
   /* バッジ */

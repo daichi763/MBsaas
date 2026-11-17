@@ -262,7 +262,7 @@ function shiftPlaceHtml(s, compact) {
     ${s.site_address || map ? `<p class="text-xs text-neutral-500 ${compact ? '' : 'ml-4'}">${esc(s.site_address || '')}${map ? ` <a href="${esc(map)}" target="_blank" rel="noopener noreferrer" class="text-primary-600 underline whitespace-nowrap"><i class="fas fa-map-location-dot mr-0.5"></i>地図を開く</a>` : ''}</p>` : ''}
     ${compact ? '' : `<p class="${tx}"><i class="far fa-clock text-neutral-400 mr-1"></i>${esc(formatShiftTime(s.start_time, s.end_time, ' 〜 '))}${brk ? `<span class="text-xs text-neutral-500 ml-1">（休憩 ${brk}分）</span>` : ''}</p>`}
     ${s.role ? `<p class="${tx}"><i class="fas fa-user-tag text-neutral-400 mr-1"></i>役割: ${esc(s.role)}${compact && brk ? `・休憩 ${brk}分` : ''}</p>` : compact && brk ? `<p class="${tx}">休憩 ${brk}分</p>` : ''}
-    ${s.slot_memo ? `<p class="text-xs text-neutral-700 bg-neutral-50 rounded-lg px-2 py-1.5 mt-1 whitespace-pre-wrap"><i class="fas fa-note-sticky text-neutral-400 mr-1"></i>${esc(s.slot_memo)}</p>` : ''}`
+    ${s.slot_memo ? `<p class="text-xs text-neutral-700 bg-neutral-50 rounded-lg px-2 py-1.5 mt-1 whitespace-pre-wrap text-wrap-any"><i class="fas fa-note-sticky text-neutral-400 mr-1"></i>${esc(s.slot_memo)}</p>` : ''}`
 }
 
 // 現場責任者・会社の緊急連絡先（#173）。電話番号はタップで発信できる tel: のリンクにする
@@ -810,7 +810,7 @@ function homeNoticesHtml(data) {
             ${noticeImportanceBadge(n)}
             ${n.read_required && !n.is_read ? '<span class="badge badge-purple">確認必須</span>' : ''}
             ${!n.is_read ? '<span class="w-2 h-2 rounded-full bg-primary-500 shrink-0"></span>' : ''}
-            <span class="text-sm ${n.is_read ? 'text-neutral-500' : 'font-bold text-neutral-800'} truncate">${esc(n.title)}</span>
+            <span class="text-sm ${n.is_read ? 'text-neutral-500' : 'font-bold text-neutral-800'} truncate min-w-0">${esc(n.title)}</span>
           </div>
           <span class="text-xs text-neutral-400">${esc(dayjs(String(n.published_at).replace(' ', 'T')).format('M/D'))}</span>
         </a>`).join('') || '<p class="text-sm text-neutral-400">お知らせはありません</p>'}
@@ -1450,7 +1450,7 @@ function reportCommentHtml(text, byName, at, opts) {
   const when = at ? ` <span class="font-normal text-primary-500">${esc(dayjs(String(at).replace(' ', 'T')).format('M/D HH:mm'))}</span>` : ''
   return `<span class="block bg-primary-50 rounded-lg ${o.large ? 'px-3 py-2 mt-3' : 'px-2.5 py-1.5 mt-2'}" data-report-comment>
     <span class="block ${o.large ? 'text-xs' : 'text-2xs'} font-bold text-primary-700 mb-0.5"><i class="fas fa-comment-dots mr-1"></i>${esc(from)}${when}</span>
-    <span class="block ${o.large ? 'text-sm text-primary-900' : 'text-xs text-primary-800'} whitespace-pre-wrap break-words">${o.link === false ? esc(text) : linkify(esc(text))}</span></span>`
+    <span class="block ${o.large ? 'text-sm text-primary-900' : 'text-xs text-primary-800'} whitespace-pre-wrap text-wrap-any">${o.link === false ? esc(text) : linkify(esc(text))}</span></span>`
 }
 // 管理者のコメント（#9965。日報1件に複数）。新しい順に、書いた人の名前つきで出す。直したコメントは直した日時。
 // comments が無い（古いサーバーの応答）ときは最新の1件（manager_comment）だけを出す。max を付けると新しい max 件だけを出し、残りの件数を添える
@@ -1620,7 +1620,7 @@ function handoverNotesHtml(d) {
   return (d.notes || []).map(n => `
     <div class="border-t first:border-t-0 border-neutral-100 pt-2 first:pt-0 mt-2 first:mt-0">
       <p class="text-2xs text-neutral-400">${esc(fmtDate(n.work_date))}${n.name ? ` ${esc(n.name)}さん` : ''}</p>
-      ${Object.entries(n.values).map(([k, v]) => `<p class="text-xs mt-0.5"><span class="font-bold text-neutral-600">${esc(labelOf[k] || k)}：</span><span class="text-neutral-800 whitespace-pre-wrap break-words">${linkify(esc(v))}</span></p>`).join('')}
+      ${Object.entries(n.values).map(([k, v]) => `<p class="text-xs mt-0.5"><span class="font-bold text-neutral-600">${esc(labelOf[k] || k)}：</span><span class="text-neutral-800 whitespace-pre-wrap text-wrap-any">${linkify(esc(v))}</span></p>`).join('')}
     </div>`).join('')
 }
 async function loadReportHandover(shiftId) {
@@ -1714,7 +1714,7 @@ delegate('openPastReport', (el) => {
   const labelOf = k => (fields.find(f => f.key === k) || {}).label || (k === 'free' ? '報告内容' : k)
   const adminEditHtml = ae ? `<div class="mt-3 bg-accent-50 rounded-lg px-3 py-2">
       <p class="text-xs font-bold text-accent-700"><i class="fas fa-user-pen mr-1"></i>管理者が実績を修正しました${ae.edited_at ? `（${esc(dayjs(String(ae.edited_at).replace(' ', 'T')).format('M/D HH:mm'))}）` : ''}</p>
-      ${[...edited].map(k => `<p class="text-xs text-accent-900 mt-0.5 break-words">${esc(labelOf(k))}: 提出時 ${esc(valText((ae.original || {})[k]))} → <span class="font-bold">${esc(valText(r.values[k]))}</span></p>`).join('')}
+      ${[...edited].map(k => `<p class="text-xs text-accent-900 mt-0.5 text-wrap-any">${esc(labelOf(k))}: 提出時 ${esc(valText((ae.original || {})[k]))} → <span class="font-bold">${esc(valText(r.values[k]))}</span></p>`).join('')}
       <p class="text-2xs text-accent-700 mt-1">集計には修正した値が使われます。違う場合は管理者に連絡してください</p>
     </div>` : ''
   modal(`
@@ -1726,7 +1726,7 @@ delegate('openPastReport', (el) => {
     <p class="text-xs text-neutral-500 mt-1">提出 ${esc(r.submitted_at ? dayjs(String(r.submitted_at).replace(' ', 'T')).format('M/D HH:mm') : '')} ${pastReportCheckBadge(r)}</p>
     ${adminEditHtml}
     ${nums.length ? `<div class="grid grid-cols-3 gap-2 mt-3">${nums.map(f => `<div class="${edited.has(f.key) ? 'bg-accent-50 ring-1 ring-accent-200' : 'bg-neutral-50'} rounded-lg p-2 text-center"><p class="text-lg font-bold text-primary-600">${esc(r.values[f.key])}</p><p class="text-2xs text-neutral-500">${esc(f.label)}${mark(f.key)}</p></div>`).join('')}</div>` : ''}
-    ${texts.map(f => `<div class="mt-3"><p class="text-xs font-bold text-neutral-500">${esc(f.label)}${mark(f.key)}</p><p class="text-sm text-neutral-800 whitespace-pre-wrap break-words">${esc(r.values[f.key])}</p></div>`).join('')}
+    ${texts.map(f => `<div class="mt-3"><p class="text-xs font-bold text-neutral-500">${esc(f.label)}${mark(f.key)}</p><p class="text-sm text-neutral-800 whitespace-pre-wrap text-wrap-any">${esc(r.values[f.key])}</p></div>`).join('')}
     ${!shown.length ? '<p class="text-sm text-neutral-400 mt-3">入力された項目はありません</p>' : ''}
     ${r.incident_flag || r.complaint_flag ? `<p class="mt-3">${r.incident_flag ? '<span class="badge badge-red">インシデントあり</span> ' : ''}${r.complaint_flag ? '<span class="badge badge-red">クレームあり</span>' : ''}</p>` : ''}
     ${reportCommentsHtml(r.comments, { text: r.manager_comment, by: r.manager_comment_by_name, at: r.manager_comment_at }, { large: true })}
@@ -1802,7 +1802,7 @@ async function renderPerf(month) {
       ${shown.length ? `<div class="grid grid-cols-3 gap-2">${shown.map(f => `
         <div class="bg-neutral-50 rounded-xl p-2.5 text-center">
           <p class="text-xl font-bold text-primary-600">${esc(p.totals[f.key])}</p>
-          <p class="text-2xs text-neutral-500 mt-0.5 break-words">${esc(f.label)}</p>
+          <p class="text-2xs text-neutral-500 mt-0.5 text-wrap-any">${esc(f.label)}</p>
         </div>`).join('')}</div>` : '<p class="text-xs text-neutral-400">数値の実績はありません</p>'}
       ${perfGoalsHtml(p, data.goal_period)}
       ${perfRankingHtml(p)}
@@ -1904,7 +1904,7 @@ function noticeBadgesHtml(n) {
     + (n.read_required && !n.is_read ? '<span class="badge badge-purple">確認必須</span>' : '')
     + (n.updated_at ? '<span class="badge badge-yellow">更新</span>' : '')
     + (n.expired ? '<span class="badge badge-gray">掲載終了</span>' : '')
-    + (n.target_type === 'project' ? `<span class="badge badge-gray">案件: ${esc(n.project_names || '-')}</span>`
+    + (n.target_type === 'project' ? `<span class="badge badge-gray text-wrap-any">案件: ${esc(n.project_names || '-')}</span>`
       : n.target_type === 'staff' ? '<span class="badge badge-gray">あなたあて</span>' : '<span class="badge badge-gray">全体</span>')
 }
 // まとめて確認できるお知らせ（緊急・確認必須は1件ずつ開いて確認してもらう）
@@ -1923,8 +1923,8 @@ function noticeCardHtml(n, detail) {
         ${n.no_confirm ? '<span class="badge badge-gray">確認不要</span>' : !n.is_read ? '<span class="badge badge-blue">未読</span>' : '<span class="badge badge-gray">既読</span>'}
         <span class="text-xs text-neutral-400 ml-auto">${esc(dayjs(String(n.published_at).replace(' ', 'T')).format('M/D HH:mm'))}</span>
       </div>
-      <h3 class="font-bold text-neutral-800">${detail ? esc(n.title) : `<a href="#notices/${Number(n.notice_id)}" class="hover:underline">${esc(n.title)}</a>`}</h3>
-      <p class="text-sm text-neutral-600 mt-1 whitespace-pre-wrap ${collapsed && long ? 'line-clamp-3' : ''}" id="notice-body-${Number(n.notice_id)}">${linkify(esc(body))}</p>
+      <h3 class="font-bold text-neutral-800 text-wrap-any">${detail ? esc(n.title) : `<a href="#notices/${Number(n.notice_id)}" class="hover:underline">${esc(n.title)}</a>`}</h3>
+      <p class="text-sm text-neutral-600 mt-1 whitespace-pre-wrap text-wrap-any ${collapsed && long ? 'line-clamp-3' : ''}" id="notice-body-${Number(n.notice_id)}">${linkify(esc(body))}</p>
       ${collapsed && long ? `<button class="text-xs text-primary-600 mt-1" data-action="noticeExpand" data-id="${Number(n.notice_id)}">続きを読む</button>` : ''}
       ${noticeAttachmentsHtml(n)}
       ${n.updated_at || n.expires_at ? `<p class="text-2xs text-neutral-400 mt-2">${n.updated_at ? `${esc(dayjs(String(n.updated_at).replace(' ', 'T')).format('M/D HH:mm'))} に内容が更新されました` : ''}${n.updated_at && n.expires_at ? '・' : ''}${n.expires_at ? `掲載は ${esc(dayjs(String(n.expires_at).slice(0, 10)).format('M/D'))} まで` : ''}</p>` : ''}
@@ -1954,13 +1954,13 @@ function noticeResponseHtml(n) {
   const mine = n.my_response
   const picked = n._choice != null ? n._choice : mine ? mine.choice : null
   const closed = n.expired || n.no_confirm
-  const answered = mine ? `<p class="text-xs text-success-700 mb-2"><i class="fas fa-circle-check mr-1"></i>回答済み${mine.choice != null ? `: <b>${esc(mine.choice)}</b>` : ''}${mine.comment ? `（${esc(mine.comment)}）` : ''}</p>` : ''
+  const answered = mine ? `<p class="text-xs text-success-700 mb-2 text-wrap-any"><i class="fas fa-circle-check mr-1"></i>回答済み${mine.choice != null ? `: <b>${esc(mine.choice)}</b>` : ''}${mine.comment ? `（${esc(mine.comment)}）` : ''}</p>` : ''
   if (closed) return `<div class="mt-3 border-t border-neutral-100 pt-3">${answered}<p class="text-xs text-neutral-400">回答の受付は終わりました</p></div>`
   return `
     <div class="mt-3 border-t border-neutral-100 pt-3" id="notice-response-${id}">
       <p class="text-sm font-bold text-neutral-700 mb-2"><i class="fas fa-reply text-primary-600 mr-1"></i>回答してください</p>
       ${answered}
-      ${options.length ? `<div class="flex flex-wrap gap-2">${options.map((o, i) => `<button class="px-3 py-2 rounded-lg text-sm font-bold border ${picked === o ? 'bg-primary-600 text-white border-primary-600' : 'bg-surface text-neutral-700 border-neutral-300'}"
+      ${options.length ? `<div class="flex flex-wrap gap-2">${options.map((o, i) => `<button class="px-3 py-2 rounded-lg text-sm font-bold border text-wrap-any text-left max-w-full ${picked === o ? 'bg-primary-600 text-white border-primary-600' : 'bg-surface text-neutral-700 border-neutral-300'}"
         data-action="${n.response_comment ? 'noticeChoose' : 'noticeRespond'}" data-id="${id}" data-i="${i}">${esc(o)}</button>`).join('')}</div>` : ''}
       ${n.response_comment ? `<textarea id="notice-comment-${id}" rows="2" maxlength="500" class="inp mt-2 text-sm" placeholder="コメント・回答を入力">${esc(n._comment != null ? n._comment : mine && mine.comment ? mine.comment : '')}</textarea>
         <button class="btn btn-primary w-full mt-2" data-action="noticeRespond" data-id="${id}">${mine ? '回答を送り直す' : '回答を送る'}</button>` : ''}
@@ -2183,11 +2183,11 @@ function consultPhotosView(co, messageId) {
 // 管理者の返信と自分の追加の連絡を時系列で出す（#154）
 function consultThreadView(co) {
   const msgs = co.messages || []
-  if (!msgs.length && co.manager_reply) return `<div class="mt-2 bg-primary-50 rounded-lg px-3 py-2"><p class="text-xs font-bold text-primary-700 mb-0.5"><i class="fas fa-reply mr-1"></i>管理者からの返信</p><p class="text-sm text-primary-900 whitespace-pre-wrap break-words">${linkify(esc(co.manager_reply))}</p></div>`
+  if (!msgs.length && co.manager_reply) return `<div class="mt-2 bg-primary-50 rounded-lg px-3 py-2"><p class="text-xs font-bold text-primary-700 mb-0.5"><i class="fas fa-reply mr-1"></i>管理者からの返信</p><p class="text-sm text-primary-900 whitespace-pre-wrap text-wrap-any">${linkify(esc(co.manager_reply))}</p></div>`
   const at = (x) => esc(dayjs(String(x || '').replace(' ', 'T')).format('M/D HH:mm'))
   return msgs.map(m => m.author_side === 'admin'
-    ? `<div class="mt-2 bg-primary-50 rounded-lg px-3 py-2"><p class="text-xs font-bold text-primary-700 mb-0.5"><i class="fas fa-reply mr-1"></i>管理者からの返信<span class="font-normal text-primary-500 ml-1">${at(m.created_at)}</span></p><p class="text-sm text-primary-900 whitespace-pre-wrap break-words">${linkify(esc(m.body))}</p></div>`
-    : `<div class="mt-2 bg-neutral-50 rounded-lg px-3 py-2"><p class="text-xs text-neutral-500 mb-0.5"><i class="fas fa-user mr-1"></i>追加の連絡<span class="ml-1">${at(m.created_at)}</span></p><p class="text-sm text-neutral-800 whitespace-pre-wrap break-words">${esc(m.body)}</p>${consultPhotosView(co, m.message_id)}</div>`).join('')
+    ? `<div class="mt-2 bg-primary-50 rounded-lg px-3 py-2"><p class="text-xs font-bold text-primary-700 mb-0.5"><i class="fas fa-reply mr-1"></i>管理者からの返信<span class="font-normal text-primary-500 ml-1">${at(m.created_at)}</span></p><p class="text-sm text-primary-900 whitespace-pre-wrap text-wrap-any">${linkify(esc(m.body))}</p></div>`
+    : `<div class="mt-2 bg-neutral-50 rounded-lg px-3 py-2"><p class="text-xs text-neutral-500 mb-0.5"><i class="fas fa-user mr-1"></i>追加の連絡<span class="ml-1">${at(m.created_at)}</span></p><p class="text-sm text-neutral-800 whitespace-pre-wrap text-wrap-any">${esc(m.body)}</p>${consultPhotosView(co, m.message_id)}</div>`).join('')
 }
 
 function consultShiftLabel(s, multi) {
@@ -2272,7 +2272,7 @@ window.renderConsult = async function () {
             <span class="text-xs text-neutral-400 ml-auto">${dayjs(String(co.created_at || '').replace(' ', 'T')).format('M/D HH:mm')}</span>
           </div>
           ${multi || co.target_date ? `<p class="text-xs text-neutral-500 mb-1">${multi ? `<i class="fas fa-building mr-1"></i>${esc(co.company_name)}` : ''}${multi && co.target_date ? '・' : ''}${co.target_date ? `対象: ${esc(fmtDate(co.target_date))} ${esc(co.target_project_name || '')}` : ''}</p>` : ''}
-          <p class="text-sm text-neutral-700 whitespace-pre-wrap break-words">${esc(co.body)}</p>
+          <p class="text-sm text-neutral-700 whitespace-pre-wrap text-wrap-any">${esc(co.body)}</p>
           ${consultPhotosView(co, null)}
           ${consultThreadView(co)}
           <button type="button" class="btn btn-outline text-xs mt-3" data-action="consultFollowOpen" data-id="${Number(co.consultation_id)}"><i class="fas fa-comment-dots"></i>この相談に追加で連絡する</button>
@@ -2413,8 +2413,8 @@ window.renderManual = async function () {
             </span>
             <i class="fas fa-chevron-down text-neutral-300"></i>
           </summary>
-          ${m.requirements ? `<div class="mt-3"><p class="text-xs font-bold text-neutral-500 mb-1">求められる内容</p><p class="text-sm text-neutral-800 whitespace-pre-wrap break-words">${linkify(esc(m.requirements))}</p></div>` : ''}
-          ${m.manual_text ? `<div class="mt-3"><p class="text-xs font-bold text-neutral-500 mb-1">案件マニュアル・注意事項</p><p class="text-sm text-neutral-800 whitespace-pre-wrap break-words">${linkify(esc(m.manual_text))}</p></div>` : ''}
+          ${m.requirements ? `<div class="mt-3"><p class="text-xs font-bold text-neutral-500 mb-1">求められる内容</p><p class="text-sm text-neutral-800 whitespace-pre-wrap text-wrap-any">${linkify(esc(m.requirements))}</p></div>` : ''}
+          ${m.manual_text ? `<div class="mt-3"><p class="text-xs font-bold text-neutral-500 mb-1">案件マニュアル・注意事項</p><p class="text-sm text-neutral-800 whitespace-pre-wrap text-wrap-any">${linkify(esc(m.manual_text))}</p></div>` : ''}
           ${has ? '' : '<p class="text-xs text-neutral-400 mt-3">この案件のマニュアルはまだ登録されていません。分からないことは相談・連絡から管理者に確認してください</p>'}
         </details>`
       }).join('') || '<p class="text-center text-neutral-400 py-10">表示できるマニュアルはありません（シフトに入っている案件のマニュアルが表示されます）</p>'}
@@ -2539,7 +2539,7 @@ function drawAvailability() {
     <section class="card p-4 mb-3">
       <div class="flex items-center gap-2 flex-wrap"><h2 class="font-bold text-neutral-800">${esc(avMonthLabel(AV.month))}の出勤可能日</h2>${status}</div>
       ${d.deadline ? `<p class="text-sm mt-1 ${overdue ? 'text-danger-600 font-bold' : 'text-neutral-600'}"><i class="far fa-clock mr-1"></i>締切: ${esc(fmtDate(d.deadline))}${overdue ? '（締切を過ぎています。できるだけ早く提出してください）' : ''}</p>` : ''}
-      ${d.note ? `<p class="text-xs text-neutral-600 bg-neutral-50 rounded-lg px-2.5 py-2 mt-2 whitespace-pre-wrap">${linkify(esc(d.note))}</p>` : ''}
+      ${d.note ? `<p class="text-xs text-neutral-600 bg-neutral-50 rounded-lg px-2.5 py-2 mt-2 whitespace-pre-wrap text-wrap-any">${linkify(esc(d.note))}</p>` : ''}
       <p class="text-xs text-neutral-500 mt-2">シフトの希望は、ここで出してください（○ 終日入れる・△ 入れる時間帯・× 入れない）。管理者がこれを見てシフトを組みます</p>
       <p class="text-xs text-neutral-400 mt-1">下の記号を選んでから日付を押すと付きます。提出した後も出し直せます。シフトの確定は管理者が行います</p>
     </section>

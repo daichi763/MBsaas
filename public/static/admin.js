@@ -971,7 +971,7 @@ function askAbsentReason(head) {
     bg.style.zIndex = '50'
     bg.innerHTML = `<div class="modal-box p-5" style="max-width:420px" role="dialog" aria-labelledby="absent-reason-title">
       <h3 class="font-bold text-lg mb-1" id="absent-reason-title">欠勤にする</h3>
-      ${head ? `<p class="text-sm text-neutral-700 whitespace-pre-wrap mb-2">${esc(head)}</p>` : ''}
+      ${head ? `<p class="text-sm text-neutral-700 whitespace-pre-wrap text-wrap-any mb-2">${esc(head)}</p>` : ''}
       <p class="text-xs text-neutral-500 mb-3">理由を選んでください。理由は精算の「キャンセル料・補償」に入ります（金額は精算の画面で入力します）。</p>
       <div class="space-y-2">
         ${ABSENT_REASONS.map(([k, l, ic]) => `<button type="button" class="btn btn-outline w-full justify-start" data-reason="${k}"><i class="fas ${ic}"></i>${l}</button>`).join('')}
@@ -1537,11 +1537,11 @@ const fmtYm = v => v ? String(v).replace(/^(\d{4})-(\d{2})$/, (_, y, m) => `${y}
 // 経歴テーブル（閲覧用）。テーブル未入力で旧形式の経歴テキストがあればそれを表示する
 function careerTableReadonly(p) {
   const rows = Array.isArray(p.career_rows) ? p.career_rows : []
-  if (!rows.length) return `<p class="text-xs text-neutral-600 whitespace-pre-wrap">${esc(p.career || '-')}</p>`
+  if (!rows.length) return `<p class="text-xs text-neutral-600 whitespace-pre-wrap text-wrap-any">${esc(p.career || '-')}</p>`
   return `<div class="overflow-x-auto"><table class="tbl text-xs" id="staff-career-table">
     <thead><tr><th class="whitespace-nowrap">開始</th><th class="whitespace-nowrap">終了</th><th>勤務</th><th>業務内容</th></tr></thead>
     <tbody>${rows.map(r => `<tr><td class="whitespace-nowrap">${esc(fmtYm(r.from)) || '-'}</td><td class="whitespace-nowrap">${esc(fmtYm(r.to)) || '-'}</td>
-      <td>${esc(r.company || '')}</td><td class="whitespace-pre-wrap">${esc(r.work || '')}${r.note ? `<span class="text-neutral-400">（${esc(r.note)}）</span>` : ''}</td></tr>`).join('')}</tbody></table></div>`
+      <td>${esc(r.company || '')}</td><td class="whitespace-pre-wrap text-wrap-any">${esc(r.work || '')}${r.note ? `<span class="text-neutral-400">（${esc(r.note)}）</span>` : ''}</td></tr>`).join('')}</tbody></table></div>`
 }
 function staffBusinessSectionHtml(p, edBiz) {
   const rows = Array.isArray(p.career_rows) ? p.career_rows : []
@@ -1570,12 +1570,12 @@ function staffBusinessSectionHtml(p, edBiz) {
       <div>
         ${label('fa-star', '経験・スキル・人柄・PRポイント等')}
         ${edBiz ? `<textarea id="staff-pr-points" rows="4" class="inp text-xs w-full">${esc(p.pr_points || '')}</textarea>`
-          : `<p class="text-xs text-neutral-600 whitespace-pre-wrap">${esc(p.pr_points || '-')}</p>`}
+          : `<p class="text-xs text-neutral-600 whitespace-pre-wrap text-wrap-any">${esc(p.pr_points || '-')}</p>`}
       </div>
       ${p.affiliation_type === 'linked_external' ? '' : `<div>
         ${label('fa-comment-dots', '備考', ' <span class="text-neutral-400">（自社内のみ・連携先には共有されません）</span>')}
         ${edBiz ? `<textarea id="staff-remarks" rows="3" class="inp text-xs w-full">${esc(p.remarks || '')}</textarea>`
-          : `<p class="text-xs text-neutral-600 whitespace-pre-wrap">${esc(p.remarks || '-')}</p>`}
+          : `<p class="text-xs text-neutral-600 whitespace-pre-wrap text-wrap-any">${esc(p.remarks || '-')}</p>`}
       </div>`}
     </div>`
 }
@@ -1692,7 +1692,7 @@ function staffBasicCardHtml(sid, p, affData, editing) {
           <div>
             <p class="text-xs text-neutral-500 mb-1"><i class="fas fa-note-sticky text-neutral-400 mr-1"></i>管理者メモ <span class="text-neutral-400">（自社内のみ・連携先には共有されません）</span></p>
             ${editing ? `<textarea id="staff-memo" rows="3" class="inp text-xs w-full">${esc(p.memo || '')}</textarea>`
-              : `<p class="text-xs text-neutral-600 whitespace-pre-wrap" id="staff-memo-view">${esc(p.memo || '-')}</p>`}
+              : `<p class="text-xs text-neutral-600 whitespace-pre-wrap text-wrap-any" id="staff-memo-view">${esc(p.memo || '-')}</p>`}
             ${editing || !canEdit ? '' : `<div class="flex gap-2 mt-2 flex-wrap items-center">
               <button class="btn ${p.follow_flag ? 'btn-danger' : 'btn-outline'} text-xs" onclick="toggleFollow(${sid}, ${p.follow_flag ? 0 : 1})">
                 ${p.follow_flag ? 'フォロー解除' : '要フォロー登録'}</button>
@@ -1855,7 +1855,7 @@ async function renderStaffDetail(sid, opts = {}) {
             <h3 class="text-sm font-bold text-neutral-700">評価（${evalRadar ? esc(evalRadar.evaluation_period) : '-'}）</h3>
             <button class="btn btn-outline text-xs ml-auto" data-action="showEvaluationModal" data-id="${Number(sid)}"><i class="fas fa-plus"></i>評価を登録</button>
           </div>
-          ${evalRadar ? `<canvas id="eval-chart" height="220"></canvas>${evalRadar.comment ? `<p class="text-xs text-neutral-600 mt-2 whitespace-pre-wrap">${esc(evalRadar.comment)}</p>` : ''}` : '<p class="text-sm text-neutral-400">評価データがありません</p>'}
+          ${evalRadar ? `<canvas id="eval-chart" height="220"></canvas>${evalRadar.comment ? `<p class="text-xs text-neutral-600 mt-2 whitespace-pre-wrap text-wrap-any">${esc(evalRadar.comment)}</p>` : ''}` : '<p class="text-sm text-neutral-400">評価データがありません</p>'}
           ${evaluationHistoryHtml(sid, data.evaluations)}
         </section>
       </div>
@@ -1888,8 +1888,8 @@ async function renderStaffDetail(sid, opts = {}) {
                 <span class="text-neutral-500">${esc(f.manager_name || '')}</span>
                 ${f.status === 'open' ? '<span class="badge badge-yellow">対応中</span>' : '<span class="badge badge-green">完了</span>'}
               </div>
-              <p class="text-xs text-neutral-700 whitespace-pre-wrap">${esc(f.content)}</p>
-              ${f.next_action ? `<p class="text-xs text-primary-700 mt-1 whitespace-pre-wrap"><i class="fas fa-arrow-right mr-1"></i>${esc(f.next_action)}</p>` : ''}
+              <p class="text-xs text-neutral-700 whitespace-pre-wrap text-wrap-any">${esc(f.content)}</p>
+              ${f.next_action ? `<p class="text-xs text-primary-700 mt-1 whitespace-pre-wrap text-wrap-any"><i class="fas fa-arrow-right mr-1"></i>${esc(f.next_action)}</p>` : ''}
             </div>`).join('') || '<p class="text-sm text-neutral-400">フォロー履歴はありません</p>'}
         </div>
       </section>
@@ -1908,7 +1908,7 @@ async function renderStaffDetail(sid, opts = {}) {
               <div class="flex flex-wrap gap-1">
                 ${staffReportNumbersHtml(r, reportFieldsOf({ templates: data.report_templates, past_fields: data.report_past_fields }, r))}
               </div>
-              ${r.values.free ? `<p class="text-xs text-neutral-500 mt-1 whitespace-pre-wrap">${esc(r.values.free)}</p>` : ''}
+              ${r.values.free ? `<p class="text-xs text-neutral-500 mt-1 whitespace-pre-wrap text-wrap-any">${esc(r.values.free)}</p>` : ''}
             </div>`).join('') || '<p class="text-sm text-neutral-400">日報履歴はありません</p>'}
         </div>
       </section>
@@ -2430,10 +2430,10 @@ async function srProfile() {
           <tbody>${Object.keys(r.changes).map(k => {
             const changedSince = r.status === 'pending' && String(r.before[k] ?? '') !== String(r.current[k] ?? '')
             return `<tr class="border-t border-neutral-100 align-top"><td class="py-1 pr-2 text-neutral-500 whitespace-nowrap">${esc(L[k] || k)}</td>
-              <td class="pr-2 whitespace-pre-wrap break-words">${esc(show(r.current[k]))}${changedSince ? ' <span class="badge badge-yellow">申請の後に変更あり</span>' : ''}</td>
-              <td class="font-bold whitespace-pre-wrap break-words">${esc(show(r.changes[k]))}${k === 'login_email' && r.status === 'pending' ? `<span class="block text-2xs font-normal text-neutral-400">${esc(emailNote)}</span>` : ''}</td></tr>`
+              <td class="pr-2 whitespace-pre-wrap text-wrap-any">${esc(show(r.current[k]))}${changedSince ? ' <span class="badge badge-yellow">申請の後に変更あり</span>' : ''}</td>
+              <td class="font-bold whitespace-pre-wrap text-wrap-any">${esc(show(r.changes[k]))}${k === 'login_email' && r.status === 'pending' ? `<span class="block text-2xs font-normal text-neutral-400">${esc(emailNote)}</span>` : ''}</td></tr>`
           }).join('')}</tbody></table></div>
-        ${r.note ? `<p class="text-xs text-neutral-600 mt-2 whitespace-pre-wrap">補足: ${esc(r.note)}</p>` : ''}
+        ${r.note ? `<p class="text-xs text-neutral-600 mt-2 whitespace-pre-wrap text-wrap-any">補足: ${esc(r.note)}</p>` : ''}
         ${r.status === 'pending' ? `
           <div class="flex gap-2 mt-3 flex-wrap">
             <input id="sr-pc-${Number(r.request_id)}" class="inp text-xs flex-1 min-w-[12rem]" maxlength="500" placeholder="コメント（見送るときは理由を入力。本人に伝わります）">
@@ -2518,7 +2518,7 @@ function leaveRowsHtml(rows, ctx, sid, readOnly) {
         ${ctx === 'list' && l.leave_type === 'paid' ? `<span class="text-xs text-neutral-500">有給残 ${l.paid_leave_remaining == null ? '未入力' : esc(l.paid_leave_remaining) + '日'}</span>` : ''}
         ${l.shift_count && l.status !== 'rejected' && l.status !== 'cancelled' ? `<a href="#shifts" class="badge badge-red">この日にシフト ${Number(l.shift_count)}件（欠勤の処理・代わりの手配をしてください）</a>` : ''}
       </div>
-      ${l.reason ? `<p class="text-xs text-neutral-600 mt-1 whitespace-pre-wrap">理由: ${esc(l.reason)}</p>` : ''}
+      ${l.reason ? `<p class="text-xs text-neutral-600 mt-1 whitespace-pre-wrap text-wrap-any">理由: ${esc(l.reason)}</p>` : ''}
       ${l.review_comment ? `<p class="text-xs text-neutral-500 mt-1">コメント: ${esc(l.review_comment)}${l.reviewed_by_name ? `（${esc(l.reviewed_by_name)}）` : ''}</p>` : ''}
       ${readOnly ? '' : l.status === 'pending' ? `
         <div class="flex gap-2 mt-2 flex-wrap">
@@ -2579,7 +2579,7 @@ window.showSkillSheet = async function (sid) {
     <div class="border border-neutral-200 rounded-xl p-4 text-sm space-y-3">
       <div class="border-b pb-2"><p class="text-lg font-bold">${esc(p.name)}</p><p class="text-xs text-neutral-500">${esc(p.age_group || '')} ｜ 稼働可能エリア: ${esc(p.work_area || '-')}</p></div>
       <div><p class="text-xs font-bold text-neutral-400 mb-1">経歴</p>${careerTableReadonly(p)}</div>
-      ${p.pr_points ? `<div><p class="text-xs font-bold text-neutral-400 mb-1">経験・スキル・人柄・PRポイント等</p><p class="text-xs whitespace-pre-wrap">${esc(p.pr_points)}</p></div>` : ''}
+      ${p.pr_points ? `<div><p class="text-xs font-bold text-neutral-400 mb-1">経験・スキル・人柄・PRポイント等</p><p class="text-xs whitespace-pre-wrap text-wrap-any">${esc(p.pr_points)}</p></div>` : ''}
       <div><p class="text-xs font-bold text-neutral-400 mb-1">経験案件</p>
         <div class="flex flex-wrap gap-1">${data.experienced_projects.map(pr => `<span class="badge badge-blue">${esc(pr.project_name)}</span>`).join('') || '-'}</div></div>
       <div><p class="text-xs font-bold text-neutral-400 mb-1">保有スキル</p>
@@ -2597,7 +2597,7 @@ window.showSkillSheet = async function (sid) {
           ${saved ? `<button type="button" class="btn btn-outline text-xs" data-action="saveSkillSheetComment" data-id="${Number(sid)}"><i class="fas fa-floppy-disk"></i>コメントを保存</button>` : ''}
           <p class="text-2xs text-neutral-400 flex-1" id="ss-comment-note">${saved ? 'スキルシート用のコメントです（管理者メモとは別。1000文字まで。空欄なら印刷に出しません）' : '入力した内容は、この端末にだけ下書きとして残ります（空欄なら印刷に出しません）'}</p>
         </div>
-        <p id="ss-comment-print" class="ss-print-only text-xs whitespace-pre-wrap"></p></div>
+        <p id="ss-comment-print" class="ss-print-only text-xs whitespace-pre-wrap text-wrap-any"></p></div>
     </div>
     <style>.ss-print-only{display:none}@media print{.ss-no-print{display:none!important}.ss-print-only{display:block!important}#ss-comment-box.ss-empty{display:none!important}}</style>`)
   // 推薦コメントは印刷用の段落に写し、長文でも途中で切れないようにする（#447）。下書きはこの端末に残す
@@ -3010,7 +3010,7 @@ async function renderProjectDetail(pid) {
                 ${i.incident_status !== undefined ? `<span class="badge ${INCIDENT_STATUS_BADGE[i.incident_status || 'open'] || 'badge-gray'}">${esc(INCIDENT_STATUS_LABEL[i.incident_status || 'open'] || i.incident_status)}</span>` : ''}
                 <span class="text-neutral-500">${esc(dayjs(i.work_date).format('YYYY/M/D'))} ${esc(i.staff_name)}</span>
               </div>
-              <p class="text-neutral-700 whitespace-pre-wrap">${esc((i.values && i.values.free) || '')}</p>
+              <p class="text-neutral-700 whitespace-pre-wrap text-wrap-any">${esc((i.values && i.values.free) || '')}</p>
             </a>`).join('') || '<p class="text-sm text-neutral-400">インシデントはありません</p>'}
         </div>
       </section>
@@ -3021,7 +3021,7 @@ async function renderProjectDetail(pid) {
         ${PROJECT_TEXT_FIELDS.map(([k, label], i) => `
         <h3 class="text-sm font-bold text-neutral-700 ${i ? 'mt-4 ' : ''}mb-2 flex items-center">${esc(label)}
           <button type="button" class="ml-auto text-xs font-normal text-primary-600 hover:underline" data-action="editProjectText" data-id="${Number(p.project_id)}" data-field="${k}"><i class="fas fa-pen mr-0.5"></i>編集</button></h3>
-        <p class="text-sm text-neutral-600 whitespace-pre-wrap break-words" id="project-text-${k}">${esc(p[k] || '-')}</p>`).join('')}
+        <p class="text-sm text-neutral-600 whitespace-pre-wrap text-wrap-any" id="project-text-${k}">${esc(p[k] || '-')}</p>`).join('')}
         <h3 class="text-sm font-bold text-neutral-700 mt-4 mb-2 flex items-center">必要スキル
           <button type="button" class="ml-auto text-xs font-normal text-primary-600 hover:underline" data-action="editProjectSkills" data-id="${Number(p.project_id)}" data-skills="${esc(p.required_skills || '')}"><i class="fas fa-pen mr-0.5"></i>編集</button></h3>
         <div class="flex flex-wrap gap-1" id="project-skills">${projectSkillBadges(p.required_skills)}</div>
@@ -3632,7 +3632,7 @@ function drawClientCards() {
           </dl>
           ${Number(c.doc_expiring) > 0 ? `<p class="text-xs text-warning-700 mt-2 client-docexp"><i class="fas fa-file-circle-exclamation mr-1"></i>契約書の期限が近い・切れたものが${Number(c.doc_expiring)}件あります（詳細の「契約書」で確かめてください）</p>` : ''}
           ${c.ng_staff_ids ? '<p class="text-xs text-danger-600 mt-2"><i class="fas fa-ban mr-1"></i>NGスタッフ登録あり</p>' : ''}
-          ${c.memo ? `<p class="text-xs bg-neutral-50 rounded-lg px-2.5 py-1.5 mt-2 text-neutral-500 whitespace-pre-wrap">${esc(c.memo)}</p>` : ''}
+          ${c.memo ? `<p class="text-xs bg-neutral-50 rounded-lg px-2.5 py-1.5 mt-2 text-neutral-500 whitespace-pre-wrap text-wrap-any">${esc(c.memo)}</p>` : ''}
         </section>`).join('') || '<p class="text-sm text-neutral-400">条件に合うクライアントはありません</p>'
 }
 
@@ -3660,13 +3660,13 @@ function clientBasicHtml(c, editing) {
           <div class="flex"><dt class="w-24 text-neutral-400 shrink-0">代表者氏名</dt><dd>${esc(c.representative_name || '-')}</dd></div>
           ${clientOrgHtml(c, false)}
           <div class="flex"><dt class="w-24 text-neutral-400 shrink-0">連絡先</dt><dd class="text-xs">${esc(c.phone || '-')}<br>${esc(c.email || '')}</dd></div>
-          <div class="flex"><dt class="w-24 text-neutral-400 shrink-0">住所</dt><dd class="whitespace-pre-wrap">${esc(postalAddress(c.postal_code, c.address) || '-')}</dd></div>
+          <div class="flex"><dt class="w-24 text-neutral-400 shrink-0">住所</dt><dd class="whitespace-pre-wrap text-wrap-any">${esc(postalAddress(c.postal_code, c.address) || '-')}</dd></div>
           <div class="flex"><dt class="w-24 text-neutral-400 shrink-0">ホームページ</dt><dd class="min-w-0">${websiteLinkHtml(c.website_url)}</dd></div>
           <div class="flex"><dt class="w-24 text-neutral-400 shrink-0">種別</dt><dd>${esc(clientKindLabel(c.client_kind))}</dd></div>
-          <div class="flex"><dt class="w-24 text-neutral-400 shrink-0">請求条件</dt><dd class="whitespace-pre-wrap">${esc(c.billing_rule || '-')}</dd></div>
+          <div class="flex"><dt class="w-24 text-neutral-400 shrink-0">請求条件</dt><dd class="whitespace-pre-wrap text-wrap-any">${esc(c.billing_rule || '-')}</dd></div>
           <div class="flex"><dt class="w-24 text-neutral-400 shrink-0">評価</dt><dd>${ratingStars(c.client_rating)}</dd></div>
           <div class="flex"><dt class="w-24 text-neutral-400 shrink-0">社内担当者</dt><dd class="min-w-0">${assigneesViewHtml(c.assignees)}</dd></div>
-          <div><dt class="text-neutral-400 mb-1">備考</dt><dd class="text-xs text-neutral-600 whitespace-pre-wrap">${esc(c.memo || '-')}</dd></div>
+          <div><dt class="text-neutral-400 mb-1">備考</dt><dd class="text-xs text-neutral-600 whitespace-pre-wrap text-wrap-any">${esc(c.memo || '-')}</dd></div>
         </dl>
         <div class="mt-3 pt-3 border-t border-neutral-100">
           <p class="text-xs text-neutral-500 mb-1"><i class="fas fa-receipt text-neutral-400 mr-1"></i>インボイス情報</p>
@@ -3835,7 +3835,7 @@ async function renderClientNgPanel(cid) {
     <h3 class="text-sm font-bold text-neutral-700 mb-1"><i class="fas fa-ban text-danger-500 mr-1"></i>NGスタッフ<span class="text-2xs font-normal text-neutral-400 ml-1">（シフトの候補・割り当て・応募の承認で警告します）</span></h3>
     <div class="overflow-x-auto mb-3"><table class="tbl"><thead><tr><th>スタッフ</th><th>理由</th><th>登録</th><th></th></tr></thead><tbody>
       ${list.map(s => `<tr><td class="whitespace-nowrap"><a href="#staff/${Number(s.staff_id)}" class="font-bold text-primary-700 hover:underline">${esc(s.name)}</a>${EMP[s.employment_status] ? `<span class="badge badge-gray ml-1">${EMP[s.employment_status]}</span>` : ''}</td>
-        <td class="text-xs text-neutral-600 whitespace-pre-wrap">${esc(s.reason || '-')}</td>
+        <td class="text-xs text-neutral-600 whitespace-pre-wrap text-wrap-any">${esc(s.reason || '-')}</td>
         <td class="text-xs text-neutral-400 whitespace-nowrap">${s.created_at ? esc(dayjs(s.created_at).format('YYYY/M/D')) : '-'}${s.created_by_name ? `<span class="block">${esc(s.created_by_name)}</span>` : ''}</td>
         <td class="text-right"><button class="text-xs text-danger-600 hover:underline" data-action="removeClientNg" data-id="${Number(s.staff_id)}" data-name="${esc(s.name)}">解除</button></td></tr>`).join('') || '<tr><td colspan="4" class="text-center text-neutral-400">NGスタッフは登録されていません</td></tr>'}
     </tbody></table></div>
@@ -4122,7 +4122,7 @@ async function renderEmployeeDetail(sid) {
           <div class="flex gap-2"><dt class="w-32 text-neutral-400 shrink-0">稼働開始可能日</dt><dd>${esc(s.available_from || '-')}</dd></div>
           <div class="flex gap-2"><dt class="w-32 text-neutral-400 shrink-0">稼働可能エリア</dt><dd>${esc(s.work_area || '-')}</dd></div>
           <div class="flex gap-2"><dt class="w-32 text-neutral-400 shrink-0">スキル</dt><dd>${esc(s.skills || '-')}</dd></div>
-          <div class="flex gap-2 md:col-span-2"><dt class="w-32 text-neutral-400 shrink-0">経歴</dt><dd class="whitespace-pre-wrap">${esc(s.career || '-')}</dd></div>
+          <div class="flex gap-2 md:col-span-2"><dt class="w-32 text-neutral-400 shrink-0">経歴</dt><dd class="whitespace-pre-wrap text-wrap-any">${esc(s.career || '-')}</dd></div>
         </dl>
       </div>
       <p class="text-xs text-neutral-400 mt-2">※ 退職日を設定すると在籍状況は「退職」になります。退職日から7年経過すると出退勤記録等が定期削除の対象になります。</p>
@@ -4803,7 +4803,7 @@ function reportValuesHtml(r, fields) {
   }
   const others = Object.entries(vals).filter(([k, v]) => !used.has(k) && !empty(v) && !(typeof v === 'number' && v === 0))
   const textHtml = ([label, v, key]) => `<div class="text-xs rounded-lg px-2.5 py-1.5 mb-1 ${REPORT_TEXT_STYLE[key] || 'text-neutral-700 bg-neutral-50'}">
-      <span class="font-bold">${esc(label)}</span><p class="whitespace-pre-wrap break-words mt-0.5">${esc(v)}</p></div>`
+      <span class="font-bold">${esc(label)}</span><p class="whitespace-pre-wrap text-wrap-any mt-0.5">${esc(v)}</p></div>`
   return `
     ${nums.length ? `<div class="flex flex-wrap gap-1.5 mb-2">${nums.map(([l, v]) => `<span class="badge badge-blue">${esc(l)} ${esc(v)}</span>`).join('')}</div>` : ''}
     ${texts.map(textHtml).join('')}
@@ -4824,7 +4824,7 @@ function reportIncidentHtml(r, fields) {
   const kinds = [r.incident_flag ? 'インシデント' : '', r.complaint_flag ? 'クレーム' : ''].filter(Boolean).join('・') || 'インシデント・クレーム'
   return `<div class="text-xs text-danger-700 bg-danger-50 border border-danger-200 rounded-lg px-2.5 py-2 mb-2">
     <p class="font-bold"><i class="fas fa-triangle-exclamation mr-1"></i>${esc(kinds)}の報告あり</p>
-    ${notes.length ? notes.map(([l, v]) => `<p class="mt-1"><span class="font-bold">${esc(l)}</span></p><p class="whitespace-pre-wrap break-words">${esc(typeof v === 'object' ? JSON.stringify(v) : v)}</p>`).join('')
+    ${notes.length ? notes.map(([l, v]) => `<p class="mt-1"><span class="font-bold">${esc(l)}</span></p><p class="whitespace-pre-wrap text-wrap-any">${esc(typeof v === 'object' ? JSON.stringify(v) : v)}</p>`).join('')
       : '<p class="mt-1 text-danger-500">内容の記入はありません。スタッフに確認してください。</p>'}
     ${r.incident_flag || r.complaint_flag ? reportIncidentStatusHtml(r) : ''}
   </div>`
@@ -4844,7 +4844,7 @@ function reportIncidentStatusHtml(r) {
       ${r.incident_client_shared_at ? `<span class="badge badge-blue">クライアント共有済み ${esc(fmt(r.incident_client_shared_at))}</span>` : ''}
       <button class="btn btn-outline text-xs ml-auto" data-action="editIncident" data-id="${Number(r.daily_report_id)}"><i class="fas fa-pen-to-square"></i>対応を記録</button>
     </div>
-    ${r.incident_memo ? `<p class="whitespace-pre-wrap break-words mt-1">${esc(r.incident_memo)}</p>` : ''}
+    ${r.incident_memo ? `<p class="whitespace-pre-wrap text-wrap-any mt-1">${esc(r.incident_memo)}</p>` : ''}
     ${r.incident_updated_at ? `<p class="text-2xs text-neutral-400 mt-0.5">更新: ${esc(r.incident_updated_by_name || '')} ${esc(fmt(r.incident_updated_at))}</p>` : ''}
   </div>`
 }
@@ -4897,7 +4897,7 @@ function reportCommentReadHtml(cm, fmt) {
 }
 // 日報のコメント（#9965。日報1件に複数。古い順）。書いた本人のコメントと、書いた人の記録がない古いコメント（#9975）だけに「編集」「削除」を出す（サーバーでも確かめる）
 function reportCommentsHtml(r, fmt) {
-  return (r.comments || []).map(cm => `<div class="text-xs bg-neutral-50 rounded-lg px-2.5 py-1.5 mt-2" data-report-comment="${Number(cm.comment_id)}"><i class="fas fa-comment-dots text-neutral-400 mr-1"></i><span class="whitespace-pre-wrap break-words">${esc(cm.body)}</span>
+  return (r.comments || []).map(cm => `<div class="text-xs bg-neutral-50 rounded-lg px-2.5 py-1.5 mt-2" data-report-comment="${Number(cm.comment_id)}"><i class="fas fa-comment-dots text-neutral-400 mr-1"></i><span class="whitespace-pre-wrap text-wrap-any">${esc(cm.body)}</span>
         <span class="flex items-center gap-2 flex-wrap text-2xs text-neutral-400 mt-0.5"><span>${esc(cm.author_name || '管理者')} ${esc(fmt(cm.created_at))}${cm.updated_at ? `（編集 ${esc(fmt(cm.updated_at))}）` : ''}</span>${reportCommentReadHtml(cm, fmt)}
           ${cm.mine || cm.editable ? `<button class="text-primary-600 hover:underline" data-action="commentReport" data-id="${Number(r.daily_report_id)}" data-cid="${Number(cm.comment_id)}">編集</button>
           <button class="text-danger-600 hover:underline" data-action="deleteReportComment" data-id="${Number(r.daily_report_id)}" data-cid="${Number(cm.comment_id)}">削除</button>` : ''}</span></div>`).join('')
@@ -4913,9 +4913,9 @@ function reportLastEditHtml(r, fields, fmt) {
     : e.entry_method === 'proxy' ? `${e.edited_by_name || '管理者'}が代理入力で再提出` : `${r.staff_name || 'スタッフ'}が再提出`
   // テキストの値は長いことがあるので折り返す（項目名だけ折り返さない）
   const list = e.changes.map(c => `<span><span class="text-neutral-500 whitespace-nowrap">${esc(label.get(c.key) || LABELS[c.key] || c.key)}</span> ${esc(reportEditValueText(c.before))} → <b>${esc(reportEditValueText(c.after))}</b></span>`).join('、')
-  return `<div class="text-xs rounded-lg px-2.5 py-1.5 mt-1.5 break-words ${e.kind === 'admin_edit' ? 'bg-accent-50 text-accent-900' : 'bg-warning-50 text-warning-900'}" data-report-last-edit>
+  return `<div class="text-xs rounded-lg px-2.5 py-1.5 mt-1.5 text-wrap-any ${e.kind === 'admin_edit' ? 'bg-accent-50 text-accent-900' : 'bg-warning-50 text-warning-900'}" data-report-last-edit>
     <i class="fas fa-user-pen mr-1"></i><b>${esc(who)}</b> <span class="text-neutral-500">${esc(fmt(e.edited_at))}</span>：${list}${Number(e.more) > 0 ? ` ほか${Number(e.more)}項目` : ''}
-    ${e.reason ? `<span class="block text-neutral-600 mt-0.5 whitespace-pre-wrap break-words">理由: ${esc(e.reason)}</span>` : ''}
+    ${e.reason ? `<span class="block text-neutral-600 mt-0.5 whitespace-pre-wrap text-wrap-any">理由: ${esc(e.reason)}</span>` : ''}
     <button class="text-primary-600 hover:underline ml-1" data-action="reportEditHistory" data-id="${Number(r.daily_report_id)}">修正履歴をすべて見る（${Number(r.edit_count) || 1}件）</button>
   </div>`
 }
@@ -5061,13 +5061,13 @@ delegate('reportEditHistory', (el) => withSubmitLock(el, async () => {
         <span class="text-neutral-600">${esc(e.edited_by_name || (e.kind === 'resubmit' ? r.staff_name : ''))}</span>
         <span class="text-neutral-400 ml-auto">${esc(fmt(e.edited_at))}</span>
       </div>
-      ${e.reason ? `<p class="text-xs text-neutral-700 bg-neutral-50 rounded px-2 py-1 mt-1.5 whitespace-pre-wrap break-words">理由: ${esc(e.reason)}</p>` : ''}
+      ${e.reason ? `<p class="text-xs text-neutral-700 bg-neutral-50 rounded px-2 py-1 mt-1.5 whitespace-pre-wrap text-wrap-any">理由: ${esc(e.reason)}</p>` : ''}
       <table class="w-full text-xs mt-1.5"><thead><tr class="text-2xs text-neutral-400"><th class="text-left font-normal pr-2">項目</th><th class="text-left font-normal pr-1">もとの値</th><th></th><th class="text-left font-normal">変えた後</th></tr></thead><tbody>
         ${(e.changed_keys || []).map(k => `<tr class="border-t border-neutral-100">
           <td class="py-1 pr-2 text-neutral-500 align-top whitespace-nowrap">${esc(label.get(k) || LABELS[k] || k)}</td>
-          <td class="py-1 pr-1 text-neutral-500 align-top whitespace-pre-wrap break-words">${esc(reportEditValueText(e.before[k]))}</td>
+          <td class="py-1 pr-1 text-neutral-500 align-top whitespace-pre-wrap text-wrap-any">${esc(reportEditValueText(e.before[k]))}</td>
           <td class="py-1 px-1 text-neutral-400 align-top">→</td>
-          <td class="py-1 font-bold text-neutral-800 align-top whitespace-pre-wrap break-words">${esc(reportEditValueText(e.after[k]))}</td></tr>`).join('')}
+          <td class="py-1 font-bold text-neutral-800 align-top whitespace-pre-wrap text-wrap-any">${esc(reportEditValueText(e.after[k]))}</td></tr>`).join('')}
       </tbody></table>
     </li>`
   modal(`
@@ -5350,7 +5350,7 @@ delegate('commentReport', (el) => {
   modal(`
     <h3 class="font-bold text-lg mb-1">${cm ? 'コメントを編集' : 'スタッフへのコメント'}</h3>
     <p class="text-xs text-neutral-500 mb-3">${esc(dayjs(r.work_date).format('M/D(dd)'))} ${esc(r.staff_name)}・${esc(r.project_name)}</p>
-    ${!cm && others.length ? `<div class="max-h-40 overflow-y-auto mb-2 space-y-1">${others.map(x => `<div class="text-xs bg-neutral-50 rounded-lg px-2.5 py-1.5"><span class="whitespace-pre-wrap break-words">${esc(x.body)}</span>
+    ${!cm && others.length ? `<div class="max-h-40 overflow-y-auto mb-2 space-y-1">${others.map(x => `<div class="text-xs bg-neutral-50 rounded-lg px-2.5 py-1.5"><span class="whitespace-pre-wrap text-wrap-any">${esc(x.body)}</span>
       <span class="block text-2xs text-neutral-400">${esc(x.author_name || '管理者')} ${esc(fmt(x.created_at))}</span></div>`).join('')}</div>
       <p class="text-2xs text-neutral-400 mb-1">ここに書いた内容は、新しいコメントとして追加されます（ほかの人のコメントは書き換えません）</p>` : ''}
     ${cm ? `<p class="text-2xs text-neutral-400 mb-1">${cm.read_at ? `スタッフ既読 ${esc(fmt(cm.read_at))}（直すと未読に戻ります）` : 'スタッフ未読'}</p>` : ''}
@@ -5886,7 +5886,7 @@ function noticeAttachmentLinks(n, base) {
   const files = n.attachments || []
   if (!files.length) return ''
   return `<div class="flex flex-wrap gap-2 mt-2">${files.map(a => `
-    <a class="text-xs text-primary-600 hover:underline inline-flex items-center gap-1" target="_blank" rel="noopener" href="${base}/${Number(a.attachment_id)}">
+    <a class="text-xs text-primary-600 hover:underline inline-flex items-center gap-1 text-wrap-any" target="_blank" rel="noopener" href="${base}/${Number(a.attachment_id)}">
       <i class="fas ${a.content_type === 'application/pdf' ? 'fa-file-pdf' : 'fa-image'}"></i>${esc(a.file_name)}</a>`).join('')}</div>`
 }
 function noticeAdminCardHtml(n) {
@@ -5904,7 +5904,7 @@ function noticeAdminCardHtml(n) {
         ${noticeStateBadge(n)}
         ${noticeAdminImportanceBadge(n)}
         ${n.read_required ? '<span class="badge badge-purple">既読確認必須</span>' : ''}
-        <span class="badge badge-gray">${target}</span>
+        <span class="badge badge-gray text-wrap-any">${target}</span>
         ${pending ? '' : `<span class="text-xs text-neutral-400">${noticeFmt(n.published_at)}</span>`}
         <span class="text-xs text-neutral-400">作成: ${esc(n.created_by_name || '-')}</span>
         ${pending ? `<span class="text-xs text-neutral-500 ml-auto">配信予定 ${total}名</span>`
@@ -5912,10 +5912,10 @@ function noticeAdminCardHtml(n) {
           ${n.reads_purged_at ? 'title="公開から2年たったため、既読の記録は削除済みです（人数は削除の直前の値）"' : ''}>
           既読 ${read}/${total}名${!n.reads_purged_at && !withdrawn && total > read ? `<span class="${n.read_required || n.importance === 'urgent' ? 'text-danger-600 font-bold' : ''}">（未読 ${total - read}名）</span>` : ''}${n.reads_purged_at ? '（記録の保存期間外）' : ''}</button>`}
       </div>
-      <h3 class="font-bold text-neutral-800 ${withdrawn ? 'line-through' : ''}">${esc(n.title)}</h3>
-      <p class="text-sm text-neutral-600 mt-1 whitespace-pre-wrap">${esc(n.body)}</p>
+      <h3 class="font-bold text-neutral-800 text-wrap-any ${withdrawn ? 'line-through' : ''}">${esc(n.title)}</h3>
+      <p class="text-sm text-neutral-600 mt-1 whitespace-pre-wrap text-wrap-any">${esc(n.body)}</p>
       ${noticeAttachmentLinks(n, `/api/admin/notices/${id}/attachments`)}
-      <div class="text-xs text-neutral-500 mt-2 space-y-0.5">
+      <div class="text-xs text-neutral-500 mt-2 space-y-0.5 text-wrap-any">
         ${n.expires_at ? `<p><i class="fas fa-calendar-xmark mr-1"></i>掲載期限 ${noticeFmt(n.expires_at, 'YYYY/M/D')} まで${n.expired ? '（終了）' : ''}</p>` : ''}
         ${options.length || n.response_comment ? `<p><i class="fas fa-reply mr-1"></i>回答: ${options.length ? esc(options.join('／')) : ''}${n.response_comment ? `${options.length ? '・' : ''}自由記入` : ''}
           ${pending ? '' : `<button class="text-primary-600 hover:underline ml-1" data-action="showReads" data-id="${id}">回答 ${Number(n.response_count) || 0}件を見る</button>`}</p>` : ''}
@@ -6098,12 +6098,12 @@ async function renderNotices() {
   $app.innerHTML = `
     <h2 class="text-xl font-bold text-neutral-900 mb-4">お知らせ配信</h2>
     <div class="grid lg:grid-cols-5 gap-4">
-      <section class="card p-4 lg:col-span-2 h-fit">
+      <section class="card p-4 lg:col-span-2 h-fit min-w-0">
         <h3 class="font-bold text-neutral-700 mb-3"><i class="fas fa-paper-plane text-primary-600 mr-1"></i>新規配信</h3>
         ${noticeFormHtml('nt', null)}
         <button class="btn btn-primary w-full mt-3" data-action="sendNotice">配信する／保存する</button>
       </section>
-      <section class="lg:col-span-3 space-y-3">
+      <section class="lg:col-span-3 space-y-3 min-w-0">
         <div class="card p-3 flex flex-wrap items-end gap-2">
           <div class="flex-1 min-w-[10rem]"><label class="text-xs text-neutral-500 block mb-1">キーワード（タイトル・本文）</label><input id="nf-q" class="inp text-sm" value="${esc(f.q)}"></div>
           <div><label class="text-xs text-neutral-500 block mb-1">配信先の案件</label>
@@ -6159,7 +6159,7 @@ window.showNoticeEmails = async function (id) {
   const badge = (s) => `<span class="badge ${s === 'sent' ? 'badge-green' : s === 'failed' ? 'badge-red' : s === 'no_email' ? 'badge-yellow' : 'badge-gray'} whitespace-nowrap">${NOTICE_MAIL_STATUS[s] || esc(s)}</span>`
   modal(`
     <h3 class="font-bold text-lg mb-1">メールの送信結果</h3>
-    <p class="text-sm text-neutral-600 mb-3">${esc(data.notice.title)}</p>
+    <p class="text-sm text-neutral-600 mb-3 text-wrap-any">${esc(data.notice.title)}</p>
     <div class="space-y-1 text-sm max-h-96 overflow-y-auto">${data.deliveries.map(d => `<div class="flex items-center gap-2">${badge(d.status)}<span>${esc(d.name || '')}</span>
       ${d.error ? `<span class="text-xs text-danger-600">${esc(errText(d.error))}</span>` : ''}</div>`).join('') || '<p class="text-neutral-400 text-xs">なし</p>'}</div>
     <p class="text-xs text-neutral-500 mt-3">メール未登録の人には、アプリのお知らせだけが届いています。届かなかったアドレスは<a href="#corrections/emails" class="text-primary-600 hover:underline" onclick="closeModal()">メール送信状況</a>で確認できます。</p>`)
@@ -6234,7 +6234,7 @@ function noticeEditAttachmentsHtml(n) {
     <div class="border-t border-neutral-100 pt-3 mt-3" id="ne-attachments">
       <p class="text-sm text-neutral-600 mb-1">添付（画像・PDF。5件まで、1件10MBまで）</p>
       <div class="space-y-1 mb-2">${files.map(a => `<div class="flex items-center gap-2 text-sm">
-        <a class="text-primary-600 hover:underline truncate" target="_blank" rel="noopener" href="/api/admin/notices/${Number(n.notice_id)}/attachments/${Number(a.attachment_id)}">${esc(a.file_name)}</a>
+        <a class="text-primary-600 hover:underline truncate min-w-0" target="_blank" rel="noopener" href="/api/admin/notices/${Number(n.notice_id)}/attachments/${Number(a.attachment_id)}">${esc(a.file_name)}</a>
         <button class="text-xs text-danger-600 hover:underline ml-auto" data-action="noticeAttachmentDelete" data-id="${Number(n.notice_id)}" data-aid="${Number(a.attachment_id)}" data-name="${esc(a.file_name)}">削除</button></div>`).join('') || '<p class="text-xs text-neutral-400">なし</p>'}</div>
       ${files.length < 5 ? `<div class="flex items-center gap-2"><input id="ne-files" type="file" multiple accept="${NOTICE_ATTACH_ACCEPT}" class="text-sm flex-1">
         <button class="btn btn-outline text-xs" data-action="noticeAttachmentAdd" data-id="${Number(n.notice_id)}"><i class="fas fa-paperclip"></i>添付する</button></div>` : ''}
@@ -6317,7 +6317,7 @@ delegate('noticeWithdraw', el => {
   if (!n) return
   modal(`
     <h3 class="font-bold text-lg mb-1">お知らせを取り消す</h3>
-    <p class="text-sm text-neutral-600 mb-3">「${esc(n.title)}」をスタッフの画面から消します。既読・回答の記録は残ります。取り消した後は元に戻せません。</p>
+    <p class="text-sm text-neutral-600 mb-3 text-wrap-any">「${esc(n.title)}」をスタッフの画面から消します。既読・回答の記録は残ります。取り消した後は元に戻せません。</p>
     <label class="text-sm text-neutral-600 block mb-1">取消の理由（任意・200文字まで）</label>
     <input id="nw-reason" class="inp mb-2" maxlength="200" placeholder="例: 日時に誤りがあったため">
     <label class="flex items-center gap-2 text-sm"><input id="nw-notify" type="checkbox" class="w-4 h-4" checked>取り消したことを配信先のスタッフにアプリで知らせる</label>
@@ -6348,8 +6348,8 @@ delegate('noticeRevisions', async el => {
       <div class="border border-neutral-100 rounded-lg p-3 text-sm">
         <p class="text-xs text-neutral-500 mb-1"><span class="badge ${r.action === 'withdraw' ? 'badge-red' : 'badge-gray'}">${label[r.action] || esc(r.action)}</span>
           ${noticeFmt(r.edited_at)}（${esc(r.edited_by_name || '-')}）</p>
-        <p class="font-bold">${esc(r.title)}</p>
-        <p class="text-neutral-600 whitespace-pre-wrap">${esc(r.body)}</p>
+        <p class="font-bold text-wrap-any">${esc(r.title)}</p>
+        <p class="text-neutral-600 whitespace-pre-wrap text-wrap-any">${esc(r.body)}</p>
         ${r.expires_at ? `<p class="text-xs text-neutral-500 mt-1">掲載期限 ${noticeFmt(r.expires_at, 'YYYY/M/D')}</p>` : ''}
       </div>`).join('') || '<p class="text-sm text-neutral-400">履歴はありません</p>'}</div>`)
 })
@@ -6373,15 +6373,15 @@ window.showReads = async function (id) {
     ${rs ? `<div class="border border-neutral-100 rounded-lg p-3 mb-4">
       <div class="flex items-center mb-2"><h4 class="text-sm font-bold text-neutral-700">回答 ${rs.answered.length}名・未回答 ${rs.unanswered.length}名</h4>
         <a class="text-xs text-primary-600 hover:underline ml-auto" href="/api/admin/notices/${Number(id)}/responses.csv"><i class="fas fa-file-csv mr-1"></i>CSV</a></div>
-      ${rs.options.length ? `<div class="flex flex-wrap gap-2 mb-2">${rs.options.map(o => `<span class="badge badge-blue">${esc(o)} ${Number(rs.counts[o]) || 0}名</span>`).join('')}</div>` : ''}
-      <div class="space-y-1 text-sm max-h-48 overflow-y-auto">${rs.answered.map(a => `<p>${esc(a.name)}${a.choice != null ? ` <span class="badge badge-gray">${esc(a.choice)}</span>` : ''}
+      ${rs.options.length ? `<div class="flex flex-wrap gap-2 mb-2">${rs.options.map(o => `<span class="badge badge-blue text-wrap-any">${esc(o)} ${Number(rs.counts[o]) || 0}名</span>`).join('')}</div>` : ''}
+      <div class="space-y-1 text-sm max-h-48 overflow-y-auto">${rs.answered.map(a => `<p class="text-wrap-any">${esc(a.name)}${a.choice != null ? ` <span class="badge badge-gray">${esc(a.choice)}</span>` : ''}
         ${a.comment ? `<span class="text-neutral-600">「${esc(a.comment)}」</span>` : ''} <span class="text-xs text-neutral-400">${noticeFmt(a.answered_at, 'M/D HH:mm')}</span></p>`).join('') || '<p class="text-neutral-400 text-xs">まだ回答はありません</p>'}</div>
-      ${rs.unanswered.length ? `<p class="text-xs text-neutral-500 mt-2">未回答: ${rs.unanswered.map(u => esc(u.name)).join('、')}</p>` : ''}
+      ${rs.unanswered.length ? `<p class="text-xs text-neutral-500 mt-2 text-wrap-any">未回答: ${rs.unanswered.map(u => esc(u.name)).join('、')}</p>` : ''}
     </div>` : ''}
-    <div class="grid grid-cols-2 gap-4">
-      <div><h4 class="text-sm font-bold text-success-700 mb-2">既読 ${data.read.length}名</h4>
+    <div class="grid grid-cols-2 gap-4 text-wrap-any">
+      <div class="min-w-0"><h4 class="text-sm font-bold text-success-700 mb-2">既読 ${data.read.length}名</h4>
         <div class="space-y-1 text-sm">${data.read.map(r => `<p>${esc(r.name)} <span class="text-xs text-neutral-400">${r.read_at ? esc(dayjs(String(r.read_at).replace(' ', 'T')).format('M/D HH:mm')) : ''}</span></p>`).join('') || '<p class="text-neutral-400 text-xs">なし</p>'}</div></div>
-      <div><h4 class="text-sm font-bold text-danger-700 mb-2">未読 ${data.unread.length}名</h4>
+      <div class="min-w-0"><h4 class="text-sm font-bold text-danger-700 mb-2">未読 ${data.unread.length}名</h4>
         <div class="space-y-1 text-sm">${data.unread.map(r => `<p>${esc(r.name)}</p>`).join('') || '<p class="text-neutral-400 text-xs">なし</p>'}</div></div>
     </div>
     ${canRemind ? `<div class="border-t border-neutral-100 mt-4 pt-3">
@@ -6607,7 +6607,7 @@ async function renderFollow() {
             ${f.status === 'open' ? `<button type="button" class="badge badge-yellow ml-auto" data-action="closeFollow" data-id="${Number(f.follow_id)}">対応中 → 完了にする</button>`
               : `<span class="badge badge-green ml-auto">完了${f.done_at ? ' ' + esc(dayjs(String(f.done_at).replace(' ', 'T')).format('M/D')) : ''}</span>`}
           </div>
-          <p class="text-sm text-neutral-700 whitespace-pre-wrap break-words">${esc(f.content)}</p>
+          <p class="text-sm text-neutral-700 whitespace-pre-wrap text-wrap-any">${esc(f.content)}</p>
           ${f.next_action || f.next_action_date ? `<div class="text-xs mt-1.5 rounded-lg px-2.5 py-1.5 flex items-center gap-2 flex-wrap ${due ? 'bg-danger-50 text-danger-700' : 'bg-primary-50 text-primary-700'}">
             <span><i class="fas fa-arrow-right mr-1"></i>次回対応: ${esc(f.next_action || '-')}${f.next_action_date ? `（${day(f.next_action_date)}${due ? '・期日が来ています' : ''}）` : ''}</span>
           </div>` : ''}
@@ -6666,12 +6666,12 @@ function consultPhotosHtml(co, messageId) {
 function consultThreadHtml(co) {
   const msgs = co.messages || []
   // これまでの返信（やり取りに移す前の1件）だけがある場合
-  if (!msgs.length && co.manager_reply) return `<div class="mt-2 bg-primary-50 rounded-lg px-3 py-2 text-sm text-primary-900 whitespace-pre-wrap break-words"><i class="fas fa-reply mr-1"></i>${esc(co.manager_reply)}</div>`
+  if (!msgs.length && co.manager_reply) return `<div class="mt-2 bg-primary-50 rounded-lg px-3 py-2 text-sm text-primary-900 whitespace-pre-wrap text-wrap-any"><i class="fas fa-reply mr-1"></i>${esc(co.manager_reply)}</div>`
   return msgs.map(m => m.author_side === 'admin'
     ? `<div class="mt-2 ml-6 bg-primary-50 rounded-lg px-3 py-2"><p class="text-2xs text-primary-700 mb-0.5"><i class="fas fa-reply mr-1"></i>${esc(m.author_name || '管理者')}・${consultTime(m.created_at)}</p>
-        <p class="text-sm text-primary-900 whitespace-pre-wrap break-words">${esc(m.body)}</p></div>`
+        <p class="text-sm text-primary-900 whitespace-pre-wrap text-wrap-any">${esc(m.body)}</p></div>`
     : `<div class="mt-2 mr-6 bg-neutral-50 rounded-lg px-3 py-2"><p class="text-2xs text-neutral-500 mb-0.5"><i class="fas fa-user mr-1"></i>${esc(co.staff_name)}（追加の連絡）・${consultTime(m.created_at)}</p>
-        <p class="text-sm text-neutral-800 whitespace-pre-wrap break-words">${esc(m.body)}</p>${consultPhotosHtml(co, m.message_id)}</div>`).join('')
+        <p class="text-sm text-neutral-800 whitespace-pre-wrap text-wrap-any">${esc(m.body)}</p>${consultPhotosHtml(co, m.message_id)}</div>`).join('')
 }
 
 // #consult/{id} で開いたときは、その相談だけを出して強調する（ダッシュボードの ToDo・未報告の一覧から。#402 #498）
@@ -6710,7 +6710,7 @@ async function renderConsult() {
           ${co.target_date ? `<p class="text-xs text-neutral-600 mb-1"><i class="fas fa-calendar-day mr-1 text-neutral-400"></i>対象: ${esc(dayjs(co.target_date).format('M/D'))} ${esc(co.target_project_name || '')}
             <button class="text-primary-700 hover:underline ml-1" data-action="consultOpenBoard" data-date="${esc(co.target_date)}" data-project-id="${esc(co.target_project_id || '')}">シフトボードで見る</button>
             ${co.target_project_id && !co.target_shift_id ? '<span class="text-neutral-400 ml-1">（該当のシフトは見つかりません）</span>' : ''}</p>` : ''}
-          <p class="text-sm text-neutral-700 whitespace-pre-wrap break-words">${esc(co.body)}</p>
+          <p class="text-sm text-neutral-700 whitespace-pre-wrap text-wrap-any">${esc(co.body)}</p>
           ${consultPhotosHtml(co, null)}
           ${consultThreadHtml(co)}
           <div class="flex gap-2 mt-3">
@@ -6751,7 +6751,7 @@ window.replyConsult = function (id) {
   modal(`
     <h3 class="font-bold text-lg mb-1">相談への返信</h3>
     <p class="text-xs text-neutral-500 mb-2">${esc(co.staff_name)}・${esc(CAT_LABELS[co.category] || co.category)}・${esc(dayjs(String(co.created_at || '').replace(' ', 'T')).format('M/D HH:mm'))}</p>
-    <div class="bg-neutral-50 rounded-lg px-3 py-2 max-h-64 overflow-y-auto mb-3"><p class="text-sm text-neutral-700 whitespace-pre-wrap break-words">${esc(co.body)}</p>${consultThreadHtml(co)}</div>
+    <div class="bg-neutral-50 rounded-lg px-3 py-2 max-h-64 overflow-y-auto mb-3"><p class="text-sm text-neutral-700 whitespace-pre-wrap text-wrap-any">${esc(co.body)}</p>${consultThreadHtml(co)}</div>
     <label class="text-sm text-neutral-600 block mb-1" for="consult-reply">返信</label>
     <textarea id="consult-reply" class="inp" rows="6" maxlength="2000" placeholder="返信内容を入力してください"></textarea>
     <p class="text-xs text-neutral-400 mt-1">スタッフのアプリに通知され、ホームに『返信があります』と表示されます</p>

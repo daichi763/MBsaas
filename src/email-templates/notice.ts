@@ -2,6 +2,8 @@ import { escapeHtml } from './_util'
 
 // お知らせメール。件名は「【会社名】［緊急］タイトル（案件名）」の形にし、どの会社・どの現場のお知らせかを分かるようにする（#367 #455）。
 // ackUrl があれば「確認しました」のボタン（押すと既読になる）を付け、無ければアプリで押す必要があることを書く（#454）
+// 長い URL・英数字を折り返す指定（#9983）。メールソフトが表の中に入れても横に広がらないよう、本文の枠に付ける（word-wrap は古いメールソフト向け）
+const WRAP = 'word-wrap:break-word;overflow-wrap:anywhere;word-break:break-word;'
 const IMPORTANCE_MARK: Record<string, string> = { urgent: '［緊急］', important: '［重要］' }
 const SUBJECT_PROJECTS_MAX = 30
 
@@ -27,12 +29,12 @@ export function noticeEmail(params: {
   const button = (href: string, label: string, primary: boolean) =>
     `<a href="${escapeHtml(href)}" style="display:inline-block;${primary ? 'background:#2563eb;color:#fff;' : 'background:#fff;color:#2563eb;border:1px solid #93c5fd;'}text-decoration:none;padding:12px 24px;border-radius:10px;font-weight:bold;margin:4px 8px 4px 0;">${label}</a>`
   const html = `
-    <div style="font-family: -apple-system, 'Hiragino Kaku Gothic ProN', sans-serif; line-height:1.7; color:#111827; max-width:480px; margin:0 auto;">
+    <div style="font-family: -apple-system, 'Hiragino Kaku Gothic ProN', sans-serif; line-height:1.7; color:#111827; max-width:480px; margin:0 auto;${WRAP}">
       <p>${escapeHtml(name)} 様</p>
       <p>${escapeHtml(companyName || 'Mobital')} から新しいお知らせがあります。</p>
-      <div style="border:1px solid #e5e7eb;border-radius:10px;padding:16px;margin:20px 0;">
-        <p style="font-weight:bold;margin:0 0 8px;">${mark ? `<span style="color:#dc2626;">${escapeHtml(mark)}</span>` : ''}${escapeHtml(title)}</p>
-        <p style="white-space:pre-wrap;margin:0;color:#374151;">${escapeHtml(body)}</p>
+      <div style="border:1px solid #e5e7eb;border-radius:10px;padding:16px;margin:20px 0;${WRAP}">
+        <p style="font-weight:bold;margin:0 0 8px;${WRAP}">${mark ? `<span style="color:#dc2626;">${escapeHtml(mark)}</span>` : ''}${escapeHtml(title)}</p>
+        <p style="white-space:pre-wrap;margin:0;color:#374151;${WRAP}">${escapeHtml(body)}</p>
       </div>
       <p style="font-size:14px;color:#374151;">${escapeHtml(ackNote)}</p>
       ${noApp ? '' : `<p style="margin: 16px 0 24px;">
@@ -40,7 +42,7 @@ export function noticeEmail(params: {
       </p>`}
       <hr style="border:none;border-top:1px solid #e5e7eb;margin:24px 0;">
       <p style="color:#6b7280;font-size:12px;margin:0;">${escapeHtml(sender)}</p>
-      ${contact.length ? `<p style="color:#6b7280;font-size:12px;margin:4px 0 0;">お問い合わせ: ${contact.map(escapeHtml).join(' / ')}</p>` : ''}
+      ${contact.length ? `<p style="color:#6b7280;font-size:12px;margin:4px 0 0;${WRAP}">お問い合わせ: ${contact.map(escapeHtml).join(' / ')}</p>` : ''}
     </div>`
   const text = `${name} 様
 

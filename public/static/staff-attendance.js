@@ -417,7 +417,7 @@
         <p class="text-xs text-neutral-500 truncate">${esc(c.project_name || '')}</p>
         ${c.by_admin ? `<p class="text-2xs text-primary-700 bg-primary-50 rounded px-2 py-1 mt-1"><i class="fas fa-user-tie mr-1"></i>管理者（${esc(c.requested_by_name || '')}）が代わりに申請しました${c.status === 'pending' ? '。取り消しは管理者が行います' : ''}</p>` : ''}
         <p class="text-sm mt-1">${c.before_at ? esc(showAt(c.before_at, c.work_date)) + ' → ' : ''}<b>${esc(showAt(c.requested_at, c.work_date))}</b></p>
-        <p class="text-xs text-neutral-600 mt-1 whitespace-pre-wrap">理由: ${esc(c.reason)}</p>
+        <p class="text-xs text-neutral-600 mt-1 whitespace-pre-wrap text-wrap-any">理由: ${esc(c.reason)}</p>
         ${Number(c.attachment_count) ? `<p class="text-2xs text-neutral-500 mt-1"><i class="fas fa-paperclip mr-1"></i>添付 ${Number(c.attachment_count)}枚</p>` : ''}
         ${c.order_warnings.length ? `<p class="text-2xs text-warning-700 mt-1"><i class="fas fa-triangle-exclamation mr-1"></i>${c.order_warnings.map(esc).join(' / ')}</p>` : ''}
         ${c.status === 'approved' ? `<p class="text-xs text-success-700 mt-1.5">承認: ${esc(c.decided_by_name || '')} ${esc(dayjs(c.decided_at).format('M/D HH:mm'))}${c.decision_comment ? '<br>コメント: ' + esc(c.decision_comment) : ''}</p>` : ''}
@@ -499,8 +499,8 @@
       <div class="space-y-2">${d.notifications.map(n => `
         <button class="card p-3 w-full text-left block ${n.read_at ? '' : 'ring-1 ring-primary-200'}" data-action="notifOpenStaff" data-id="${n.notification_id}">
           <div class="flex items-center gap-2">${n.read_at ? '<span class="badge badge-gray">既読</span>' : '<span class="badge badge-blue">未読</span>'}<span class="text-2xs text-neutral-400 ml-auto">${esc(dayjs(n.created_at.replace(' ', 'T')).format('M/D HH:mm'))}</span></div>
-          <p class="font-bold text-neutral-800 mt-1 text-sm">${esc(n.title)}</p>
-          <p class="text-xs text-neutral-500 mt-0.5 whitespace-pre-wrap">${esc(n.body || '')}</p>
+          <p class="font-bold text-neutral-800 mt-1 text-sm text-wrap-any">${esc(n.title)}</p>
+          <p class="text-xs text-neutral-500 mt-0.5 whitespace-pre-wrap text-wrap-any">${esc(n.body || '')}</p>
         </button>`).join('') || '<p class="text-center text-neutral-400 py-10">通知はありません</p>'}</div>`
   }
   // 通知の行き先: シフト・募集・日報のコメント・登録情報の変更申請・休暇の通知は、画面の登録（staff.js の staffScreen の notify）で決める。

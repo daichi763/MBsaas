@@ -31,7 +31,7 @@
       $app.innerHTML = `<section class="card p-6 text-center mt-6" id="apply-closed"><i class="fas fa-calendar-xmark text-3xl text-neutral-300 mb-2 block"></i>
         ${d && d.title ? `<p class="text-xs text-neutral-400 mb-1">${esc(d.company_name)}・${esc(d.title)}</p>` : ''}
         <p class="font-bold text-neutral-700">${esc(errMsg(e, 'この募集ページは利用できません'))}</p>
-        ${d && d.contact_note ? `<div class="mt-4 pt-3 border-t text-sm text-neutral-600" id="apply-closed-contact"><p class="text-xs text-neutral-400 mb-1">応募の内容・取り下げのお問い合わせ</p><p class="whitespace-pre-wrap break-words"><i class="fas fa-phone mr-1 text-neutral-400"></i>${contactHtml(d.contact_note)}</p></div>` : ''}</section>`
+        ${d && d.contact_note ? `<div class="mt-4 pt-3 border-t text-sm text-neutral-600" id="apply-closed-contact"><p class="text-xs text-neutral-400 mb-1">応募の内容・取り下げのお問い合わせ</p><p class="whitespace-pre-wrap text-wrap-any"><i class="fas fa-phone mr-1 text-neutral-400"></i>${contactHtml(d.contact_note)}</p></div>` : ''}</section>`
       return
     }
     document.title = DATA.title + ' | ' + DATA.company_name
@@ -119,7 +119,7 @@
           <div id="ap-turnstile"></div>
         </div>
       </section>` : ''}
-      ${d.contact_note ? `<p class="text-xs text-neutral-500 text-center mb-4 whitespace-pre-wrap"><i class="fas fa-phone mr-1"></i>${contactHtml(d.contact_note)}</p>` : ''}
+      ${d.contact_note ? `<p class="text-xs text-neutral-500 text-center mb-4 whitespace-pre-wrap text-wrap-any"><i class="fas fa-phone mr-1"></i>${contactHtml(d.contact_note)}</p>` : ''}
       <p class="text-2xs text-neutral-400 text-center mb-4">応募内容を確認のうえ、結果をお知らせします${mailOk() ? '（メールアドレスを入れた場合はメールで届きます）' : ''}。応募の時点ではシフトは確定していません</p>
 
       ${dates.length ? `<div class="fixed bottom-0 inset-x-0 bg-surface border-t border-neutral-100 p-3 z-30" id="apply-submit-bar">
@@ -317,7 +317,7 @@
         <p>${byEmail ? '内容を確認のうえ、結果（確定・見送り）を入力いただいたメールアドレスにお知らせします。' : '内容を確認のうえ、担当者からご連絡します。'}応募の時点ではシフトは確定していません。</p>
         <p>応募の取り下げ・変更は、お問い合わせ先へご連絡ください。</p>
       </div>
-      ${DATA.contact_note ? `<p class="text-xs text-neutral-500 mt-3 text-center whitespace-pre-wrap"><i class="fas fa-phone mr-1"></i>${contactHtml(DATA.contact_note)}</p>` : ''}
+      ${DATA.contact_note ? `<p class="text-xs text-neutral-500 mt-3 text-center whitespace-pre-wrap text-wrap-any"><i class="fas fa-phone mr-1"></i>${contactHtml(DATA.contact_note)}</p>` : ''}
     </section>`
     window.scrollTo(0, 0)
   }

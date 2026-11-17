@@ -65,7 +65,7 @@
           <td class="text-xs whitespace-nowrap">${who(r)}</td><td class="text-xs whitespace-nowrap">${r.work_date ? dayjs(r.work_date).format('M/D') : ''} ${LABEL[r.report_type] || ''}</td><td class="text-xs">${esc(r.summary || '')}</td></tr>`).join('') || '<tr><td colspan="8" class="text-center text-neutral-400 py-6">履歴はありません</td></tr>'}</tbody></table></div>
       <div class="md:hidden space-y-2">${rows.map(r => `<div class="card p-3 text-xs"><p><b>${EVENT[r.event] || esc(r.event)}</b> ・${esc(r.actor_name || '')} <span class="text-neutral-400">${esc(fmtAt(r.created_at))}</span></p>
         <p class="mt-0.5"><a class="text-primary-600" href="#corrections/${r.correction_id}">#${r.correction_id}</a> ${who(r)} ${r.work_date ? dayjs(r.work_date).format('M/D') : ''} ${LABEL[r.report_type] || ''}</p>
-        <p class="text-neutral-500 mt-0.5 break-words">${esc(r.summary || '')}</p></div>`).join('') || '<p class="text-center text-neutral-400 py-6">履歴はありません</p>'}</div>`
+        <p class="text-neutral-500 mt-0.5 text-wrap-any">${esc(r.summary || '')}</p></div>`).join('') || '<p class="text-center text-neutral-400 py-6">履歴はありません</p>'}</div>`
       : `
       <div class="hidden md:block card overflow-x-auto"><table class="tbl"><thead><tr><th>日時</th><th>案件</th><th>対象</th><th>報告</th><th>変更</th><th>操作</th><th>変更者</th></tr></thead>
         <tbody>${rows.map(l => `<tr><td class="text-xs whitespace-nowrap">${esc(fmtAt(l.created_at))}</td><td class="text-xs">${esc(l.project_name || '')}${l.project_status && l.project_status !== 'active' ? ' <span class="badge badge-gray text-3xs">終了</span>' : ''}</td>

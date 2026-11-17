@@ -641,7 +641,7 @@ app.get('/notice-ack', (c) => c.html(`<!DOCTYPE html>
         const d = (await axios.get('/api/public/notice-ack', { params: { token }, timeout: 15000 })).data
         $('ack-info').textContent = ''
         const p1 = document.createElement('p'); p1.className = 'text-xs text-neutral-500'; p1.textContent = d.company_name
-        const p2 = document.createElement('p'); p2.className = 'font-bold text-neutral-800 mt-1'; p2.textContent = d.title
+        const p2 = document.createElement('p'); p2.className = 'font-bold text-neutral-800 mt-1 text-wrap-any'; p2.textContent = d.title
         $('ack-info').append(p1, p2)
         if (d.used) { $('ack-done').classList.remove('hidden'); return }
         if (d.expired) { showError('リンクの有効期限が切れています。アプリでお知らせを開き、「確認しました」を押してください'); return }
