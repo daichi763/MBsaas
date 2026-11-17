@@ -94,8 +94,6 @@ ok('#9983 スタッフの API もそのまま返す', sd.status === 200 && sd.da
 
 // ---------- 画面（ヘッドレスの Chrome） ----------
 const CHROME = process.env.CHROME || ['C:/Program Files/Google/Chrome/Application/chrome.exe', 'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe', '/usr/bin/google-chrome', '/usr/bin/chromium'].find(p => existsSync(p))
-if (!CHROME || typeof WebSocket !== 'function') console.log('SKIP  画面の確認（ヘッドレスの Chrome が見つかりません。CHROME=<パス> で指定できます）')
-else await browserChecks()
 
 // 要素の中で横にはみ出しているものを探す（ページの中で評価する）。
 //  el 自体の scrollWidth > clientWidth、el の右端を越える子、横にスクロールする（overflow が visible でない）子を拾う。
@@ -248,6 +246,9 @@ async function browserChecks() {
     try { rmSync(prof, { recursive: true, force: true }) } catch { }
   }
 }
+
+if (!CHROME || typeof WebSocket !== 'function') console.log('SKIP  画面の確認（ヘッドレスの Chrome が見つかりません。CHROME=<パス> で指定できます）')
+else await browserChecks()
 
 const failed = results.filter(r => !r.pass)
 console.log(`\n${results.length - failed.length}/${results.length} passed`)
