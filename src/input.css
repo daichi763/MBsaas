@@ -171,10 +171,33 @@
   .nav-group-count { font-size: 10px; line-height: 1rem; padding: 0 .4rem; border-radius: var(--radius-pill); background: rgb(var(--color-danger-500)); color: rgb(var(--color-on-primary)); }
   .nav-group:not(.collapsed) .nav-group-count { display: none; }
 
+  /* 管理画面の表で左に固定する列（Sprint 30 #9987 ui-admin-03。ダッシュボードの今月の案件別実績など）。
+     最小の幅を決めて、案件名が1文字ずつ縦に並ばないようにし、表の中だけが横に動く（外側に overflow-x-auto を付ける） */
+  .tbl-sticky-col { position: sticky; left: 0; z-index: 1; min-width: 9rem; background: rgb(var(--color-surface)); overflow-wrap: anywhere; }
+  .tbl tbody tr:hover > .tbl-sticky-col { background: rgb(var(--color-surface-hover)); }
+  @media (min-width: 640px) { .tbl-sticky-col { min-width: 12rem; } }
+  /* ダッシュボードのたたむ所（今月の集計・要フォロー。Sprint 30 #9987 ui-admin-02）。ブラウザの三角は出さず、右の矢印を開け閉めで回す */
+  .dash-fold > summary { list-style: none; }
+  .dash-fold > summary::-webkit-details-marker { display: none; }
+  .dash-fold-caret { transition: transform .15s; }
+  .dash-fold[open] .dash-fold-caret { transform: rotate(180deg); }
+
   /* 本部ナビ */
   .hq-nav { color: rgb(var(--color-hq-400)); }
   .hq-nav:hover { background: rgb(var(--color-hq-700)); color: rgb(var(--color-on-primary)); }
   .hq-nav.active { background: rgb(var(--color-hq-accent-700)); color: rgb(var(--color-on-primary)); font-weight: 700; }
+  /* 上のタブの名前は折り返さない（狭い画面ではタブの帯の中を横に動かす。Sprint 30 #9987 ui-hq-01） */
+  .hq-nav { white-space: nowrap; flex-shrink: 0; }
+  /* 本部（暗い地）の枠だけのボタン（Sprint 30 #9987 ui-hq-02）。白い .btn-outline に明るい文字を重ねない（1.25〜1.45:1 で読めなかった）。
+     文字の hq-200 は地の hq-800 の上で 11:1・hq-900 の上で 14:1 */
+  .btn-dark-outline { background: transparent; border: 1px solid rgb(var(--color-hq-600)); color: rgb(var(--color-hq-200)); }
+  .btn-dark-outline:hover { background: rgb(var(--color-hq-700)); }
+  /* 本部の注意を促す操作（今の人数で記録する）。文字の hq-900 は warning-500 の上で 8:1 */
+  .btn-warn { background: rgb(var(--color-warning-500)); color: rgb(var(--color-hq-900)); }
+  .btn-warn:hover { background: rgb(var(--color-warning-600)); }
+  /* 本部の企業一覧で左に固定する企業名の列（Sprint 30 #9987 ui-hq-01）。最小の幅を決めて、企業名が1文字ずつ縦に並ばないようにする */
+  .hq-sticky-col { position: sticky; left: 0; z-index: 1; min-width: 10rem; background: rgb(var(--color-hq-800)); overflow-wrap: anywhere; }
+  @media (min-width: 640px) { .hq-sticky-col { min-width: 12rem; } }
 
   /* 長い URL・英数字（空白のない文字列）を枠の中で折り返す（#9983）。お知らせ・日報・相談・チャットなど、利用者が入力した文の表示に付ける。
      overflow-wrap:anywhere は、flex・grid・表の幅の計算（最小の幅）にも効くので、長い文字列で列や画面が横に広がらない（break-words では広がる）。
