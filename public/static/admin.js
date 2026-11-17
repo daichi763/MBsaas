@@ -2869,7 +2869,7 @@ window.showAddProject = async function () {
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div><label class="text-sm text-neutral-600 block mb-1">請求単価（円）</label>
           <div class="flex gap-2"><select id="np-price-unit" class="inp w-32 shrink-0"><option value="daily">日額</option><option value="hourly">時給</option><option value="monthly">月額</option></select>
-            <input id="np-price" type="number" min="0" class="inp" value="16000" inputmode="numeric"></div>
+            <input id="np-price" type="number" min="0" step="0.01" class="inp" value="16000" inputmode="decimal"></div>
           <p id="np-price-monthly-note" class="text-2xs text-primary-700 mt-1 hidden">月額は、スタッフごとに、その月に働いた日数（確定・代打のシフトの数）で割った額を1日分の請求額にします（1円未満は切り捨て、余りは月の最後の稼働日に足します）</p>
           <p class="text-2xs text-neutral-400 mt-1">支払単価・交通費・スタッフ別の単価は、登録後に精算画面の「単価の設定」で設定します</p></div>
         <div><label class="text-sm text-neutral-600 block mb-1">日報テンプレート</label>
@@ -4533,9 +4533,9 @@ function addShiftPriceRender() {
       : `<p id="sh-price-note" class="text-xs text-neutral-500 mb-2">単価の設定（案件の標準・単価ルール）から計算します${pv.inherited ? '（前回の単価は使いません）' : ''}</p>`}
     <div class="grid grid-cols-2 gap-2">
       <label class="text-xs text-neutral-600">請求${unitSel('sh-bill-unit', p.bill_unit_type)}</label>
-      <label class="text-xs text-neutral-600">請求単価<input id="sh-bill-rate" type="number" min="0" class="inp text-sm" value="${p.bill_rate ?? ''}"></label>
+      <label class="text-xs text-neutral-600">請求単価<input id="sh-bill-rate" type="number" min="0" step="0.01" class="inp text-sm" value="${p.bill_rate ?? ''}"></label>
       <label class="text-xs text-neutral-600">支払${unitSel('sh-pay-unit', p.pay_unit_type)}</label>
-      <label class="text-xs text-neutral-600">支払単価<input id="sh-pay-rate" type="number" min="0" class="inp text-sm" value="${p.pay_rate ?? ''}" placeholder="未設定"></label>
+      <label class="text-xs text-neutral-600">支払単価<input id="sh-pay-rate" type="number" min="0" step="0.01" class="inp text-sm" value="${p.pay_rate ?? ''}" placeholder="未設定"></label>
     </div>
     <p class="text-xs text-neutral-500 mt-2">交通費: 請求 ${tp(p.bill_transport_type, p.bill_transport_amount, BILL_TRANSPORT_LABEL)} ／ 支払 ${tp(p.pay_transport_type, p.pay_transport_amount, PAY_TRANSPORT_LABEL)}</p>
     ${adj}

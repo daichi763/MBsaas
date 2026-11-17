@@ -1420,6 +1420,12 @@ app.put('/settlement/projects/:id/cancel-policy', async (c) => {
 //   kind=billing&client_id=<クライアント。0 = クライアントなし> … クライアントあて
 const h = (v: any) => String(v ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]!))
 const yenText = (n: any) => (n == null ? '-' : (Number(n) < 0 ? '-' : '') + '¥' + String(Math.abs(Math.round(Number(n)))).replace(/\B(?=(\d{3})+(?!\d))/g, ','))
+// 単価（#9985）は小数第2位まで入力どおりに出す（¥1,012.5）。金額は yenText（円）
+const rateYenText = (n: any) => {
+  if (n == null) return '-'
+  const [i, f] = String(Math.round(Math.abs(Number(n)) * 100) / 100).split('.')
+  return (Number(n) < 0 ? '-' : '') + '¥' + i.replace(/\B(?=(\d{3})+(?!\d))/g, ',') + (f ? '.' + f : '')
+}
 const hoursText = (n: any) => (n == null ? '' : String(Math.round(Number(n) * 100) / 100) + 'h')
 const mdText = (d: string) => `${Number(d.slice(5, 7))}/${Number(d.slice(8, 10))}`
 function statementPage(title: string, body: string) {
@@ -1477,7 +1483,7 @@ app.get('/settlement/statement', async (c) => {
     const memo = isCancel ? `${CANCEL_REASON_LABEL[r.cancel_reason || ''] || 'キャンセル'}${r.adjust_note ? '・' + r.adjust_note : ''}` : r.adjust_note
     return `<tr><td>${h(mdText(r.work_date))}</td><td>${h(r.project_name)}${r.site_name ? '<br><small>' + h(r.site_name) + '</small>' : ''}</td>${showStaff ? `<td>${h(r.staff_name)}</td>` : ''}
       <td>${isCancel ? '' : h(`${r.actual_start || r.start_time}〜${r.actual_end || r.end_time}`)}</td><td class="n">${h(hours)}</td>
-      <td class="n">${rate == null ? '' : h(yenText(rate) + (unit === 'hourly' ? '/時' : unit === 'monthly' ? '/月' : '/日'))}</td><td class="n">${qty == null ? '' : h(qty)}</td>
+      <td class="n">${rate == null ? '' : h(rateYenText(rate) + (unit === 'hourly' ? '/時' : unit === 'monthly' ? '/月' : '/日'))}</td><td class="n">${qty == null ? '' : h(qty)}</td>
       <td class="n">${h(yenText(v(r, 'base')))}</td><td class="n">${v(r, 'transport') ? h(yenText(v(r, 'transport'))) : ''}</td><td class="n">${v(r, 'adjust') ? h(yenText(v(r, 'adjust'))) : ''}</td>
       ${showPremium ? `<td class="n">${r.pay_premium ? h(yenText(r.pay_premium)) + `<br><small>${h(premiumText(r))}</small>` : ''}</td>` : ''}
       <td class="n">${h(yenText(v(r, 'total')))}</td><td>${h(memo)}</td></tr>`

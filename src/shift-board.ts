@@ -96,6 +96,26 @@ export function rangeError(items: [string, any, number, number][]): string | nul
   }
   return null
 }
+// 単価（請求・支払・インセンティブ）は小数第2位まで（#9985。例 時給 1,012.5 円）。金額（単価×数量。日額・月額はその額）は calcAmounts で円に丸める。
+// 第3位以下のある値は丸めずに 400 にする（入力どおりに保存・表示するため）。月額は円単位だけ（migrations/0114 のトリガーが円の整数で割るため）
+export const rateOrNull = (v: any): number | null => (v === '' || v == null || isNaN(Number(v))) ? null : Math.round(Number(v) * 100) / 100
+// [項目名, 値, 単位] を並べて渡す（rangeError の後に呼ぶ。空欄・数値でない値は確かめない）
+export function rateError(items: [string, any, any?][]): string | null {
+  for (const [label, v, unit] of items) {
+    if (v === undefined || v === null || v === '' || typeof v === 'boolean' || typeof v === 'object') continue
+    const n = Number(v)
+    if (!Number.isFinite(n)) continue
+    if (unit === 'monthly' && !Number.isInteger(n)) return `${label}（月額）は1円単位で入力してください`
+    // 1012.55 * 100 = 101254.99999… のような誤差は通す
+    if (Math.abs(n * 100 - Math.round(n * 100)) > 1e-6) return `${label}は小数第2位までで入力してください`
+  }
+  return null
+}
+// 単価 × (n / d) を円に丸める（#9985）。小数の単価をそのまま掛けると 1,024.6 × 7.5 = 7,684.4999… のように誤差で .5 が切り下がるので、
+// 単価を銭（×100）の整数にして、整数どうしで掛けてから割る（整数の単価では今までと同じ値）。n・d は整数（分 / 60 など）
+export const rateTimes = (rate: number, n: number, d: number) => Math.round(Math.round(Number(rate) * 100) * n / (100 * d))
+// 数量（時間。小数）を掛けるとき。数量は小数第4位までで見る
+const rateTimesQty = (rate: number, qty: number) => rateTimes(rate, Math.round(qty * 10000), 10000)
 export const unitOf = (v: any): 'daily' | 'hourly' | 'monthly' => (v === 'hourly' ? 'hourly' : v === 'monthly' ? 'monthly' : 'daily')
 // 入力の単位（日額・時給・月額のどれでもなければ d）
 const unitIn = (v: any, d: string) => ((UNIT_TYPES as readonly string[]).includes(v) ? v : d)
@@ -375,7 +395,7 @@ export function calcAmounts(price: Pick<ResolvedPrice, 'bill_unit_type' | 'bill_
   const payMin = toMinutes(typeof hoursOverride === 'object' && hoursOverride ? hoursOverride.pay : hoursOverride as number | null | undefined)
   const hourly = (u: string) => u === 'hourly'
   const qty = (u: string, minutes: number) => (hourly(u) ? Math.round(minutes / 60 * 100) / 100 : 1)
-  const amount = (u: string, rate: number, minutes: number) => (hourly(u) ? Math.round(rate * minutes / 60) : Math.round(rate))
+  const amount = (u: string, rate: number, minutes: number) => (hourly(u) ? rateTimes(rate, minutes, 60) : Math.round(rate))
   return {
     bill_qty: qty(price.bill_unit_type, billMin), unit_price: amount(price.bill_unit_type, price.bill_rate || 0, billMin),
     pay_qty: qty(price.pay_unit_type, payMin), pay_amount: price.pay_rate == null ? null : amount(price.pay_unit_type, price.pay_rate, payMin),
@@ -554,11 +574,12 @@ export type RateOverride = { bill_unit_type?: string; bill_rate?: number; pay_un
 export function rateOverrideOf(b: any): { error?: string; value: RateOverride | null } {
   if (!b || typeof b !== 'object' || Array.isArray(b)) return { value: null }
   const err = rangeError([['請求単価', b.bill_rate, 0, MONEY_MAX], ['支払単価', b.pay_rate, 0, MONEY_MAX]])
+    || rateError([['請求単価', b.bill_rate, b.bill_unit_type], ['支払単価', b.pay_rate, b.pay_unit_type]])
   if (err) return { error: err, value: null }
   const v: RateOverride = {}
   const has = (x: any) => x !== undefined && x !== null && x !== ''
-  if (has(b.bill_rate)) { v.bill_rate = Math.round(Number(b.bill_rate)); if (has(b.bill_unit_type)) v.bill_unit_type = unitOf(b.bill_unit_type) }
-  if (has(b.pay_rate)) { v.pay_rate = Math.round(Number(b.pay_rate)); if (has(b.pay_unit_type)) v.pay_unit_type = unitOf(b.pay_unit_type) }
+  if (has(b.bill_rate)) { v.bill_rate = rateOrNull(b.bill_rate)!; if (has(b.bill_unit_type)) v.bill_unit_type = unitOf(b.bill_unit_type) }
+  if (has(b.pay_rate)) { v.pay_rate = rateOrNull(b.pay_rate)!; if (has(b.pay_unit_type)) v.pay_unit_type = unitOf(b.pay_unit_type) }
   return { value: Object.keys(v).length ? v : null }
 }
 // 計算した単価と違えば、手動変更（price_locked）として単価・金額を置き換える列を返す（同じなら null）。数量は固定しない（時給は実働に合わせる。#196）
@@ -568,6 +589,9 @@ export function overridePricing(s: any, ov: RateOverride | null, proj: any): Rec
     bill_unit_type: ov.bill_unit_type ?? unitOf(s.bill_unit_type), bill_rate: ov.bill_rate ?? s.bill_rate ?? null,
     pay_unit_type: ov.pay_unit_type ?? unitOf(s.pay_unit_type), pay_rate: ov.pay_rate ?? s.pay_rate ?? null,
   }
+  // 単位を送らずに、月額のシフトへ小数の単価を送ったときは円に丸める（月額は円単位。#9985）
+  if (next.bill_unit_type === 'monthly' && next.bill_rate != null) next.bill_rate = Math.round(next.bill_rate)
+  if (next.pay_unit_type === 'monthly' && next.pay_rate != null) next.pay_rate = Math.round(next.pay_rate)
   if (next.bill_unit_type === unitOf(s.bill_unit_type) && next.pay_unit_type === unitOf(s.pay_unit_type)
     && (next.bill_rate ?? null) === (s.bill_rate ?? null) && (next.pay_rate ?? null) === (s.pay_rate ?? null)) return null
   const brk = s.break_minutes ?? proj?.default_break_minutes ?? 0
@@ -1098,10 +1122,10 @@ function normalizeRoles(roles: any): { role_name: string; headcount: number; bil
   if (!Array.isArray(roles) || !roles.length) return null
   const out = roles.map((r: any) => ({
     role_name: String(r.role_name || '').trim(), headcount: Math.max(1, Math.min(200, Number(r.headcount) || 1)),
-    bill_rate: intOrNull(r.bill_rate), pay_rate: intOrNull(r.pay_rate),
+    bill_rate: rateOrNull(r.bill_rate), pay_rate: rateOrNull(r.pay_rate),
     // 単価には単位を必ず付ける。単位を省略したら日額（単価ルールと同じ。案件の単位を引き継ぐと、日額のつもりの金額が時給で計算されるため #145）
-    bill_unit_type: intOrNull(r.bill_rate) == null ? null : unitOf(r.bill_unit_type),
-    pay_unit_type: intOrNull(r.pay_rate) == null ? null : unitOf(r.pay_unit_type),
+    bill_unit_type: rateOrNull(r.bill_rate) == null ? null : unitOf(r.bill_unit_type),
+    pay_unit_type: rateOrNull(r.pay_rate) == null ? null : unitOf(r.pay_unit_type),
   }))
   if (out.some(r => !r.role_name)) return null
   return out
@@ -1113,6 +1137,7 @@ function rolesRangeError(roles: any): string | null {
     if (!r || r._delete) continue
     const name = String(r.role_name || '').trim() || '役割'
     const err = rangeError([[`「${name}」の請求単価`, r.bill_rate, 0, MONEY_MAX], [`「${name}」の支払単価`, r.pay_rate, 0, MONEY_MAX], [`「${name}」の必要人数`, r.headcount, 1, 200]])
+      || rateError([[`「${name}」の請求単価`, r.bill_rate, unitOf(r.bill_unit_type)], [`「${name}」の支払単価`, r.pay_rate, unitOf(r.pay_unit_type)]])
     if (err) return err
   }
   return null
@@ -2063,8 +2088,11 @@ app.put('/shifts/:id/price', async (c) => {
     ['請求の調整', b.bill_adjust, -MONEY_MAX, MONEY_MAX], ['支払の調整', b.pay_adjust, -MONEY_MAX, MONEY_MAX]])
   if (err) return c.json({ error: err }, 400)
   const billUnit = unitIn(b.bill_unit_type, s.bill_unit_type || 'daily'), payUnit = unitIn(b.pay_unit_type, s.pay_unit_type || 'daily')
-  const billRate = b.bill_rate !== undefined ? intOrNull(b.bill_rate) : s.bill_rate
-  const payRate = b.pay_rate !== undefined ? intOrNull(b.pay_rate) : s.pay_rate
+  // 単価は小数第2位まで（#9985）。月額は円単位
+  const rateErr = rateError([['請求単価', b.bill_rate === undefined ? s.bill_rate : b.bill_rate, billUnit], ['支払単価', b.pay_rate === undefined ? s.pay_rate : b.pay_rate, payUnit]])
+  if (rateErr) return c.json({ error: rateErr }, 400)
+  const billRate = b.bill_rate !== undefined ? rateOrNull(b.bill_rate) : s.bill_rate
+  const payRate = b.pay_rate !== undefined ? rateOrNull(b.pay_rate) : s.pay_rate
   const brk = b.break_minutes !== undefined ? intOrNull(b.break_minutes) : s.break_minutes
   const pdata = await loadPricingData(db, u.company_id, [s.project_id])
   const nextPrice = { bill_unit_type: billUnit, bill_rate: billRate, pay_unit_type: payUnit, pay_rate: payRate }
@@ -2077,8 +2105,8 @@ app.put('/shifts/:id/price', async (c) => {
   const billQty = billQtyIn ? Number(b.bill_qty) : amt.bill_qty
   const payQty = payQtyIn ? Number(b.pay_qty) : amt.pay_qty
   const sameQty = (q: number, calc: number) => Math.abs(q - calc) < 0.005
-  const billAmount = billQtyIn && !sameQty(billQty, amt.bill_qty) ? Math.round((billRate || 0) * billQty) : amt.unit_price
-  const payAmount = payRate == null ? null : payQtyIn && !sameQty(payQty, amt.pay_qty) ? Math.round(payRate * payQty) : amt.pay_amount
+  const billAmount = billQtyIn && !sameQty(billQty, amt.bill_qty) ? rateTimesQty(billRate || 0, billQty) : amt.unit_price
+  const payAmount = payRate == null ? null : payQtyIn && !sameQty(payQty, amt.pay_qty) ? rateTimesQty(payRate, payQty) : amt.pay_amount
   const bt = BILL_TRANSPORT_TYPES.includes(b.bill_transport_type) ? b.bill_transport_type : s.bill_transport_type
   const pt = PAY_TRANSPORT_TYPES.includes(b.pay_transport_type) ? b.pay_transport_type : s.pay_transport_type
   const btAmt = b.bill_transport_amount !== undefined ? (intOrNull(b.bill_transport_amount) ?? 0) : s.bill_transport_amount
@@ -2902,10 +2930,10 @@ function ruleValues(b: any) {
   return {
     // 単価を指定して単位を省略した場合は日額（案件の単位を引き継ぐと、日額の金額が時給として計算されるため）
     // 月額（#9984）も選べる
-    bill_unit_type: b.bill_unit_type === 'hourly' || b.bill_unit_type === 'monthly' ? b.bill_unit_type : b.bill_unit_type === 'daily' || intOrNull(b.bill_rate) != null ? 'daily' : null,
-    bill_rate: intOrNull(b.bill_rate),
-    pay_unit_type: b.pay_unit_type === 'hourly' || b.pay_unit_type === 'monthly' ? b.pay_unit_type : b.pay_unit_type === 'daily' || intOrNull(b.pay_rate) != null ? 'daily' : null,
-    pay_rate: intOrNull(b.pay_rate),
+    bill_unit_type: b.bill_unit_type === 'hourly' || b.bill_unit_type === 'monthly' ? b.bill_unit_type : b.bill_unit_type === 'daily' || rateOrNull(b.bill_rate) != null ? 'daily' : null,
+    bill_rate: rateOrNull(b.bill_rate),
+    pay_unit_type: b.pay_unit_type === 'hourly' || b.pay_unit_type === 'monthly' ? b.pay_unit_type : b.pay_unit_type === 'daily' || rateOrNull(b.pay_rate) != null ? 'daily' : null,
+    pay_rate: rateOrNull(b.pay_rate),
     bill_transport_type: BILL_TRANSPORT_TYPES.includes(b.bill_transport_type) ? b.bill_transport_type : null,
     bill_transport_amount: intOrNull(b.bill_transport_amount),
     pay_transport_type: PAY_TRANSPORT_TYPES.includes(b.pay_transport_type) ? b.pay_transport_type : null,
@@ -2961,6 +2989,7 @@ async function validateRuleScope(db: D1Database, u: any, b: any): Promise<{ erro
 function ruleValuesError(b: any): string | null {
   const range = rangeError([['請求単価', b.bill_rate, 0, MONEY_MAX], ['支払単価', b.pay_rate, 0, MONEY_MAX],
     ['交通費の請求額', b.bill_transport_amount, 0, MONEY_MAX], ['交通費の支払額', b.pay_transport_amount, 0, MONEY_MAX]])
+    || rateError([['請求単価', b.bill_rate, b.bill_unit_type], ['支払単価', b.pay_rate, b.pay_unit_type]])
   if (range) return range
   const from = optDate(b.valid_from), to = optDate(b.valid_to)
   if ((from && !isISODate(from)) || (to && !isISODate(to))) return '適用期間の日付が正しくありません'
@@ -2972,11 +3001,11 @@ function ruleValuesError(b: any): string | null {
 // インセンティブ（加算額。9203）。記録と表示のためだけの値で、計算には加算後の支払単価（pay_rate）を使う（resolvePrice は見ない）。
 // 0・空欄は「なし」。加算額は支払単価に含まれるので、支払単価がないとき・支払単価より大きいときは受け付けない
 function ruleIncentive(b: any): { value: number | null; error?: string } {
-  const err = rangeError([['インセンティブ（加算額）', b.pay_incentive, 0, MONEY_MAX]])
+  const err = rangeError([['インセンティブ（加算額）', b.pay_incentive, 0, MONEY_MAX]]) || rateError([['インセンティブ（加算額）', b.pay_incentive]])
   if (err) return { value: null, error: err }
-  const inc = intOrNull(b.pay_incentive)
+  const inc = rateOrNull(b.pay_incentive)
   if (!inc) return { value: null }
-  const pay = intOrNull(b.pay_rate)
+  const pay = rateOrNull(b.pay_rate)
   if (pay == null) return { value: null, error: 'インセンティブ（加算額）を入れるときは、支払単価も入力してください' }
   if (inc > pay) return { value: null, error: 'インセンティブ（加算額）は支払単価以下にしてください' }
   return { value: inc }
@@ -2999,7 +3028,7 @@ app.put('/rate-rules/:id', async (c) => {
   if (!r) return c.json({ error: 'ルールが見つかりません' }, 404)
   const merged = { ...r, ...b }
   // 支払単価だけを変えて加算額を送らないとき（加算額のない画面からの編集）は、加算額を外す（支払単価との食い違いを残さない）
-  if (b.pay_rate !== undefined && b.pay_incentive === undefined && intOrNull(b.pay_rate) !== intOrNull(r.pay_rate)) merged.pay_incentive = null
+  if (b.pay_rate !== undefined && b.pay_incentive === undefined && rateOrNull(b.pay_rate) !== rateOrNull(r.pay_rate)) merged.pay_incentive = null
   const vr = await validateRuleScope(c.env.DB, u, merged); if (vr.error) return c.json({ error: vr.error }, 400)
   const inc = ruleIncentive(merged); if (inc.error) return c.json({ error: inc.error }, 400)
   const v = ruleValues(merged), s = vr.scope!
@@ -3099,6 +3128,9 @@ app.put('/projects/:id/pricing', async (c) => {
   // 負の単価・交通費・休憩は受け付けない（#218）
   const range = rangeError([['請求単価', b.unit_price, 0, MONEY_MAX], ['支払単価', b.pay_rate, 0, MONEY_MAX], ['交通費の請求額', b.bill_transport_amount, 0, MONEY_MAX],
     ['交通費の支払額', b.pay_transport_amount, 0, MONEY_MAX], ['休憩', b.default_break_minutes, 0, BREAK_MAX]])
+    // 単位だけを月額に変えたときも、残る単価で確かめる
+    || rateError([['請求単価', b.unit_price === undefined || b.unit_price === '' ? p.unit_price : b.unit_price, unitIn(b.unit_price_type, unitOf(p.unit_price_type))],
+      ['支払単価', b.pay_rate === undefined ? p.pay_rate : b.pay_rate, unitIn(b.pay_unit_type, unitOf(p.pay_unit_type))]])
   if (range) return c.json({ error: range }, 400)
   const validFrom = optDate(b.price_valid_from)
   if (validFrom && !isISODate(validFrom)) return c.json({ error: '適用開始日が正しくありません' }, 400)
@@ -3109,8 +3141,8 @@ app.put('/projects/:id/pricing', async (c) => {
   // 支払側の丸め（#220）: none = 支払は丸めない / same = 請求と同じく丸める
   const payRound = b.pay_time_round === 'same' || b.pay_time_round === 'none' ? b.pay_time_round : (p.pay_time_round || 'none')
   const next: Record<string, any> = {
-    unit_price_type: unit(b.unit_price_type, unitOf(p.unit_price_type)), unit_price: intOrNull(b.unit_price) ?? p.unit_price ?? 0,
-    pay_unit_type: unit(b.pay_unit_type, unitOf(p.pay_unit_type)), pay_rate: b.pay_rate !== undefined ? intOrNull(b.pay_rate) : p.pay_rate,
+    unit_price_type: unit(b.unit_price_type, unitOf(p.unit_price_type)), unit_price: rateOrNull(b.unit_price) ?? p.unit_price ?? 0,
+    pay_unit_type: unit(b.pay_unit_type, unitOf(p.pay_unit_type)), pay_rate: b.pay_rate !== undefined ? rateOrNull(b.pay_rate) : p.pay_rate,
     bill_transport_type: BILL_TRANSPORT_TYPES.includes(b.bill_transport_type) ? b.bill_transport_type : (p.bill_transport_type || 'actual'),
     bill_transport_amount: intOrNull(b.bill_transport_amount) ?? p.bill_transport_amount ?? 0,
     pay_transport_type: PAY_TRANSPORT_TYPES.includes(b.pay_transport_type) ? b.pay_transport_type : (p.pay_transport_type || 'actual'),

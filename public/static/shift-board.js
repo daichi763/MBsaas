@@ -10,6 +10,8 @@
   const unitKey = (v) => (v === 'hourly' || v === 'monthly' ? v : 'daily')
   // 月額のシフトの、その月の働いた日数（数量 = 1/日数）
   const monthDays = (qty) => (Number(qty) > 0 ? Math.round(1 / Number(qty)) : 0)
+  // 単価は小数第2位まで（#9985）
+  const rate2 = (n) => Math.round(n * 100) / 100
   const BT_LABEL = { actual: '実費を請求', fixed: '定額を請求', included: '単価に込み（請求なし）' }
   const PT_LABEL = { actual: '実費を支払', capped: '実費（上限あり）', fixed: '定額を支払', none: '支払なし' }
   const AFF_SHORT = { own_employee: '自社', linked_external: '他社', partner_manual: '協力会社', skillsheet_only: 'シート' }
@@ -1677,8 +1679,8 @@
         <label class="flex items-center gap-1 text-neutral-600"><input type="checkbox" id="${prefix}-inherit" checked>前回のシフトの単価を引き継ぐ</label></div>
       <div id="${prefix}-price-list" class="text-neutral-400">スタッフを選ぶと、単価を表示します</div>
       <div class="grid grid-cols-2 gap-2">
-        <label class="text-neutral-600">請求単価を変える<input id="${prefix}-bill-rate" type="number" min="0" class="inp text-xs" placeholder="空欄ならそのまま"></label>
-        <label class="text-neutral-600">支払単価を変える<input id="${prefix}-pay-rate" type="number" min="0" class="inp text-xs" placeholder="空欄ならそのまま"></label>
+        <label class="text-neutral-600">請求単価を変える<input id="${prefix}-bill-rate" type="number" min="0" step="0.01" class="inp text-xs" placeholder="空欄ならそのまま"></label>
+        <label class="text-neutral-600">支払単価を変える<input id="${prefix}-pay-rate" type="number" min="0" step="0.01" class="inp text-xs" placeholder="空欄ならそのまま"></label>
       </div>
       <p class="text-2xs text-neutral-400">単価を入れると、選んだ全員${bulk ? '・全日' : ''}に同じ単価を入れ、金額は手動変更になります${bulk ? '。表示は開始日の時点の見込みです' : ''}</p>
     </div>`
@@ -1759,10 +1761,10 @@
           ${a.price_locked ? `<button class="text-primary-600 hover:underline" data-action="boardResetPrice" data-id="${id}">単価ルールに戻す</button>` : '<span class="text-neutral-400">単価ルールから自動計算</span>'}</div>
         <div class="grid grid-cols-3 gap-2 items-end">
           <label>請求<select id="sp-bill-unit" class="inp text-xs">${opt(UNIT_LABEL, a.bill_unit_type || 'daily')}</select></label>
-          <label>請求単価<input id="sp-bill-rate" type="number" class="inp text-xs" value="${a.bill_rate ?? ''}"></label>
+          <label>請求単価<input id="sp-bill-rate" type="number" min="0" step="0.01" class="inp text-xs" value="${a.bill_rate ?? ''}"></label>
           <label>数量<input id="sp-bill-qty" type="number" step="0.25" min="0" max="24" class="inp text-xs" ${a.bill_unit_type === 'monthly' ? `value="" placeholder="1/${monthDays(a.bill_qty)}日" disabled title="月額はその月の働いた日数で割ります"` : `value="${qtyFixed(a) ? (a.bill_qty ?? '') : ''}" placeholder="${a.bill_qty ?? ''}" title="空欄なら計算時間（実績が入れば実働）を使います"`}></label>
           <label>支払<select id="sp-pay-unit" class="inp text-xs">${opt(UNIT_LABEL, a.pay_unit_type || 'daily')}</select></label>
-          <label>支払単価<input id="sp-pay-rate" type="number" class="inp text-xs" value="${a.pay_rate ?? ''}" placeholder="未設定"></label>
+          <label>支払単価<input id="sp-pay-rate" type="number" min="0" step="0.01" class="inp text-xs" value="${a.pay_rate ?? ''}" placeholder="未設定"></label>
           <label>数量<input id="sp-pay-qty" type="number" step="0.25" min="0" max="24" class="inp text-xs" ${a.pay_unit_type === 'monthly' ? `value="" placeholder="1/${monthDays(a.pay_qty)}日" disabled title="月額はその月の働いた日数で割ります"` : `value="${qtyFixed(a) ? (a.pay_qty ?? '') : ''}" placeholder="${a.pay_qty ?? ''}" title="空欄なら計算時間（実績が入れば実働）を使います"`}></label>
           <label>交通費の実費<input id="sp-fee" type="number" class="inp text-xs" value="${a.transportation_fee ?? 0}"></label>
           <label>交通費の請求<select id="sp-bt" class="inp text-xs">${opt(BT_LABEL, a.bill_transport_type || 'actual')}</select></label>
@@ -1986,8 +1988,8 @@
       <input class="inp text-xs col-span-8 rr-name" placeholder="役割（販売・リーダー等）" value="${esc(r.role_name || '')}" list="role-suggest">
       <input class="inp text-xs col-span-3 rr-count" type="number" min="1" max="200" value="${r.headcount || 1}" title="必要人数">
       <button class="text-neutral-400 hover:text-danger-500 col-span-1" onclick="this.closest('.role-row').classList.toggle('opacity-40'); this.closest('.role-row').dataset.del = this.closest('.role-row').dataset.del ? '' : '1'" title="削除"><i class="fas fa-xmark"></i></button>
-      <div class="col-span-6 flex gap-1">${unitSelect('rr-bill-unit', r.bill_unit_type || 'daily')}<input class="inp text-xs flex-1 min-w-0 rr-bill" type="number" min="0" placeholder="請求単価（任意）" value="${r.bill_rate ?? ''}" title="この枠だけ請求単価を変える場合"></div>
-      <div class="col-span-6 flex gap-1">${unitSelect('rr-pay-unit', r.pay_unit_type || 'daily')}<input class="inp text-xs flex-1 min-w-0 rr-pay" type="number" min="0" placeholder="支払単価（任意）" value="${r.pay_rate ?? ''}" title="この枠だけ支払単価を変える場合"></div>
+      <div class="col-span-6 flex gap-1">${unitSelect('rr-bill-unit', r.bill_unit_type || 'daily')}<input class="inp text-xs flex-1 min-w-0 rr-bill" type="number" min="0" step="0.01" placeholder="請求単価（任意）" value="${r.bill_rate ?? ''}" title="この枠だけ請求単価を変える場合"></div>
+      <div class="col-span-6 flex gap-1">${unitSelect('rr-pay-unit', r.pay_unit_type || 'daily')}<input class="inp text-xs flex-1 min-w-0 rr-pay" type="number" min="0" step="0.01" placeholder="支払単価（任意）" value="${r.pay_rate ?? ''}" title="この枠だけ支払単価を変える場合"></div>
       ${r.rate_role_name && r.rate_role_name !== r.role_name ? `<p class="col-span-12 text-2xs text-warning-600">単価ルールは「${esc(r.rate_role_name)}」の役割のものを使います</p>` : ''}
     </div>`).join('')
   }
@@ -2480,9 +2482,9 @@
           <div class="grid grid-cols-2 gap-2 text-xs">
             <label class="col-span-2">区分<select id="pp-eng" class="inp text-sm"><option value="regular" ${eng === 'regular' ? 'selected' : ''}>常勤案件</option><option value="spot" ${eng === 'spot' ? 'selected' : ''}>スポット案件（イベント・週末のみ等）</option></select></label>
             <label>請求の単位<select id="pp-bill-unit" class="inp text-sm">${opt(UNIT_LABEL, unitKey(p.unit_price_type))}</select></label>
-            <label>請求単価<input id="pp-bill" type="number" min="0" class="inp text-sm" value="${Number(p.unit_price ?? 0)}"></label>
+            <label>請求単価<input id="pp-bill" type="number" min="0" step="0.01" class="inp text-sm" value="${Number(p.unit_price ?? 0)}"></label>
             <label>支払の単位<select id="pp-pay-unit" class="inp text-sm">${opt(UNIT_LABEL, unitKey(p.pay_unit_type))}</select></label>
-            <label>支払単価<input id="pp-pay" type="number" min="0" class="inp text-sm" value="${p.pay_rate == null ? '' : Number(p.pay_rate)}" placeholder="未設定"></label>
+            <label>支払単価<input id="pp-pay" type="number" min="0" step="0.01" class="inp text-sm" value="${p.pay_rate == null ? '' : Number(p.pay_rate)}" placeholder="未設定"></label>
             <label>交通費の請求<select id="pp-bt" class="inp text-sm">${opt(BT_LABEL, p.bill_transport_type || 'actual')}</select></label>
             <label>定額の場合の金額<input id="pp-bt-amt" type="number" min="0" class="inp text-sm" value="${Number(p.bill_transport_amount || 0)}"></label>
             <label>交通費の支払<select id="pp-pt" class="inp text-sm">${opt(PT_LABEL, p.pay_transport_type || 'actual')}</select></label>
@@ -2737,7 +2739,7 @@
     const box = document.getElementById('rl-pay-total'); if (!box) return
     const base = document.getElementById('rl-pay').value, inc = document.getElementById('rl-inc').value
     box.textContent = inc !== '' && Number(inc) > 0
-      ? (base === '' ? 'インセンティブを入れるときは、支払単価（基本）も入力してください' : `計算に使う支払単価: ${yen(Number(base) + Number(inc))}（基本 ${yen(base)} ＋ インセンティブ ${yen(inc)}）`)
+      ? (base === '' ? 'インセンティブを入れるときは、支払単価（基本）も入力してください' : `計算に使う支払単価: ${yen(rate2(Number(base) + Number(inc)))}（基本 ${yen(base)} ＋ インセンティブ ${yen(inc)}）`)
       : ''
   }
   delegate('ruleUseReference', () => {
@@ -2760,7 +2762,8 @@
     const val = (v) => (v == null ? '' : esc(v))
     // インセンティブは支払単価に含めて保存しているので、入力欄には基本の単価（支払単価 − 加算額）を出す
     const inc = Number(r.pay_incentive) > 0 && r.pay_rate != null ? Number(r.pay_incentive) : null
-    const payBase = r.pay_rate == null ? null : Number(r.pay_rate) - (inc || 0)
+    // 単価は小数第2位まで（#9985）。足し引きで出る誤差（912.4999…）を2桁に丸める
+    const payBase = r.pay_rate == null ? null : rate2(Number(r.pay_rate) - (inc || 0))
     modal(`
       <h3 class="font-bold text-lg mb-1">${rule ? '単価ルールを編集' : '単価ルールを追加'}</h3>
       <p class="text-xs text-neutral-500 mb-3">条件に合うシフトで、入力した項目だけを上書きします（空欄の項目は上書きしません）${rule ? '。保存しても、登録済みのシフトの金額は再適用するまで変わりません' : ''}</p>
@@ -2772,10 +2775,10 @@
         <label class="col-span-2 ${r.staff_id ? '' : 'hidden'}" id="rl-staff-scope-wrap">このスタッフの単価を使う案件<select id="rl-staff-scope" class="inp text-sm">
           <option value="project">この案件だけ</option><option value="all" ${r.staff_id && !r.project_id ? 'selected' : ''}>すべての案件（このスタッフの全案件に共通）</option></select></label>` : ''}
         <label>請求の単位<select id="rl-bill-unit" class="inp text-sm">${unitOpt(r.bill_unit_type)}</select></label>
-        <label>請求単価<input id="rl-bill" type="number" min="0" class="inp text-sm" placeholder="変更しない" value="${val(r.bill_rate)}"></label>
+        <label>請求単価<input id="rl-bill" type="number" min="0" step="0.01" class="inp text-sm" placeholder="変更しない" value="${val(r.bill_rate)}"></label>
         <label>支払の単位<select id="rl-pay-unit" class="inp text-sm">${unitOpt(r.pay_unit_type)}</select></label>
-        <label>支払単価（基本）<input id="rl-pay" type="number" min="0" class="inp text-sm" placeholder="変更しない" value="${val(payBase)}"></label>
-        <label class="col-span-2">インセンティブ（加算額・任意）<input id="rl-inc" type="number" min="0" class="inp text-sm" placeholder="例: 2000" value="${val(inc)}">
+        <label>支払単価（基本）<input id="rl-pay" type="number" min="0" step="0.01" class="inp text-sm" placeholder="変更しない" value="${val(payBase)}"></label>
+        <label class="col-span-2">インセンティブ（加算額・任意）<input id="rl-inc" type="number" min="0" step="0.01" class="inp text-sm" placeholder="例: 2000" value="${val(inc)}">
           <span class="block text-2xs text-neutral-400">支払単価（基本）に足した金額で計算します（時給なら1時間あたりの加算）</span>
           <span class="block text-2xs text-primary-700" id="rl-pay-total"></span></label>
         <label>交通費の請求<select id="rl-bt" class="inp text-sm">${opt(BT_LABEL, r.bill_transport_type)}</select></label>
@@ -2822,7 +2825,7 @@
       // クライアント単位のルール（#470）
       ...(ctx.client_scope ? { client_id: ctx.client_id } : {}),
       bill_unit_type: v('rl-bill-unit'), bill_rate: v('rl-bill'), pay_unit_type: v('rl-pay-unit'),
-      pay_rate: hasInc && Number(inc) > 0 ? String(Number(base) + Number(inc)) : base, pay_incentive: hasInc ? inc : null,
+      pay_rate: hasInc && Number(inc) > 0 ? String(rate2(Number(base) + Number(inc))) : base, pay_incentive: hasInc ? inc : null,
       bill_transport_type: v('rl-bt') || null, bill_transport_amount: v('rl-bt-amt'), pay_transport_type: v('rl-pt') || null, pay_transport_amount: v('rl-pt-amt'), memo: v('rl-memo'),
       valid_from: v('rl-from'), valid_to: v('rl-to'),
     }

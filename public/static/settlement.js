@@ -724,10 +724,10 @@
       <p class="text-xs text-neutral-500 mb-3">${esc(r.staff_name)}・${dayjs(r.work_date).format('M/D(dd)')}・${esc(r.project_name)}。時給の数量を空欄にすると計算時間（${hrs(r.hours)}${r.pay_hours != null && r.pay_hours !== r.hours ? `・支払 ${hrs(r.pay_hours)}` : ''}）を使い、実績が変われば数量も変わります。数量を入れると固定します</p>
       <div class="grid grid-cols-3 gap-2 text-xs" id="settle-price-form">
         <label>請求<select id="spx-bill-unit" class="inp text-xs">${opt(UNIT_LABEL, r.bill_unit_type)}</select></label>
-        <label>請求単価<input id="spx-bill-rate" type="number" class="inp text-xs" value="${r.bill_rate ?? ''}"></label>
+        <label>請求単価<input id="spx-bill-rate" type="number" min="0" step="0.01" class="inp text-xs" value="${r.bill_rate ?? ''}"></label>
         <label>数量<input id="spx-bill-qty" type="number" step="0.25" min="0" max="24" class="inp text-xs" ${r.bill_unit_type === 'monthly' ? `value="" placeholder="1/${r.bill_month_days || '-'}日" disabled title="月額はその月の働いた日数で割ります"` : `value="${r.qty_locked ? (r.bill_qty ?? '') : ''}" placeholder="${r.bill_qty ?? ''}"`}></label>
         <label>支払<select id="spx-pay-unit" class="inp text-xs">${opt(UNIT_LABEL, r.pay_unit_type)}</select></label>
-        <label>支払単価<input id="spx-pay-rate" type="number" class="inp text-xs" value="${r.pay_rate ?? ''}" placeholder="未設定"></label>
+        <label>支払単価<input id="spx-pay-rate" type="number" min="0" step="0.01" class="inp text-xs" value="${r.pay_rate ?? ''}" placeholder="未設定"></label>
         <label>数量<input id="spx-pay-qty" type="number" step="0.25" min="0" max="24" class="inp text-xs" ${r.pay_unit_type === 'monthly' ? `value="" placeholder="1/${r.pay_month_days || '-'}日" disabled title="月額はその月の働いた日数で割ります"` : `value="${r.qty_locked ? (r.pay_qty ?? '') : ''}" placeholder="${r.pay_qty ?? ''}"`}></label>
         <label>交通費の実費<input id="spx-fee" type="number" class="inp text-xs" value="${r.transportation_fee}"></label>
         <label>交通費の請求<select id="spx-bt" class="inp text-xs">${opt(BT_LABEL, r.bill_transport_type)}</select></label>

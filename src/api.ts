@@ -12,7 +12,7 @@ import { OFFBOARDING_TABLES, OFFBOARDING_GRACE_DAYS, OFFBOARDING_GRACE_MIN, OFFB
   countOffboardingData, findUnknownOffboardingTables, exportOffboardingTablePage, exportOffboardingTableKeyset, listOffboardingFiles, listOffboardingFilesKeyset, findOffboardingFile, offboardingBucket, runOffboardingDeletion } from './services/retention'
 import { buildUpdate } from './lib/update-builder'
 import chatApi from './roster-chat'
-import shiftBoardApi, { MONEY_MAX, applyPricingToShift, rangeError, stripMoney } from './shift-board'
+import shiftBoardApi, { MONEY_MAX, applyPricingToShift, rangeError, rateError, rateOrNull, stripMoney } from './shift-board'
 import { applyRateOverride, inheritView, inheritedAdjustStmt, loadPricingData, parsePriceSource, rateOverrideOf } from './shift-board'
 import boardApi from './board'
 import { adminBadgesApi } from './admin-badges'
@@ -4998,7 +4998,8 @@ api.post('/admin/projects', async (c) => {
   if (b.project_type && !PROJECT_TYPES.includes(b.project_type)) return c.json({ error: '業務種別が正しくありません' }, 400)
   if (b.unit_price_type && !UNIT_PRICE_TYPES.includes(b.unit_price_type)) return c.json({ error: '単価の種類が正しくありません' }, 400)
   // 負の単価は受け付けない（#218。単価パネルの PUT /admin/projects/:id/pricing と同じ範囲）
-  const priceErr = rangeError([['単価', b.unit_price, 0, MONEY_MAX]])
+  // 単価は小数第2位まで（#9985。月額は円単位で、下の月額の確かめで見る）
+  const priceErr = rangeError([['単価', b.unit_price, 0, MONEY_MAX]]) || (b.unit_price_type === 'monthly' ? null : rateError([['単価', b.unit_price]]))
   if (priceErr) return c.json({ error: priceErr }, 400)
   if ((normalizeSkills(b.required_skills) || '').length > 500) return c.json({ error: '必要スキルは500文字以内で入力してください' }, 400)
   // クライアントは任意（社内研修など）。空欄は NULL にする（'' のまま入れると外部キー違反になる）。他社のクライアントは指定できない
@@ -5033,7 +5034,7 @@ api.post('/admin/projects', async (c) => {
   const r = await c.env.DB.prepare(`INSERT INTO projects (company_id, client_id, project_name, project_type, location, unit_price_type, unit_price, required_skills, report_template_id, requirements, manual_text, memo, remarks)
     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE ? OR NOT EXISTS (SELECT 1 FROM projects WHERE company_id = ? AND project_name = ? AND status = 'active')`)
     .bind(u.company_id, clientId, name, b.project_type || 'mobile_shop', b.location ?? null,
-      b.unit_price_type || 'daily', b.unit_price || 0, normalizeSkills(b.required_skills), templateId, b.requirements ?? null, b.manual_text ?? null, b.memo ?? null, blank(b.remarks) ? null : String(b.remarks).trim(),
+      b.unit_price_type || 'daily', rateOrNull(b.unit_price) ?? 0, normalizeSkills(b.required_skills), templateId, b.requirements ?? null, b.manual_text ?? null, b.memo ?? null, blank(b.remarks) ? null : String(b.remarks).trim(),
       b.allow_duplicate === true ? 1 : 0, u.company_id, name).run()
   if (!r.meta.changes) return c.json(dupMsg, 409)
   const cs = Object.keys(contact.set)
