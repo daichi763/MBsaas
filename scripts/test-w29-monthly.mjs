@@ -207,6 +207,20 @@ const B = await newStaff(2)
   must(await admin.post('/api/admin/rate-rules', { project_id: PD, staff_id: G, bill_unit_type: 'monthly', bill_rate: 90000 }), 'rate rule')
   const g = [await newShift(PD, G, '2016-05-02'), await newShift(PD, G, '2016-05-03')]
   ok('単価ルール（スタッフ別）で月額を選べる: 90,000 ÷ 2 = 45,000', amounts(await shiftRows(g)).every(v => v === 45000), amounts(await shiftRows(g)))
+  // 単価ルールの再適用の確認（dry_run）: 日額 16,000 × 3日 を月額 100,000 にすると、増減は +52,000（1日分 33,333・33,333・33,334）。
+  // 1件ごとに月額まるごと（+252,000）に見せない（RV で修正）
+  {
+    const J = await newStaff(7)
+    const jj = [await newShift(PD, J, '2016-05-09'), await newShift(PD, J, '2016-05-10'), await newShift(PD, J, '2016-05-11')]
+    ok('再適用の確認の準備: 日額 16,000 × 3日', amounts(await shiftRows(jj)).every(v => v === 16000), amounts(await shiftRows(jj)))
+    must(await admin.post('/api/admin/rate-rules', { project_id: PD, staff_id: J, bill_unit_type: 'monthly', bill_rate: 100000 }), 'rate rule J')
+    const pv = must(await admin.post('/api/admin/shifts/reprice', { from: '2016-05-01', to: '2016-05-31', project_id: PD, staff_id: J, dry_run: true }), 'reprice preview')
+    const after = pv.changes.map(x => x.bill_after)
+    ok('再適用の確認: 月額は月の日数で割った見込み（増減 +52,000、1日分 33,333・33,333・33,334）', pv.bill_diff === 52000 && JSON.stringify(after) === JSON.stringify([33333, 33333, 33334]), [pv.bill_diff, after])
+    must(await admin.post('/api/admin/shifts/reprice', { from: '2016-05-01', to: '2016-05-31', project_id: PD, staff_id: J }), 'reprice')
+    const jr = amounts(await shiftRows(jj))
+    ok('再適用の後の金額は、確認の見込みと同じ', JSON.stringify(jr) === JSON.stringify(after), [jr, after])
+  }
   const hh = [await newShift(PD, H, '2016-05-02'), await newShift(PD, H, '2016-05-03')]
   for (const id of hh) must(await admin.put(`/api/admin/shifts/${id}/price`, { bill_unit_type: 'monthly', bill_rate: 120000, bill_qty: 3 }), 'manual price')
   const hr = await shiftRows(hh)

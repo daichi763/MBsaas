@@ -2136,12 +2136,47 @@ async function repriceRows(db: D1Database, companyId: number, rows: any[], keepI
 // 計算するのは日付順に PREVIEW_MAX 件まで（超えたら truncated）。一覧は PREVIEW_LIST 件まで返す
 const PREVIEW_MAX = 3000, PREVIEW_LIST = 200
 const sameValue = (a: any, b: any) => (a == null || b == null) ? (a == null) === (b == null) : (typeof a === 'number' || typeof b === 'number') ? Math.abs(Number(a) - Number(b)) < 0.005 : String(a) === String(b)
+// 再適用の確認での月額（#9984）の見込み: 書き込んだ後にトリガー（migrations/0114）が入れる1日分（月額 ÷ 同じ月の働いた日数、余りは最後の稼働日）を、
+// 同じ割り方で upd に入れる（calcAmounts のままだと1件ごとに月額まるごとになり、増減の合計が日数倍に見えるため）。
+// 日数には、確認の対象でない同じ月の月額のシフト（手動変更・確定済み・期間の外）も数える
+async function estimateMonthlyPreview(db: D1Database, companyId: number, part: any[], upd: Record<string, any>[]) {
+  const idx = part.map((_, i) => i).filter(i => upd[i].bill_unit_type === 'monthly' || upd[i].pay_unit_type === 'monthly')
+  if (!idx.length) return
+  const counted = (s: any) => s.status === 'confirmed' || s.status === 'substitute'
+  const ym = (d: any) => String(d).slice(0, 7)
+  const months = idx.map(i => ym(part[i].work_date)).sort()
+  const inPart = new Set(part.map(s => Number(s.shift_id)))
+  const others = ((await db.prepare(`SELECT shift_id, staff_id, project_id, work_date, start_time, bill_unit_type, pay_unit_type FROM shifts
+      WHERE company_id = ? AND staff_id IN ${JSON_IN} AND project_id IN ${JSON_IN} AND work_date BETWEEN ? AND ? AND status IN ('confirmed','substitute')
+        AND (bill_unit_type = 'monthly' OR pay_unit_type = 'monthly')`)
+    .bind(companyId, bindJsonArray(idx.map(i => part[i].staff_id)), bindJsonArray(idx.map(i => part[i].project_id)), months[0] + '-01', months[months.length - 1] + '-31')
+    .all()).results as any[]).filter(x => !inPart.has(Number(x.shift_id)))
+  const key = (s: any) => `${s.staff_id}:${s.project_id}:${ym(s.work_date)}`
+  const later = (a: any, b: any) => String(a.work_date).localeCompare(String(b.work_date)) || String(a.start_time || '').localeCompare(String(b.start_time || '')) || Number(a.shift_id) - Number(b.shift_id)
+  for (const [unitCol, rateCol, amtCol, qtyCol] of [['bill_unit_type', 'bill_rate', 'unit_price', 'bill_qty'], ['pay_unit_type', 'pay_rate', 'pay_amount', 'pay_qty']]) {
+    // グループ（スタッフ・案件・月）ごとの日数と、余りを足す最後のシフト
+    const groups = new Map<string, { n: number; last: any }>()
+    const add = (s: any) => { const g = groups.get(key(s)); if (!g) groups.set(key(s), { n: 1, last: s }); else { g.n++; if (later(s, g.last) > 0) g.last = s } }
+    part.forEach((s, i) => { if (upd[i][unitCol] === 'monthly' && counted(s)) add(s) })
+    for (const x of others) if (x[unitCol] === 'monthly' && groups.has(key(x))) add(x)
+    for (const i of idx) {
+      if (upd[i][unitCol] !== 'monthly') continue
+      const s = part[i], rate = upd[i][rateCol], g = groups.get(key(s))
+      if (rate == null) { if (amtCol === 'pay_amount') upd[i][amtCol] = null; continue }
+      if (!counted(s) || !g) { upd[i][amtCol] = 0; upd[i][qtyCol] = 0; continue }
+      const each = Math.floor(Number(rate) / g.n)
+      upd[i][amtCol] = each + (Number(g.last.shift_id) === Number(s.shift_id) ? Number(rate) - each * g.n : 0)
+      upd[i][qtyCol] = 1 / g.n
+    }
+  }
+}
 async function repricePreview(db: D1Database, companyId: number, where: string[], binds: any[]) {
   const rows = (await db.prepare(`SELECT * FROM shifts WHERE ${where.join(' AND ')} ORDER BY work_date, shift_id LIMIT ?`).bind(...binds, PREVIEW_MAX + 1).all()).results as any[]
   const part = rows.slice(0, PREVIEW_MAX)
   const out = { checked: part.length, truncated: rows.length > PREVIEW_MAX, changed: 0, bill_diff: 0, pay_diff: 0, payee_changed: 0, pay_set_changed: 0, changes: [] as any[] }
   if (!part.length) return out
   const { upd, staff } = await planReprice(db, companyId, part)
+  await estimateMonthlyPreview(db, companyId, part, upd as Record<string, any>[])
   const names = new Map(((await db.prepare(`SELECT project_id, project_name FROM projects WHERE company_id = ? AND project_id IN ${JSON_IN}`)
     .bind(companyId, bindJsonArray(part.map(s => s.project_id))).all()).results as any[]).map(p => [p.project_id, p.project_name]))
   const compared = PRICE_COLUMNS.filter(k => k !== 'price_source' && k !== 'price_locked')
