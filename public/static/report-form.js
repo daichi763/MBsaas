@@ -7,7 +7,8 @@ const REPORT_TEXT_MAX = 2000 // src/lib/validate.ts の REPORT_TEXT_MAX と同�
 const reportFieldRequired = (f) => !!f && (f.required === true || f.required === 1 || f.required === 'true')
 
 // fields: テンプレートの項目、pv: キー → 初期値（提出済みの値）。
-// opts: incident / complaint（インシデント・クレームの印の初期値）、submitLabel・submitDisabled（提出ボタン）
+// opts: incident / complaint（インシデント・クレームの印の初期値）、submitLabel・submitDisabled（提出ボタン）、
+//   stickySubmit（提出ボタンを画面の下（スタッフアプリの下のタブの上）に固定する。スタッフアプリの日報の画面だけ。#9986）
 function reportFormBodyHtml(fields, pv, opts) {
   const o = opts || {}
   const val = (k) => { const v = pv ? pv(k) : ''; return v == null ? '' : v }
@@ -20,8 +21,10 @@ function reportFormBodyHtml(fields, pv, opts) {
     <div id="${kind}-note-box" class="${checked ? '' : 'hidden'} mb-2">
       <label class="text-xs text-neutral-500 block mb-1" for="${kind}-note">${label}の内容<span class="text-danger-500 ml-0.5">*</span></label>
       <textarea id="${kind}-note" rows="3" maxlength="${REPORT_TEXT_MAX}" class="inp rpt-autogrow" placeholder="何が・いつ・どう対応したか（例: 14時ごろ、料金の説明についてお客様から苦情。店長に報告し、説明し直して納得いただいた）">${esc(val(kind + '_note'))}</textarea>
+      <p class="rpt-err hidden text-xs text-danger-700 font-bold mt-1"></p>
     </div>`
   return `
+      <div id="report-errors" class="hidden" tabindex="-1"></div>
       ${numFields.length ? `<section class="card p-4">
         <div class="flex items-center justify-between mb-3 gap-2">
           <h3 class="font-bold text-neutral-700 text-sm"><i class="fas fa-hashtag text-primary-500 mr-1"></i>実績件数</h3>
@@ -34,9 +37,10 @@ function reportFormBodyHtml(fields, pv, opts) {
               <label class="text-xs text-neutral-500 block mb-1">${esc(f.label)}${reqMark(f)}</label>
               <div class="flex items-stretch gap-1">
                 <button type="button" class="btn btn-outline px-0 w-10 shrink-0 text-lg" data-action="reportCount" data-step="-1" aria-label="${esc(f.label)}を1減らす">−</button>
-                <input type="number" inputmode="numeric" min="0" max="99999" step="1" data-key="${esc(f.key)}" data-label="${esc(f.label)}" class="inp rpt-field rpt-num text-center text-lg font-bold min-w-0 px-1" value="${esc(val(f.key))}" placeholder="未入力">
+                <input type="number" inputmode="numeric" min="0" max="99999" step="1" data-key="${esc(f.key)}" data-label="${esc(f.label)}" class="inp rpt-field rpt-num text-center text-lg font-bold min-w-0 px-1 placeholder:font-normal placeholder:text-sm" value="${esc(val(f.key))}" placeholder="—" aria-label="${esc(f.label)}">
                 <button type="button" class="btn btn-outline px-0 w-10 shrink-0 text-lg" data-action="reportCount" data-step="1" aria-label="${esc(f.label)}を1増やす">＋</button>
               </div>
+              <p class="rpt-err hidden text-xs text-danger-700 font-bold mt-1"></p>
             </div>`).join('')}
         </div>
       </section>` : ''}
@@ -54,6 +58,7 @@ function reportFormBodyHtml(fields, pv, opts) {
               <label class="text-xs text-neutral-500 block mb-1">${esc(f.label)}${reqMark(f)}</label>
               <textarea data-key="${esc(f.key)}" data-label="${esc(f.label)}" data-required="${reportFieldRequired(f) ? '1' : ''}" rows="${f.type === 'textarea' ? 3 : 2}" maxlength="${max}" class="inp rpt-field rpt-autogrow" placeholder="${esc(f.placeholder || f.label + 'を入力')}">${esc(v)}</textarea>
               <p class="text-2xs text-neutral-400 text-right mt-0.5" data-counter data-max="${max}">残り ${max - v.length} 文字</p>
+              <p class="rpt-err hidden text-xs text-danger-700 font-bold mt-1"></p>
             </div>`
           }).join('')}
         </div>
@@ -62,8 +67,67 @@ function reportFormBodyHtml(fields, pv, opts) {
         ${flagBox('incident', 'インシデント', o.incident)}
         ${flagBox('complaint', 'クレーム', o.complaint)}
       </section>
-      <button type="submit" id="report-submit" class="btn btn-primary w-full py-3.5 text-base" ${o.submitDisabled ? 'disabled' : ''}>${esc(o.submitLabel || '日報を提出する')}</button>`
+      ${o.stickySubmit ? '<div class="report-submit-bar">' : ''}<button type="submit" id="report-submit" class="btn btn-primary w-full py-3.5 text-base${o.stickySubmit ? ' shadow-lg' : ''}" ${o.submitDisabled ? 'disabled' : ''}>${esc(o.submitLabel || '日報を提出する')}</button>${o.stickySubmit ? '</div>' : ''}`
 }
+
+// 送る前の確認（#9986。11/16 の打合せの No.4・ui-staff-11）。空の欄を全部調べ、それぞれの欄に赤い枠と「＊未入力です」などの文を付け、
+// フォームの先頭に件数と欄へのリンク・「空欄を0にする」をまとめて出して、そこへ移る。問題があれば true を返す（送信しない）。入力した値は消さない。
+// 直した欄は、入力したときに印を外す（reportFormBind）
+const RPT_INVALID = ['rpt-invalid', 'ring-2', 'ring-danger-400', 'border-danger-400']
+function reportFormCheck(form) {
+  const errs = []
+  form.querySelectorAll('.rpt-num').forEach(el => { if (el.value.trim() === '') errs.push({ el, msg: '＊未入力です', kind: 'num' }) })
+  form.querySelectorAll('textarea.rpt-field').forEach(el => { if (el.dataset.required && !el.value.trim()) errs.push({ el, msg: `＊「${el.dataset.label}」を入力してください`, kind: 'text' }) })
+  for (const [kind, label] of [['incident', 'インシデント'], ['complaint', 'クレーム']]) {
+    const flag = form.querySelector('#' + kind + '-flag'), note = form.querySelector('#' + kind + '-note')
+    if (flag && note && flag.checked && !note.value.trim()) errs.push({ el: note, msg: `＊${label}の内容（何が・いつ・どう対応したか）を入力してください`, kind: 'text', label })
+  }
+  form.querySelectorAll('.rpt-invalid').forEach(el => reportFieldClearError(el))
+  const box = form.querySelector('#report-errors')
+  if (!errs.length) { if (box) { box.className = 'hidden'; box.innerHTML = '' } return false }
+  errs.forEach((x, i) => {
+    x.el.classList.add(...RPT_INVALID)
+    x.el.setAttribute('aria-invalid', 'true')
+    if (!x.el.id) x.el.id = 'rpt-f-' + i
+    const msg = reportFieldErrorEl(x.el)
+    if (msg) { msg.textContent = x.msg; msg.classList.remove('hidden'); msg.id = x.el.id + '-err'; x.el.setAttribute('aria-describedby', msg.id) }
+  })
+  const nums = errs.filter(x => x.kind === 'num').length
+  if (box) {
+    box.className = 'bg-danger-50 border-2 border-danger-400 rounded-2xl p-4 text-sm text-danger-800 outline-none scroll-mt-20'
+    box.setAttribute('role', 'alert')
+    box.innerHTML = `<p class="font-bold text-base"><i class="fas fa-circle-exclamation mr-1"></i>未入力が${errs.length}件あります</p>
+      ${nums ? '<p class="mt-1">0件の項目は「0」を入れてください。まとめて入れるときは「空欄を0にする」を押してください。</p>' : ''}
+      <ul class="mt-2 flex flex-wrap gap-x-3 gap-y-1">${errs.map(x => `<li><a href="#" class="underline" data-action="reportErrJump" data-target="${esc(x.el.id)}">${esc(x.label ? x.label + 'の内容' : x.el.dataset.label || '')}</a></li>`).join('')}</ul>
+      ${nums ? '<button type="button" class="btn btn-outline bg-surface mt-3 text-sm" data-action="reportFillZero">空欄を0にする</button>' : ''}`
+    if (box.scrollIntoView) box.scrollIntoView({ block: 'start', behavior: 'smooth' })
+    try { box.focus({ preventScroll: true }) } catch (e) { box.focus() }
+  }
+  return true
+}
+// 欄の下のエラーの文の場所（数の欄は −／＋ の行の下、文の欄は残りの文字数の下）
+function reportFieldErrorEl(el) {
+  const wrap = el.classList.contains('rpt-num') && el.closest('div.flex') ? el.closest('div.flex').parentElement : el.parentElement
+  return wrap ? wrap.querySelector('.rpt-err') : null
+}
+function reportFieldClearError(el) {
+  el.classList.remove(...RPT_INVALID)
+  el.removeAttribute('aria-invalid'); el.removeAttribute('aria-describedby')
+  const msg = reportFieldErrorEl(el)
+  if (msg) { msg.textContent = ''; msg.classList.add('hidden') }
+}
+// 印がすべて外れたら、先頭のまとめも消す
+function reportErrorsSync(form) {
+  const box = form.querySelector('#report-errors')
+  if (box && !box.classList.contains('hidden') && !form.querySelector('.rpt-invalid')) { box.className = 'hidden'; box.innerHTML = '' }
+}
+delegate('reportErrJump', (el, ev) => {
+  if (ev) ev.preventDefault()
+  const t = document.getElementById(el.dataset.target)
+  if (!t) return
+  if (t.scrollIntoView) t.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  try { t.focus({ preventScroll: true }) } catch (e) { t.focus() }
+})
 
 // 入力欄の動き: 複数行の欄は入力に合わせて高さを伸ばし、残りの文字数を出す。インシデント・クレームの印で内容の欄を出し入れする。
 // 非表示の欄（インシデントの内容など）は高さを測れないので、表示したときに測る
@@ -77,6 +141,10 @@ function reportFormBind(form) {
       if (c && c.hasAttribute('data-counter')) c.textContent = `残り ${Number(c.dataset.max) - el.value.length} 文字`
     })
   })
+  form.addEventListener('input', (ev) => {
+    const t = ev.target
+    if (t && t.classList && t.classList.contains('rpt-invalid') && String(t.value).trim() !== '') { reportFieldClearError(t); reportErrorsSync(form) }
+  })
   form.querySelectorAll('.rpt-flag').forEach(el => el.addEventListener('change', () => {
     const box = form.querySelector('#' + el.dataset.kind + '-note-box')
     if (!box) return
@@ -88,7 +156,8 @@ function reportFormBind(form) {
 // 実績件数の空欄を0で埋める（0件をまとめて入力する）
 delegate('reportFillZero', (el) => {
   const form = el.closest('form'); if (!form) return
-  form.querySelectorAll('.rpt-num').forEach(x => { if (x.value.trim() === '') x.value = '0' })
+  form.querySelectorAll('.rpt-num').forEach(x => { if (x.value.trim() === '') x.value = '0'; if (x.classList.contains('rpt-invalid')) reportFieldClearError(x) })
+  reportErrorsSync(form)
   form.dispatchEvent(new Event('input'))
 })
 // 稼働中のカウント（#279）。−／＋ で1件ずつ増減し、入力のイベントで下書き（端末）に保存する
