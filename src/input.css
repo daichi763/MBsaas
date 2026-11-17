@@ -218,8 +218,10 @@
   .report-btn { width: 100%; display: flex; align-items: center; gap: .9rem; padding: 1rem; border-radius: var(--radius-card); border: 2px solid rgb(var(--color-border)); background: rgb(var(--color-surface)); text-align: left; transition: all .15s; }
   .report-btn.done { border-color: rgb(var(--color-success)); background: rgb(var(--color-success-soft)); }
   .report-btn.next { border-color: rgb(var(--color-primary)); background: rgb(var(--color-primary-soft)); box-shadow: var(--shadow-next); }
-  /* 済んだ報告・送信待ちの報告は押せないが、薄くしない（記録した時刻を読めるように。#9986） */
-  .report-btn:disabled { cursor: default; }
+  .report-btn:disabled { opacity: .55; }
+  /* スタッフアプリのホームの報告の一覧: 済んだ報告・送信待ちの報告は押せないが、薄くしない（記録した時刻を読めるように。#9986）。
+     報告用URLの画面（report-link.js の #report-link-attendance）は今までどおり薄くする */
+  #attendance-section .report-btn:disabled { opacity: 1; cursor: default; }
   /* 今は押せない報告（後の報告が済んだ・修正の申請中・受付の時間外）: 点線の枠と薄い灰色の面で、押せる報告と見分ける（#9986。11/16 の打合せの No.2）。
      ボタンは無効にせず、押すと押せない理由と次にすることを出す */
   .report-btn.locked { background: rgb(var(--color-surface-hover)); border-style: dashed; border-color: rgb(var(--color-border-strong)); }
