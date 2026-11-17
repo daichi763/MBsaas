@@ -2084,7 +2084,7 @@ app.put('/shifts/:id/price', async (c) => {
   if (err) return c.json({ error: err }, 400)
   const billUnit = unitIn(b.bill_unit_type, s.bill_unit_type || 'daily'), payUnit = unitIn(b.pay_unit_type, s.pay_unit_type || 'daily')
   // 単価は小数第2位まで（#9985）。月額は円単位
-  const rateErr = rateError([['請求単価', b.bill_rate, billUnit], ['支払単価', b.pay_rate, payUnit]])
+  const rateErr = rateError([['請求単価', b.bill_rate === undefined ? s.bill_rate : b.bill_rate, billUnit], ['支払単価', b.pay_rate === undefined ? s.pay_rate : b.pay_rate, payUnit]])
   if (rateErr) return c.json({ error: rateErr }, 400)
   const billRate = b.bill_rate !== undefined ? rateOrNull(b.bill_rate) : s.bill_rate
   const payRate = b.pay_rate !== undefined ? rateOrNull(b.pay_rate) : s.pay_rate
@@ -3123,7 +3123,9 @@ app.put('/projects/:id/pricing', async (c) => {
   // 負の単価・交通費・休憩は受け付けない（#218）
   const range = rangeError([['請求単価', b.unit_price, 0, MONEY_MAX], ['支払単価', b.pay_rate, 0, MONEY_MAX], ['交通費の請求額', b.bill_transport_amount, 0, MONEY_MAX],
     ['交通費の支払額', b.pay_transport_amount, 0, MONEY_MAX], ['休憩', b.default_break_minutes, 0, BREAK_MAX]])
-    || rateError([['請求単価', b.unit_price, unitIn(b.unit_price_type, unitOf(p.unit_price_type))], ['支払単価', b.pay_rate, unitIn(b.pay_unit_type, unitOf(p.pay_unit_type))]])
+    // 単位だけを月額に変えたときも、残る単価で確かめる
+    || rateError([['請求単価', b.unit_price === undefined || b.unit_price === '' ? p.unit_price : b.unit_price, unitIn(b.unit_price_type, unitOf(p.unit_price_type))],
+      ['支払単価', b.pay_rate === undefined ? p.pay_rate : b.pay_rate, unitIn(b.pay_unit_type, unitOf(p.pay_unit_type))]])
   if (range) return c.json({ error: range }, 400)
   const validFrom = optDate(b.price_valid_from)
   if (validFrom && !isISODate(validFrom)) return c.json({ error: '適用開始日が正しくありません' }, 400)
