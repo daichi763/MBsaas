@@ -171,6 +171,15 @@ const own = staffArr.find(s => s.affiliation_type === 'own_employee' && s.user_r
     ok('操作: 従業員の口座の変更は「変更あり」だけ（値は記録に残さない）。ほかの項目は前後の値',
       e.label === '従業員の情報の変更' && accCh && accCh.s === 1 && accCh.a === undefined && !e.detail_json.includes(acct) && !e.detail_json.includes(`${PFX}銀行`) && dep && dep.a === `${PFX}部`, e)
   } else ok('操作: 従業員の情報を保存できる（前提）', false, r)
+  // 参考単価の変更（RV で追加）。前後の値で残す。行の ID（employee_record_id）は変わった項目に出さない
+  const rp = await admin.put(`/api/admin/staff/${sid}/reference-pay`, { unit: 'daily', amount: 12345 })
+  if (rp.status === 200) {
+    const [p] = await lastAudit()
+    const pch = (detailOf(p).changes || []).find(x => x.f === 'reference_pay_amount')
+    ok('操作: スタッフの参考単価の変更が前後の値で残る', p.label === 'スタッフの参考単価の変更' && Number(p.target_id) === Number(sid) && pch && pch.a === '12345', p)
+  } else ok('操作: スタッフの参考単価を保存できる（前提）', false, rp)
+  const [emp] = await sql(`SELECT detail_json FROM audit_logs WHERE action = 'employee_update' ORDER BY audit_id DESC LIMIT 1`)
+  ok('操作: 従業員の変更の項目に、行の ID（employee_record_id）を出さない', emp && !String(emp.detail_json).includes('employee_record_id'), emp)
   // 失敗した操作は残さない
   const b2 = await auditCount()
   const bad = await admin.put(`/api/admin/staff/${sid}`, { name: '' })
@@ -370,7 +379,7 @@ let newUserId = null
   const recent = await sql(`SELECT COUNT(*) AS n FROM audit_logs WHERE company_id = 1 AND created_at >= '${today}'`)
   ok('保存の期間: 1年を過ぎた記録は毎日の cron（auth_purge）で消え、1年以内の記録は残る', sc.status === 200 && Number(left[0].n) === 0 && Number(recent[0].n) > 10, { status: sc.status, left, recent })
   const ret = read('src/services/retention.ts')
-  ok('解約の削除（OFFBOARDING_TABLES）と退職後の削除の対象に audit_logs がある', ret.includes("{ target: 'audit_logs', label: '操作の記録', table: 'audit_logs', where: OB_CO }") && ret.includes("DELETE FROM audit_logs WHERE target_type = 'staff' AND target_id = ?"))
+  ok('解約の削除（OFFBOARDING_TABLES）と退職後の削除の対象に audit_logs がある', ret.includes("{ target: 'audit_logs', label: '操作の記録', table: 'audit_logs', where: OB_CO }") && ret.includes("DELETE FROM audit_logs WHERE company_id = (SELECT company_id FROM staff_profiles WHERE staff_id = ?) AND target_type = 'staff' AND target_id = ?"))
   const runs = await sql(`SELECT result_json FROM cron_runs WHERE job = 'auth_purge' ORDER BY run_id DESC LIMIT 1`).catch(() => [])
   if (runs.length) ok('保存の期間: cron の結果に消した操作の記録の件数が出る', /"audit_logs":\s*\d+/.test(String(runs[0].result_json || '')), runs[0])
 }

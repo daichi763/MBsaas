@@ -736,7 +736,8 @@ async function cleanupRetiredStaffData(db: D1Database, buckets: RetentionBuckets
         // シフト・精算の操作履歴（#159）。その人が担当していたシフトの履歴（削除したシフトの分を含む）も消す。shifts より先に消す
         [null, db.prepare(`DELETE FROM operation_logs WHERE staff_id = ? OR (entity = 'shift' AND entity_id IN (SELECT shift_id FROM shifts WHERE staff_id = ?))`).bind(staffId, staffId)],
         // 操作の記録（#9988）のうち、その人を対象にした行（ふつうは1年で消えているが、保留を解いた人などのために消す）
-        [null, db.prepare(`DELETE FROM audit_logs WHERE target_type = 'staff' AND target_id = ?`).bind(staffId)],
+        // 会社で絞って会社の索引（idx_audit_logs_company）を使う（表の全部を読まないように）
+        [null, db.prepare(`DELETE FROM audit_logs WHERE company_id = (SELECT company_id FROM staff_profiles WHERE staff_id = ?) AND target_type = 'staff' AND target_id = ?`).bind(staffId, staffId)],
         // シフトの取消の記録（メモ・金額）・精算の確認済みの印・区分変更で対象外にした記録（#9952）。shifts より先に消す
         [null, db.prepare(`DELETE FROM shift_cancellations WHERE ${ofShifts}`).bind(staffId)],
         [null, db.prepare(`DELETE FROM settlement_issue_acks WHERE ${ofShifts}`).bind(staffId)],

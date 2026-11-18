@@ -64,6 +64,7 @@ const SNAPS: Record<string, SnapDef> = {
 }
 // 比べない列（ID・日時・更新した人・ログインの秘密の情報）
 const OMIT_COLS = new Set(['_n', 'company_id', 'staff_id', 'user_id', 'project_id', 'client_id', 'notice_id', 'affiliation_id', 'site_id', 'template_id', 'person_id',
+  'account_id', 'employee_record_id',
   'created_at', 'updated_at', 'updated_by', 'created_by', 'photo_required_history', 'reads_purged_at', 'final_read_count', 'final_target_count',
   'host_note_updated_at', 'retention_flagged_at', 'retention_attempted_at', 'shift_notify_updated_at', 'shift_notify_updated_by', 'report_defaults_version'])
 const OMIT_RE = /password|secret|token|totp|recovery|link_key|relink_code|_hash$|_history$/i
@@ -181,6 +182,7 @@ export const AUDIT_ROUTES: AuditRoute[] = [
     res: j => Array.isArray(j?.results) ? { count: j.results.filter((r: any) => r?.status === 'created').length, skipped: j.results.filter((r: any) => r?.status !== 'created').length } : null },
   { m: 'PUT', p: '/staff/:id', cat: 'staff', action: 'staff_update', label: retiredLabel('スタッフの情報の変更'), target: 'staff', snap: 'staff' },
   { m: 'PUT', p: '/employees/:id', cat: 'staff', action: 'employee_update', label: retiredLabel('従業員の情報の変更'), target: 'staff', snap: 'employee' },
+  { m: 'PUT', p: '/staff/:id/reference-pay', cat: 'staff', action: 'staff_reference_pay', label: 'スタッフの参考単価の変更', target: 'staff', snap: 'staff' },
   { m: 'POST', p: '/staff/:id/affiliation-change', cat: 'staff', action: 'affiliation_change', label: '所属の変更', target: 'staff', body: [['to_type', '変更後の区分'], ['effective_date', '変更する日']] },
   { m: 'DELETE', p: '/staff/:id/affiliation-schedules/:id', cat: 'staff', action: 'affiliation_cancel', label: '所属の変更の予定の取り消し', target: 'staff' },
   { m: 'POST', p: '/staff/:id/login-email-pending/apply', cat: 'staff', action: 'login_email_apply', label: 'ログイン用メールの切り替え', target: 'staff' },

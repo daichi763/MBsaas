@@ -568,7 +568,7 @@ erDiagram
 | `retired_staff_deferred` | 表ではない対象（人数・R2 のファイル・匿名化など） |
 | `r2_pending` | 表ではない対象（人数・R2 のファイル・匿名化など） |
 
-在職中の保存期間で消すもの（`IN_SERVICE_TARGETS`・[services/retention.ts:844](../src/services/retention.ts#L844)）: `attendance_location`・`attendance_photos`・`consultations_done`・`follow_logs_done`・`board_proposals_settled`・`ended_employee_records`・`ended_employee_documents`・`ended_employment_periods`
+在職中の保存期間で消すもの（`IN_SERVICE_TARGETS`・[services/retention.ts:845](../src/services/retention.ts#L845)）: `attendance_location`・`attendance_photos`・`consultations_done`・`follow_logs_done`・`board_proposals_settled`・`ended_employee_records`・`ended_employee_documents`・`ended_employment_periods`
 
 退職後7年の匿名化で空にする `staff_profiles` の列（`ANONYMIZE_PROFILE_COLUMNS`・[services/retention.ts:110](../src/services/retention.ts#L110)）: `career`・`skills`・`work_area`・`age_group`・`memo`・`affiliation_contact`・`kana`・`gender`・`date_of_birth`・`nearest_station_line`・`nearest_station`・`commute_minutes`・`available_from`・`site_evaluation`・`work_memo`・`career_rows`・`pr_points`・`remarks`・`unverified_email`・`skill_sheet_comment`・`reference_pay_unit`・`reference_pay_amount`・`age_entered`・`age_entered_on`
 
@@ -582,7 +582,7 @@ R2 に置くファイル（解約時の書き出しの対象。`OFFBOARDING_FILE
 本部画面の「解約・データ」から、企業のデータを CSV で書き出し、猶予の日数（既定は [`OFFBOARDING_GRACE_DAYS`](../src/services/retention.ts)）の後に消します（記録は `company_offboardings`）。
 
 <!-- BEGIN GENERATED: db-offboarding -->
-解約（企業のデータの書き出しと削除）の対象は `OFFBOARDING_TABLES`（108 表）、残す表は `OFFBOARDING_KEPT_TABLES`（[services/retention.ts:1329](../src/services/retention.ts#L1329)）。
+解約（企業のデータの書き出しと削除）の対象は `OFFBOARDING_TABLES`（108 表）、残す表は `OFFBOARDING_KEPT_TABLES`（[services/retention.ts:1330](../src/services/retention.ts#L1330)）。
 
 company_id の列がある表は、すべてどちらかに入っています。
 <!-- END GENERATED: db-offboarding -->
@@ -4957,7 +4957,7 @@ END
 <!-- BEGIN GENERATED: db-refs -->
 | 名前 | 位置 |
 |---|---|
-| `OFFBOARDING_TABLES` | [services/retention.ts:1204](../src/services/retention.ts#L1204) |
+| `OFFBOARDING_TABLES` | [services/retention.ts:1205](../src/services/retention.ts#L1205) |
 | `ownStaff` | [lib/tenant.ts:23](../src/lib/tenant.ts#L23) |
 | `ownProject` | [lib/tenant.ts:15](../src/lib/tenant.ts#L15) |
 | `ownShift` | [lib/tenant.ts:31](../src/lib/tenant.ts#L31) |
@@ -4969,7 +4969,7 @@ END
 | `hashPassword` | [lib/auth.ts:45](../src/lib/auth.ts#L45) |
 | `hashToken` | [lib/auth.ts:37](../src/lib/auth.ts#L37) |
 | `RETURNING_COUNTED` | [services/retention.ts:99](../src/services/retention.ts#L99) |
-| `OFFBOARDING_KEPT_TABLES` | [services/retention.ts:1329](../src/services/retention.ts#L1329) |
+| `OFFBOARDING_KEPT_TABLES` | [services/retention.ts:1330](../src/services/retention.ts#L1330) |
 | `RETIRED_TARGETS` | [services/retention.ts:100](../src/services/retention.ts#L100) |
 | `sitePosition` | [lib/site-location.ts:39](../src/lib/site-location.ts#L39) |
 | `createPerson` | [roster.ts:266](../src/roster.ts#L266) |
@@ -4985,9 +4985,9 @@ END
 | `PUBLIC_COLS` | [board.ts:60](../src/board.ts#L60) |
 | `buildSnapshot` | [board.ts:569](../src/board.ts#L569) |
 | `shapeProposal` | [board.ts:604](../src/board.ts#L604) |
-| `runRetentionCleanup` | [services/retention.ts:991](../src/services/retention.ts#L991) |
+| `runRetentionCleanup` | [services/retention.ts:992](../src/services/retention.ts#L992) |
 | `CRON_JOBS` | [index.tsx:881](../src/index.tsx#L881) |
 | `RETENTION_SETTING_DEFS` | [services/retention.ts:130](../src/services/retention.ts#L130) |
-| `purgeExpiredTokens` | [services/retention.ts:1137](../src/services/retention.ts#L1137) |
-| `OFFBOARDING_GRACE_DAYS` | [services/retention.ts:1179](../src/services/retention.ts#L1179) |
+| `purgeExpiredTokens` | [services/retention.ts:1138](../src/services/retention.ts#L1138) |
+| `OFFBOARDING_GRACE_DAYS` | [services/retention.ts:1180](../src/services/retention.ts#L1180) |
 <!-- END GENERATED: db-refs -->
