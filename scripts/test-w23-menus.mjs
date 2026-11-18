@@ -86,8 +86,11 @@ const ADMIN_MOBILE = [
 // 従業員管理（労務情報）を扱えないロールは、従業員管理だけを出さない（#205。今のまま）
 const withoutHr = (side) => side.map(([k, l, items]) => [k, l, items.filter(i => i[0] !== 'employees')])
 const withoutHrMobile = (mob) => mob.map(([l, opts]) => [l, opts.filter(o => o[0] !== 'employees')])
+// 操作の記録（Sprint 31 #9988）は会社管理者だけ（権限の表の audit_logs.view）。設定の見出しの最後
+const withAudit = (side) => side.map(([k, l, items]) => [k, l, k === 'settings' ? [...items, ['audit-logs', '操作の記録', 'fa-file-shield', '']] : items])
+const withAuditMobile = (mob) => mob.map(([l, opts]) => [l, l === '設定' ? [...opts, ['audit-logs', '操作の記録']] : opts])
 const ADMIN_EXPECT = {
-  company_admin: { side: ADMIN_SIDE, mobile: ADMIN_MOBILE },
+  company_admin: { side: withAudit(ADMIN_SIDE), mobile: withAuditMobile(ADMIN_MOBILE) },
   office_staff: { side: ADMIN_SIDE, mobile: ADMIN_MOBILE },
   field_manager: { side: withoutHr(ADMIN_SIDE), mobile: withoutHrMobile(ADMIN_MOBILE) },
   sales_manager: { side: withoutHr(ADMIN_SIDE), mobile: withoutHrMobile(ADMIN_MOBILE) },

@@ -293,6 +293,8 @@ delegate('hqSavePlanPrices', (el) => withSubmitLock(el, async () => {
 const HQ_AUDIT_ACTION = {
   'company.create': '企業の登録', 'company.update': '企業の変更', 'plan_price.update': 'プランの料金の変更', 'billing.close': '請求の記録（月の締め）',
   'billing.update': '請求の記録の修正', 'support_log.add': '伴走支援の記録', 'security.reset_mfa': '二段階認証の解除', 'security.clear_ip': '接続元の制限の解除',
+  // 企業の操作の記録を見た・書き出した（#9988。public/static/audit-log.js）
+  'audit_logs.view': '企業の操作の記録の閲覧', 'audit_logs.export': '企業の操作の記録の CSV',
 }
 const HQ_AUDIT_FIELD = {
   company_name: '会社名', plan: 'プラン', user_limit: 'ユーザー上限', active_status: '利用状態', billing_status: '請求状態', maturity_level: '運営成熟度',
@@ -599,6 +601,14 @@ async function renderCompanyDetail(cid) {
         <tbody>${(data.audit_logs || []).map(l => hqAuditRow(l, false)).join('') || '<tr><td colspan="4" class="py-4 text-center text-neutral-400">記録はまだありません</td></tr>'}</tbody></table>
       </div>
       <p class="text-2xs text-hq-500 mt-2">新しい順に50件まで表示します。すべての企業の履歴は、企業一覧の「本部の操作の履歴」から見られます。</p>
+    </section>
+    <section class="bg-hq-800 border border-hq-700 rounded-xl p-4 mt-4">
+      <h3 class="font-bold mb-2"><i class="fas fa-file-shield text-hq-accent-400 mr-1"></i>企業の操作の記録</h3>
+      <div data-audit-intro class="flex flex-wrap items-center gap-3">
+        <p class="text-2xs text-hq-400 flex-1 min-w-[16rem]">この企業の CSV の書き出し・管理の操作・シフトと精算の操作・ログインの記録です（企業の会社管理者が「操作の記録」で見ているものと同じ）。開いたこと・書き出したことは、上の本部の操作の履歴に残ります。</p>
+        <button class="btn btn-dark-outline text-xs" data-action="hqAuditLogsOpen" data-host="hq-co-audit-logs" data-cid="${Number(cid)}"><i class="fas fa-folder-open"></i>記録を開く</button>
+      </div>
+      <div id="hq-co-audit-logs" class="mt-2"></div>
     </section>`
 }
 // 月ごとの請求記録（#295）

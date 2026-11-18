@@ -86,6 +86,9 @@ import { nowJST, todayJST, addDays } from './lib/time'
 import { sha256, randomHex } from './lib/hash'
 import { readJson, recordSwallowedError, appBaseUrl } from './lib/http'
 import { ADMIN_ROLES, can, requirePerm, permissionsFor } from './lib/permissions'
+// 操作の記録（Sprint 31 #9988）
+import { auditMiddleware } from './lib/audit-log'
+import { auditAdminApi, auditHqApi } from './audit-logs'
 
 type Bindings = {
   DB: D1Database; PHOTOS: R2Bucket; DOCUMENTS: R2Bucket; CONTRACTS: R2Bucket
@@ -863,6 +866,9 @@ api.get('/auth/me', async (c) => {
 
 // 権限チェックミドルウェア
 // 本部ユーザーは、企業が許可した期限付きの閲覧（読み取り専用）のときだけ /admin/* の GET を使える（#293。src/hq-support.ts）
+// 操作の記録（#9988。src/lib/audit-log.ts）: CSV・ファイルの書き出しと管理の操作を1操作1行で残す。
+// 本部の閲覧中は hqViewAdminGuard が env を読み取りだけに変えるので、その前に登録して DB を控える
+api.use('/admin/*', auditMiddleware)
 api.use('/admin/*', hqViewAdminGuard)
 api.use('/admin/*', requirePerm('admin.access'))
 // 従業員管理（社員名簿・入社時書類）は会社管理者・事務担当のみ（#205）
@@ -1315,6 +1321,9 @@ api.route('/admin', scheduleAdminApi)
 api.route('/admin', toursAdminApi)
 // 管理画面のバッジの件数をまとめて返す（#9935。src/admin-badges.ts）
 api.route('/admin', adminBadgesApi)
+// 操作の記録の画面（#9988。会社管理者・本部の企業詳細。src/audit-logs.ts）
+api.route('/admin', auditAdminApi)
+api.route('/hq', auditHqApi)
 api.route('/staff', toursStaffApi)
 
 // =========================================================

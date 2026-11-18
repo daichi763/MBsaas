@@ -63,6 +63,8 @@ export const PERMISSIONS = {
   'roster.required_fields': { label: 'スタッフ名簿の必須項目の設定', roles: CA, where: 'roster.ts の PUT /admin/roster/field-settings' },
   'hq_view.allow': { label: '本部の閲覧の許可', roles: CA, where: 'hq-support.ts の PUT /admin/hq-access' },
   'staff_pay.visible_setting': { label: 'スタッフへの支払額の表示の設定', roles: CA, where: 'staff-pay.ts の PUT /admin/staff-pay/settings' },
+  // 操作の記録（Sprint 31 #9988）。4ロールの見直しの結論が出たら、この行の roles を足し替える
+  'audit_logs.view': { label: '操作の記録（CSV の書き出し・管理の操作・シフトと精算の操作・ログイン）を見る・CSV で書き出す', roles: CA, where: 'audit-logs.ts の /admin/audit-logs のミドルウェア、admin-menu.ts の操作の記録' },
   // ---- 画面だけ（API では絞っていない。今の動きのまま。docs/permissions.md の「画面だけ」） ----
   'admin_push.device': { label: '管理画面の端末のプッシュ通知の登録（画面だけ。API は4ロール）', roles: CA, where: 'public/static/notifications.js の通知の受け取り設定' },
   'tour.setup': { label: 'はじめにやること・操作ガイドの初期設定の案内', roles: CA, where: 'tours.ts の案内、public/static/tour.js' },

@@ -47,6 +47,7 @@
 | `roster.required_fields` | スタッフ名簿の必須項目の設定 | ○ | × | × | × | × | × | roster.ts の PUT /admin/roster/field-settings |
 | `hq_view.allow` | 本部の閲覧の許可 | ○ | × | × | × | × | × | hq-support.ts の PUT /admin/hq-access |
 | `staff_pay.visible_setting` | スタッフへの支払額の表示の設定 | ○ | × | × | × | × | × | staff-pay.ts の PUT /admin/staff-pay/settings |
+| `audit_logs.view` | 操作の記録（CSV の書き出し・管理の操作・シフトと精算の操作・ログイン）を見る・CSV で書き出す（Sprint 31 #9988。4ロールの結論が出たら行を足し替える） | ○ | × | × | × | × | × | audit-logs.ts の /admin/audit-logs のミドルウェア、admin-menu.ts の操作の記録 |
 | `admin_push.device` | 管理画面の端末のプッシュ通知の登録（画面だけ。API は4ロール） | ○ | × | × | × | × | × | public/static/notifications.js の通知の受け取り設定 |
 | `tour.setup` | はじめにやること・操作ガイドの初期設定の案内 | ○ | × | × | × | × | × | tours.ts の案内、public/static/tour.js |
 

@@ -286,8 +286,9 @@ docs/                     この資料と機能ごとの仕様
 | `common.js` | すべて | 共通部品: `esc`（HTML のエスケープ）、`delegate`（`data-action` のクリックを関数に振り分ける）、`withSubmitLock`（二度押しの防止）、モーダルの閉じ方 |
 | `admin.js` | `/admin` | 管理画面の本体（ルーティング・ダッシュボード・スタッフ・案件・クライアント・日報・お知らせ・分析など） |
 | `shift-board.js` / `settlement.js` / `recruit.js` / `roster.js` / `roster-chat.js` / `staff-lifecycle.js` / `report-settings.js` / `corrections.js` / `notifications.js` / `attendance-history.js` / `board.js` / `security.js` / `hq-support.js` | `/admin` | 機能ごとの画面（ファイル名はサーバーの同名のファイルに対応） |
+| `audit-log.js` | `/admin`・`/hq` | 操作の記録（Sprint 31 #9988。管理画面の #audit-logs と本部の企業詳細の欄。API は `src/audit-logs.ts`、記録は `src/lib/audit-log.ts` のミドルウェア） |
 | `staff.js` / `staff-attendance.js` / `staff-profile.js` | `/staff` | スタッフアプリ |
-| `hq.js`（と `security.js`） | `/hq` | 本部画面 |
+| `hq.js`（と `security.js`・`audit-log.js`） | `/hq` | 本部画面 |
 | `apply.js` / `report-link.js` | `/apply/:token` / `/r/:token` | 公開ページ |
 
 画面を書くときの決まり: 値は必ず `esc` を通して HTML に入れる。`onclick` などのイベント属性の文字列に値を埋め込まず、`data-*` と `delegate` を使う（古い画面には `onclick` などのイベント属性が残っているため、CSP の `script-src` の `'unsafe-inline'` はまだ外せません。`src/index.tsx:47`〜`48`）。
