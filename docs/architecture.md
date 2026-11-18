@@ -1,7 +1,7 @@
 # アーキテクチャ（全体の構成）
 
 この資料は、Mobital を初めて触る開発者（社外の開発会社を含む）が、どこに何があり、どう動いているかをつかむためのものです。
-書いてあることは、すべてコードで確かめています。根拠には `ファイル:行` を添えています（行番号は 2026-11-18 時点の `review-fixes` ブランチ、コミット `a5422f3` のもの）。
+書いてあることは、すべてコードで確かめています。根拠には `ファイル:行` を添えています（行番号は 2026-11-18 時点の `review-fixes` ブランチ、コミット `8e2cfe4` のもの）。
 `scripts/test-w13-docs-arch-ops.mjs` が、ここに書いた行番号・定期処理・設定値がコードと合っているかを確かめます（`npm test -- w13-docs-arch-ops`）。
 
 関連する資料:
@@ -156,14 +156,14 @@ Worker が返すすべての応答に `X-Content-Type-Options: nosniff` を、HT
 | `*/15 * * * *` | 15分おき | `notification_digest` | 打刻修正の承認依頼のまとめメール（毎朝8時以降の最初の起動で1回） | `src/notifications.ts` の `runNotificationDigests` |
 | `0 18 * * *` | 毎日 3:00 | `billing_close` | 本部から導入企業への利用料の、前月分の記録（`company_billing_months`。毎月1〜3日）。取りこぼさないよう 3:00 の起動の先頭で行う | `src/api.ts:8317` |
 | `0 18 * * *` | 毎日 3:00 | `auth_purge` | 期限切れのセッション・ログイン試行・1年より古いログイン履歴と操作の記録（audit_logs。#9988）の削除 | `src/lib/auth.ts:194` |
-| `0 18 * * *` | 毎日 3:00 | `token_purge` | 期限切れ・使用済みのトークン（パスワード再設定・報告用URL・予定確認URL）の削除 | `src/services/retention.ts:1137` |
+| `0 18 * * *` | 毎日 3:00 | `token_purge` | 期限切れ・使用済みのトークン（パスワード再設定・報告用URL・予定確認URL）の削除 | `src/services/retention.ts:1138` |
 | `0 18 * * *` | 毎日 3:00 | `recruit_applications_purge` | スタッフに紐づかない応募の削除（180日） | `src/recruit.ts:1068` |
-| `0 18 * * *` | 毎日 3:00 | `retention` | データ保持の定期削除（日報3年・退職後7年・実行の記録 `retention_logs`・`hq_view_logs` の1年など）。`RETENTION_ENABLED` が `'true'` のときだけ実際に消す | `src/services/retention.ts:991` |
+| `0 18 * * *` | 毎日 3:00 | `retention` | データ保持の定期削除（日報3年・退職後7年・実行の記録 `retention_logs`・`hq_view_logs` の1年など）。`RETENTION_ENABLED` が `'true'` のときだけ実際に消す | `src/services/retention.ts:992` |
 | `0 18 * * *` | 毎日 3:00 | `retirements` | 退職予定日を過ぎたスタッフを退職（ログイン停止）に切り替える | `src/services/retention.ts:206` |
 | `0 18 * * *` | 毎日 3:00 | `affiliation_schedules` | 予約した所属区分の変更を適用する。使う問い合わせの数を予算（`AFFILIATION_SCHEDULE_BUDGET`）の内に収め、収まらない予約は次の `affiliation_schedules_rest` に回す | `src/staff-lifecycle.ts` の `applyDueAffiliationSchedules` |
 | `0 18 * * *` | 毎日 3:00 | `notice_reads_purge` | お知らせの既読の記録の削除（2年） | `src/api.ts:360` |
 | `0 18 * * *` | 毎日 3:00 | `board_saved_search` | 案件掲示板の保存した検索条件に合う新着の知らせ | `src/board.ts` の `notifySavedSearchMatches` |
-| `30 18 * * *` | 毎日 3:30 | `retention_in_service` | 在職中の保存期間による削除（位置情報・写真・相談・フォロー記録など） | `src/services/retention.ts:1038` |
+| `30 18 * * *` | 毎日 3:30 | `retention_in_service` | 在職中の保存期間による削除（位置情報・写真・相談・フォロー記録など） | `src/services/retention.ts:1039` |
 | `30 18 * * *` | 毎日 3:30 | `report_token_hash` | 報告用URLの古いトークン（0105 より前の平文）を、1日に500件ずつハッシュへ移す（すべて移せば平文は残らない。残りが無ければ問い合わせ1回） | `src/staff-lifecycle.ts` の `runLegacyReportTokenHashJob` |
 | `30 18 * * *` | 毎日 3:30 | `notice_read_reports` | 既読率レポートの集計 | `src/api.ts:323` |
 | `*/15 * * * *` | 15分おき | `notice_scheduled_publish` | 予約したお知らせのメール配信 | `src/api.ts:7172` |
