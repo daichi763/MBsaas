@@ -13,6 +13,8 @@ import { summaryMarksBeforeStmt, summaryRowsBeforeStmts } from '../lib/monthly-s
 //   user_notifications         : created_at から2年（既存の notice_reads の保持期間に合わせる）
 //   email_logs                 : created_at から1年（宛先のメールアドレスを含む送信記録。#240）
 //   operation_logs             : created_at から7年（シフト・精算の操作履歴。#159）。担当スタッフの退職後7年でも、その人の分を消す
+//   audit_logs                 : created_at から1年（操作の記録。#9988）。毎日の cron の auth_purge（src/lib/auth.ts）で消す。
+//                                退職後7年の削除でも、その人を対象にした行を消す。解約の削除（OFFBOARDING_TABLES）の対象
 //   error_logs / error_alerts  : created_at から90日（障害の記録と通知の記録。#9622。利用者の ID・入力値は持たないので、退職後の削除の対象はない）
 //   db_size_logs               : created_at から2年。alert_destination_status / alert_cooldowns: updated_at から90日（#9971 #9974。会社・利用者の情報は持たない）
 //   打刻修正申請・その操作履歴・通知メールの送信状態・報告設定（スタッフ別）とその変更履歴
@@ -467,6 +469,12 @@ function cleanupRetentionLogs(db: D1Database, dryRun: boolean): Promise<Retentio
 function cleanupHqViewLogs(db: D1Database, dryRun: boolean): Promise<RetentionTargetResult> {
   return cleanupByCreatedAt(db, dryRun, { target: 'hq_view_logs', table: 'hq_view_logs', idCol: 'log_id', years: 0, days: LOG_TABLES_KEEP_DAYS })
 }
+// アカウントの使い回しの疑い（#9989。migrations/0116）は、ログインの履歴（login_events）と同じ1年で消す。
+// 退職後の削除（7年）より先に消えるので、退職スタッフの削除の対象には入れない。解約した会社の分は OFFBOARDING_TABLES で消す
+async function cleanupShareDetect(db: D1Database, dryRun: boolean): Promise<RetentionTargetResult[]> {
+  return [await cleanupByCreatedAt(db, dryRun, { target: 'share_suspicions', table: 'share_suspicions', idCol: 'suspicion_id', years: 0, days: LOG_TABLES_KEEP_DAYS }),
+    await cleanupByCreatedAt(db, dryRun, { target: 'share_detect_runs', table: 'share_detect_runs', idCol: 'run_id', years: 0, days: LOG_TABLES_KEEP_DAYS })]
+}
 // 障害に気づく仕組みの表（#9971 #9974。migrations/0109）。会社・利用者の情報は持たないので、退職後の削除・解約の削除の対象はない。
 // DB の大きさの記録は2年（増え方は直近3か月で見る）、送り先の最後の送信の結果・同じ通知の間隔の印は、最後の更新から90日で消す（使わなくなった送り先の分）
 function cleanupDbSizeLogs(db: D1Database, dryRun: boolean): Promise<RetentionTargetResult> {
@@ -733,6 +741,9 @@ async function cleanupRetiredStaffData(db: D1Database, buckets: RetentionBuckets
         [null, db.prepare(`DELETE FROM staff_pay_requests WHERE staff_id = ? OR ${ofShifts}`).bind(staffId, staffId)],
         // シフト・精算の操作履歴（#159）。その人が担当していたシフトの履歴（削除したシフトの分を含む）も消す。shifts より先に消す
         [null, db.prepare(`DELETE FROM operation_logs WHERE staff_id = ? OR (entity = 'shift' AND entity_id IN (SELECT shift_id FROM shifts WHERE staff_id = ?))`).bind(staffId, staffId)],
+        // 操作の記録（#9988）のうち、その人を対象にした行（ふつうは1年で消えているが、保留を解いた人などのために消す）
+        // 会社で絞って会社の索引（idx_audit_logs_company）を使う（表の全部を読まないように）
+        [null, db.prepare(`DELETE FROM audit_logs WHERE company_id = (SELECT company_id FROM staff_profiles WHERE staff_id = ?) AND target_type = 'staff' AND target_id = ?`).bind(staffId, staffId)],
         // シフトの取消の記録（メモ・金額）・精算の確認済みの印・区分変更で対象外にした記録（#9952）。shifts より先に消す
         [null, db.prepare(`DELETE FROM shift_cancellations WHERE ${ofShifts}`).bind(staffId)],
         [null, db.prepare(`DELETE FROM settlement_issue_acks WHERE ${ofShifts}`).bind(staffId)],
@@ -1005,6 +1016,7 @@ export async function runRetentionCleanup(db: D1Database, buckets: RetentionBuck
       ...await stage('operation_logs', async () => [await cleanupOperationLogs(db, opts.dryRun)]),
       ...await stage('error_logs', async () => [await cleanupErrorLogs(db, opts.dryRun), await cleanupErrorAlerts(db, opts.dryRun)]),
       ...await stage('retention_logs', async () => [await cleanupRetentionLogs(db, opts.dryRun), await cleanupHqViewLogs(db, opts.dryRun)]),
+      ...await stage('share_detect', () => cleanupShareDetect(db, opts.dryRun)),
       ...await stage('monitor_logs', async () => [await cleanupDbSizeLogs(db, opts.dryRun),
         await cleanupMonitorState(db, opts.dryRun, 'alert_destination_status'), await cleanupMonitorState(db, opts.dryRun, 'alert_cooldowns')]),
       ...await stage('retired_staff', async () => Object.values(opts.dryRun ? await dryRunRetiredStaffData(db) : await cleanupRetiredStaffData(db, buckets))),
@@ -1226,6 +1238,8 @@ export const OFFBOARDING_TABLES: OffboardingTable[] = [
   { target: 'settlement_issue_acks', label: '精算の確認済みの印', table: 'settlement_issue_acks', where: OB_CO },
   { target: 'shift_cancellations', label: 'シフトの取消', table: 'shift_cancellations', where: OB_CO },
   { target: 'operation_logs', label: 'シフト・精算の操作履歴', table: 'operation_logs', where: OB_CO },
+  // Sprint 31（w31-audit）: 操作の記録（CSV の書き出し・管理の操作。#9988。1年で自動削除）
+  { target: 'audit_logs', label: '操作の記録', table: 'audit_logs', where: OB_CO },
   { target: 'recruit_application_notes', label: '応募の対応メモ', table: 'recruit_application_notes', where: OB_CO },
   { target: 'recruit_application_items', label: '応募の明細', table: 'recruit_application_items',
     where: 'application_id IN (SELECT application_id FROM recruit_applications WHERE company_id = $C)' },
@@ -1313,6 +1327,8 @@ export const OFFBOARDING_TABLES: OffboardingTable[] = [
   { target: 'email_logs', label: 'メールの送信記録', table: 'email_logs', where: OB_CO },
   // 障害の記録（#9622）。その企業の利用者の操作で起きたエラーの要約（個人の情報は持たない）。書き出さずに消す
   { target: 'error_logs', label: '障害の記録', table: 'error_logs', where: OB_CO, noExport: true },
+  // Sprint 31（w31-share-detect #9989）: アカウントの使い回しの疑い。本部の判断の記録で会社には見せないので、書き出さずに消す
+  { target: 'share_suspicions', label: 'アカウントの使い回しの疑い（本部）', table: 'share_suspicions', where: OB_CO, noExport: true },
   { target: 'sessions', label: 'ログイン中のセッション', table: 'sessions', where: `${OB_CO} OR user_id IN ${OB_USERS}`, noExport: true },
   { target: 'password_reset_tokens', label: 'パスワード再設定のトークン', table: 'password_reset_tokens', where: `user_id IN ${OB_USERS}`, noExport: true },
   { target: 'login_email_verifications', label: 'メールアドレスの確認', table: 'login_email_verifications', where: OB_CO, noExport: true },

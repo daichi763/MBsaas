@@ -26,9 +26,18 @@ export function toCsv(header: string[], rows: any[][], opts: CsvOptions = {}) {
   const lines = [...(opts.note ? [csvCell(opts.note)] : []), header.map(csvCell).join(','), ...rows.map(line)]
   return '﻿' + lines.join('\r\n') + '\r\n'
 }
+// 書き出した行数（見出しと、見出しの前の注記を除く）。操作の記録（src/lib/audit-log.ts）が X-Export-Rows から読む。
+// 値の中の改行が CRLF のときは多めに数える（目安）
+export function csvRowCount(csv: string): number {
+  let n = 0
+  for (let i = csv.indexOf('\r\n'); i !== -1; i = csv.indexOf('\r\n', i + 2)) n++
+  const head = csv.charCodeAt(0) === 0xfeff ? csv.slice(1, 3) : csv.slice(0, 2)
+  return Math.max(0, n - 1 - (head.startsWith('※') || head.startsWith('"※') ? 1 : 0))
+}
 // ファイル名は日本語を含むため filename*（RFC 5987）で渡す
 export function csvResponse(fileName: string, csv: string, headers: Record<string, string> = {}) {
   return new Response(csv, { headers: {
+    'X-Export-Rows': String(csvRowCount(csv)),
     'Content-Type': 'text/csv; charset=utf-8',
     'Content-Disposition': `attachment; filename="export.csv"; filename*=UTF-8''${encodeURIComponent(fileName)}`,
     'Cache-Control': 'no-store',

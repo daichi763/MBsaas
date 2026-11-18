@@ -5,6 +5,7 @@
 // - 期限の比較はすべて ISO 8601（toISOString）の文字列同士で行う（CURRENT_TIMESTAMP とは書式が違うため比べない）。
 import type { Context } from 'hono'
 import { sha256 } from './hash'
+import { purgeAuditLogsStmt } from './audit-log'
 
 export const SESSION_COOKIE = 'session'
 export const SESSION_HOURS = 12 // 1シフト分を目安とした有効期限
@@ -189,8 +190,8 @@ export async function clearLoginFailures(db: D1Database, keys: { account: string
 }
 /** ログインの履歴（login_events）の保存期間 */
 export const LOGIN_EVENTS_KEEP_DAYS = 365
-/** 定期処理: 期限切れのセッションと、古いログイン試行・ログインの履歴を消す */
-export async function purgeExpiredAuthRows(db: D1Database): Promise<{ sessions: number; attempts: number; events: number }> {
+/** 定期処理: 期限切れのセッションと、古いログイン試行・ログインの履歴・操作の記録（audit_logs。#9988）を消す */
+export async function purgeExpiredAuthRows(db: D1Database): Promise<{ sessions: number; attempts: number; events: number; audit_logs: number }> {
   const s = await db.prepare('DELETE FROM sessions WHERE expires_at < ?').bind(new Date().toISOString()).run()
   let attempts = 0
   try {
@@ -206,5 +207,8 @@ export async function purgeExpiredAuthRows(db: D1Database): Promise<{ sessions: 
     ])
     events = r[0].meta.changes || 0
   } catch (e) { console.log(`login_events purge failed: ${e}`) }
-  return { sessions: s.meta.changes || 0, attempts, events }
+  // 操作の記録も1年で消す（login_events と同じ期間。Sprint 31 #9988）
+  let auditLogs = 0
+  try { auditLogs = (await purgeAuditLogsStmt(db).run()).meta.changes || 0 } catch (e) { console.log(`audit_logs purge failed: ${e}`) }
+  return { sessions: s.meta.changes || 0, attempts, events, audit_logs: auditLogs }
 }

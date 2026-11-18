@@ -135,17 +135,23 @@ const hq = { get: async (p) => {
 const marks = async () => (await sql('SELECT ym FROM report_summary_months WHERE company_id = 1 ORDER BY ym')).map(r => r.ym)
 const dropMarks = () => sql('DELETE FROM report_summary_months WHERE company_id = 1')
 
+// 操作の記録（audit_logs）を1行足すときに数えられる書き込みの行数（表の1行＋索引3つ＋AUTOINCREMENT の番号）
+const AUDIT_ROW_WRITES = 5
 // 管理者（集計の表）と本部の閲覧（日報の表）で、応答が同じか。管理者は2回開く（1回目は集計を作る・2回目は集計から読む）
 const rowsTable = []
 async function same(name, path, opts = {}) {
   const first = await admin.get(path)
+  // CSV は書き出すたびに操作の記録（audit_logs）を1行残す（Sprint 31 #9988）。その1行の書き込みだけは数えない
+  const csvLogs = async () => opts.text ? Number((await sql("SELECT COUNT(*) AS n FROM audit_logs WHERE company_id = 1 AND category = 'csv'"))[0]?.n || 0) : 0
+  const logsBefore = await csvLogs()
   const second = await admin.get(path)
+  const logged = (await csvLogs()) - logsBefore
   await dropMarks()
   const legacy = await hq.get(path)
   const a = opts.text ? second.text : JSON.stringify(second.data), b = opts.text ? legacy.text : JSON.stringify(legacy.data)
   ok(`${name}: 集計の表から出しても、日報の表から数えたときと同じ`, second.status === 200 && legacy.status === 200 && a === b,
     { status: [second.status, legacy.status], diff: firstDiff(a, b) })
-  if (opts.noWrite !== false) ok(`${name}: 2回目は書き込みが無い`, second.written === 0, { written: second.written })
+  if (opts.noWrite !== false) ok(`${name}: 2回目は書き込みが無い${opts.text ? '（書き出しの記録の1行だけ）' : ''}`, opts.text ? (logged === 1 && second.written === AUDIT_ROW_WRITES) : second.written === 0, { written: second.written, logged })
   rowsTable.push({ name, detail_read: legacy.read, first_read: first.read, first_written: first.written, summary_read: second.read })
   return second.data
 }

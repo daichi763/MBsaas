@@ -474,6 +474,8 @@ delegate('downloadRosterImportLogins', () => {
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'ログイン案内.csv'
   document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 1000)
   ROSTER_IMPORT.downloaded = true
+  // 操作の記録に残す（#9988。初期パスワードを含むので、だれがいつ書き出したかを残す）
+  if (window.logClientExport) logClientExport('roster_logins', { file: 'ログイン案内.csv', rows: rows.length })
 })
 
 // =========================================================

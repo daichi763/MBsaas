@@ -6,6 +6,7 @@
 import type { Context } from 'hono'
 import { sha256Hex } from './auth'
 import { ADMIN_ROLES } from './permissions'
+import { requestGeo } from './share-detect'
 
 /** 二段階認証を使える（接続元の制限の対象になる）ロール。スタッフは対象外 */
 export const MFA_ROLES: readonly string[] = ['system_admin', ...ADMIN_ROLES]
@@ -19,19 +20,27 @@ export type LoginEvent = {
   event_type?: 'login' | 'password_reset' | 'logout_all' | 'forced_logout' | 'switch_company'
   result: 'success' | 'bad_password' | 'locked' | 'inactive' | 'company_inactive' | 'ip_denied' | 'mfa_failed'
   method?: 'password' | 'totp' | 'recovery' | null; actor_user_id?: number | null
+  /** ログインの成功の時点で別の種類の端末のセッションが使われていたとき（使い回しの疑いの手がかり。src/lib/share-detect.ts の loginConcurrency） */
+  concurrent?: { device: string; minutes: number } | null
 }
 /** 接続元 IP と端末（User-Agent の先頭300文字） */
 export function requestMeta(c: Context): { ip: string | null; ua: string | null } {
   return { ip: c.req.header('CF-Connecting-IP') || null, ua: (c.req.header('User-Agent') || '').slice(0, 300) || null }
 }
-/** 履歴を1行残す。記録に失敗してもログインなどの処理は止めない */
+/**
+ * 履歴を1行残す。記録に失敗してもログインなどの処理は止めない。
+ * 接続元のおおよその場所（Cloudflare の request.cf の国・都道府県・市）も残す（使い回しの疑いの手がかり。#9989。migrations/0116）
+ */
 export async function recordLoginEvent(db: D1Database, c: Context, ev: LoginEvent): Promise<void> {
   const m = requestMeta(c)
+  const g = requestGeo(c)
   try {
-    await db.prepare(`INSERT INTO login_events (company_id, user_id, company_code, user_code, event_type, result, method, ip, user_agent, actor_user_id, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(ev.company_id ?? null, ev.user_id ?? null,
+    await db.prepare(`INSERT INTO login_events (company_id, user_id, company_code, user_code, event_type, result, method, ip, user_agent, actor_user_id, created_at,
+        country, region_code, region, city, concurrent_device, concurrent_minutes)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(ev.company_id ?? null, ev.user_id ?? null,
       ev.company_code ? String(ev.company_code).slice(0, 40) : null, ev.user_code ? String(ev.user_code).slice(0, 40) : null,
-      ev.event_type || 'login', ev.result, ev.method ?? null, m.ip, m.ua, ev.actor_user_id ?? null, nowIso()).run()
+      ev.event_type || 'login', ev.result, ev.method ?? null, m.ip, m.ua, ev.actor_user_id ?? null, nowIso(),
+      g.country, g.region_code, g.region, g.city, ev.concurrent ? ev.concurrent.device.slice(0, 60) : null, ev.concurrent ? ev.concurrent.minutes : null).run()
   } catch (e) { console.log(`login_events record failed: ${e}`) }
 }
 
