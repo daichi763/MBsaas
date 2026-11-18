@@ -736,10 +736,10 @@ Mobital のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 | PUT | `/api/hq/security/settings` | 本部 | [api.ts:1219](../src/api.ts#L1219) | 〔見出し〕本部（/api/hq/security・/api/hq/login-history） | security.js |
 | DELETE | `/api/hq/security/users/:id/sessions` | 本部 | [api.ts:1251](../src/api.ts#L1251) | 〔見出し〕本部（/api/hq/security・/api/hq/login-history） |  |
 | GET | `/api/hq/share-detect` | 本部 | [hq-share.ts:44](../src/hq-share.ts#L44) |  | hq.js |
-| PUT | `/api/hq/share-detect/items/:id/review` | 本部 | [hq-share.ts:100](../src/hq-share.ts#L100) |  | hq.js |
-| POST | `/api/hq/share-detect/run` | 本部 | [hq-share.ts:90](../src/hq-share.ts#L90) |  | hq.js |
-| PUT | `/api/hq/share-detect/settings` | 本部 | [hq-share.ts:121](../src/hq-share.ts#L121) |  | hq.js |
-| GET | `/api/hq/share-detect/summary` | 本部 | [hq-share.ts:84](../src/hq-share.ts#L84) |  | hq.js |
+| PUT | `/api/hq/share-detect/items/:id/review` | 本部 | [hq-share.ts:102](../src/hq-share.ts#L102) |  | hq.js |
+| POST | `/api/hq/share-detect/run` | 本部 | [hq-share.ts:92](../src/hq-share.ts#L92) |  | hq.js |
+| PUT | `/api/hq/share-detect/settings` | 本部 | [hq-share.ts:123](../src/hq-share.ts#L123) |  | hq.js |
+| GET | `/api/hq/share-detect/summary` | 本部 | [hq-share.ts:86](../src/hq-share.ts#L86) |  | hq.js |
 | GET | `/api/hq/support-requests` | 本部 | [hq-support.ts:349](../src/hq-support.ts#L349) | 〔見出し〕伴走支援の依頼の受付一覧 | hq.js |
 | PUT | `/api/hq/support-requests/:id` | 本部 | [hq-support.ts:360](../src/hq-support.ts#L360) | 〔見出し〕伴走支援の依頼の受付一覧 | hq.js |
 | GET | `/api/hq/templates` | 本部 | [api.ts:8420](../src/api.ts#L8420) | 企業独自のテンプレートは会社名、どれも使っている案件の数と日報の有無（編集できる範囲の表示に使う。#165）を付ける | hq.js |

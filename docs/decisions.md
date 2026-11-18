@@ -367,6 +367,7 @@
 - **理由**: 同じ人のスマホとパソコン、携帯の回線で IP・場所が変わることでも手がかりに当たるため、自動で止めると正しく使っている人が締め出される。まずは見つけて本部が確かめる。
 - **読み取りの枠**: 集計は SQL の中で絞り込み・数え上げを行い、Worker は疑いのある行だけを受け取る（本番は Free の CPU 10ms）。ログインの履歴は日時の索引で期間の分だけ、打刻は日付の索引のあるシフトから引く（打刻の表の日時の索引は 0112 で消したため）。読んだ行数は実行の記録（`share_detect_runs.rows_read`）と本部の画面に出す。
 - **根拠のコード**: `migrations/0116_share_detect.sql`、`src/lib/share-detect.ts`（`loginConcurrency`・`runShareDetection`・`runShareDetectJob`・`SHARE_SETTING_DEFS`）、`src/hq-share.ts`（`/api/hq/share-detect`）、`public/static/hq.js`（`renderSharing`・`loadCompanySharing`）。テストは `scripts/test-w31-share.mjs`
+
 ## 運用・技術
 
 ### D-30 Workers の Free プランで動かす・PBKDF2 は 10,000 回

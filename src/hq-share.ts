@@ -64,11 +64,13 @@ hqShareApi.get('/share-detect', async (c) => {
     const rows = (await db.prepare(`SELECT ss.user_id, ss.suspicion_id, ss.review_status, ss.review_note, ss.reviewed_at, ss.period_to, rv.name AS reviewer_name
       FROM share_suspicions ss LEFT JOIN users rv ON rv.user_id = ss.reviewed_by
       WHERE ss.user_id IN (SELECT value FROM json_each(?)) AND ss.review_status != 'open' ORDER BY ss.reviewed_at DESC LIMIT 1000`).bind(JSON.stringify(uids)).all()).results as any[]
-    for (const p of rows) {
-      for (const i of items) {
-        if (i.user_id !== p.user_id || i.suspicion_id === p.suspicion_id || prev.has(i.suspicion_id)) continue
-        if (p.period_to <= i.period_to) prev.set(i.suspicion_id, p)
-      }
+    // アカウントごとにまとめてから引く（行が多いときに CPU 時間を使いすぎない）。
+    // 前の集計の行（suspicion_id が小さい行）だけを見る（同じ日の手動と定期の集計は period_to が同じため、日付では比べない）
+    const byUser = new Map<number, any[]>()
+    for (const p of rows) { const a = byUser.get(p.user_id); if (a) a.push(p); else byUser.set(p.user_id, [p]) }
+    for (const i of items) {
+      const p = (byUser.get(i.user_id) || []).find(p => p.suspicion_id < i.suspicion_id)
+      if (p) prev.set(i.suspicion_id, p)
     }
   }
   const latestOk = runs.find(r => r.status === 'ok' && r.trigger_type === 'cron')
