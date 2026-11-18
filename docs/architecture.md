@@ -1,7 +1,7 @@
 # アーキテクチャ（全体の構成）
 
 この資料は、Mobital を初めて触る開発者（社外の開発会社を含む）が、どこに何があり、どう動いているかをつかむためのものです。
-書いてあることは、すべてコードで確かめています。根拠には `ファイル:行` を添えています（行番号は 2026-11-18 時点の `review-fixes` ブランチ、コミット `966e3b7` のもの）。
+書いてあることは、すべてコードで確かめています。根拠には `ファイル:行` を添えています（行番号は 2026-11-18 時点の `review-fixes` ブランチ、コミット `53f2ce4` のもの）。
 `scripts/test-w13-docs-arch-ops.mjs` が、ここに書いた行番号・定期処理・設定値がコードと合っているかを確かめます（`npm test -- w13-docs-arch-ops`）。
 
 関連する資料:
@@ -89,10 +89,10 @@ flowchart LR
 | R2 | 写真・書類のファイル。バケットは非公開で、ファイルは必ずログイン確認付きの API から返す | `wrangler.jsonc:24`（`PHOTOS`・`DOCUMENTS`・`CONTRACTS`） |
 | Cron Triggers | 毎日 3:00・3:30（日本時間）と15分おきに定期処理を起動する | `wrangler.jsonc:39`、`src/index.tsx:883`（`CRON_JOBS`） |
 | Workers Logs | `console.log` / `console.error` の出力を本番で後から検索できる（本番だけ有効） | `wrangler.jsonc:96` |
-| Resend | メールの送信。不達などの結果は Webhook で受け取る | `src/services/email.ts`、`src/index.tsx:195` |
-| Web Push | スタッフアプリと本部画面へのプッシュ通知（VAPID の署名だけ・本文なし。本部は障害の通知） | `src/lib/web-push.ts`、`src/index.tsx:157`（`/sw.js`） |
+| Resend | メールの送信。不達などの結果は Webhook で受け取る | `src/services/email.ts`、`src/index.tsx:194` |
+| Web Push | スタッフアプリと本部画面へのプッシュ通知（VAPID の署名だけ・本文なし。本部は障害の通知） | `src/lib/web-push.ts`、`src/index.tsx:156`（`/sw.js`） |
 | Turnstile | 公開の応募ページのロボット判定（鍵を2つとも設定したときだけ） | `src/recruit.ts:267`・`277` |
-| jsDelivr | 画面のライブラリ（axios・dayjs・Chart.js・flatpickr・FontAwesome など）。版を固定し、SRI（integrity）を付けて読む | `src/index.tsx:200`〜`216` |
+| jsDelivr | 画面のライブラリ（axios・dayjs・Chart.js・flatpickr・FontAwesome など）。版を固定し、SRI（integrity）を付けて読む | `src/index.tsx:199`〜`215` |
 | Workers Builds | GitHub の `main` に入ると、ビルドして本番にデプロイする | `scripts/ci-wrangler-config.mjs:1`〜`5` |
 
 ## 4. リクエストの流れ
@@ -101,8 +101,8 @@ flowchart LR
 
 画面は SPA（1枚の HTML の中で `#` 以降で切り替える）です。HTML はサーバー（`src/index.tsx`）が返し、中身は `public/static/*.js` がブラウザで描きます。
 
-1. ブラウザが `/admin` などを開くと、Worker がセッションを確かめ（`src/index.tsx:232` の `currentUser`）、ロールに合う HTML を返す。未ログインなら `/login?next=...` へ移す（`src/index.tsx:253`）。
-2. HTML の `<head>` で、CDN のライブラリ（SRI 付き）・`/static/common.js`（共通部品）・`/static/style.css`（Tailwind をビルドしたもの）を読む（`src/index.tsx:219`〜`229`）。
+1. ブラウザが `/admin` などを開くと、Worker がセッションを確かめ（`src/index.tsx:231` の `currentUser`）、ロールに合う HTML を返す。未ログインなら `/login?next=...` へ移す（`src/index.tsx:252`）。
+2. HTML の `<head>` で、CDN のライブラリ（SRI 付き）・`/static/common.js`（共通部品）・`/static/style.css`（Tailwind をビルドしたもの）を読む（`src/index.tsx:218`〜`228`）。
 3. 画面の JS が `/api/...` を axios で呼んで描く。
 
 | パス | 返すもの | コード |
@@ -118,7 +118,7 @@ flowchart LR
 | `/sw.js` | スタッフアプリ（scope `/staff`）と本部画面（scope `/hq`）の Service Worker（プッシュ通知の表示だけ。オフライン用の保存はしない） | `src/index.tsx:156`〜`190` |
 | `/webhooks/resend` | Resend の Webhook（署名を確かめる） | `src/index.tsx:194` |
 
-Worker が返すすべての応答に `X-Content-Type-Options: nosniff` を、HTML には CSP を付けます（`src/index.tsx:48`〜`78`）。CSP の jsDelivr は、画面で読み込んでいるファイルのパスだけを許します。静的ファイル（`/static/*`・`/manifest.webmanifest`）は Workers Assets が Worker を通さずに返すので、`public/_headers` で nosniff と最小の CSP を付けます。
+Worker が返すすべての応答に `X-Content-Type-Options: nosniff` を、HTML には CSP を付けます（`src/index.tsx:47`〜`77`）。CSP の jsDelivr は、画面で読み込んでいるファイルのパスだけを許します。静的ファイル（`/static/*`・`/manifest.webmanifest`）は Workers Assets が Worker を通さずに返すので、`public/_headers` で nosniff と最小の CSP を付けます。
 
 ### 4.2 API
 
@@ -128,13 +128,13 @@ Worker が返すすべての応答に `X-Content-Type-Options: nosniff` を、HT
 2. 認証ミドルウェア（`src/api.ts:756`）: Cookie `session` のトークンから利用者を引き、期限切れ・退職・停止中の企業と、連携が終わった会社に企業切替で入ったままのスタッフ（401 `link_ended`。D-53）を止める（`src/lib/auth.ts:129` の `loadSessionUser`）。あわせて、別のアカウントへの切り替え（`X-Expected-User-Id` が違えば 409）・接続元 IP の制限・二段階認証の登録待ちを確かめ、セッションを延ばす。
 3. ロールの確認: `/api/admin/*` は会社の管理系ロール（`src/api.ts:878`〜`879`）、`/api/admin/employees*` は会社管理者と事務担当だけ（`src/api.ts:881`〜`883`）、`/api/hq/*` は本部だけ（`src/api.ts:884`）、`/api/staff/*` はスタッフだけ（`src/api.ts:908`）。どれも権限の表（`src/lib/permissions.ts`）の `requirePerm` で確かめる。
 4. 各機能の処理。会社の境界はここで確かめる（「8. マルチテナント」）。
-5. 書き込み（GET 以外）の後に、積まれたプッシュ通知を送る（`src/index.tsx:145`〜`149`）。
+5. 書き込み（GET 以外）の後に、積まれたプッシュ通知を送る（`src/index.tsx:144`〜`148`）。
 
 エンドポイントの一覧と権限は [api.md](api.md) を見てください。
 
 ### 4.3 予期しないエラー
 
-例外が起きると `app.onError`（`src/index.tsx:86`）が、次の1行の JSON を `console.error` で Workers Logs に残し、利用者には8文字の参照番号を返します（API は `{ error, ref }` と 500、画面はエラーのページ）。
+例外が起きると `app.onError`（`src/index.tsx:85`）が、次の1行の JSON を `console.error` で Workers Logs に残し、利用者には8文字の参照番号を返します（API は `{ error, ref }` と 500、画面はエラーのページ）。
 
 ```json
 {"level":"error","event":"unhandled_error","ref":"1a2b3c4d","method":"POST","path":"/api/admin/...","company_id":1,"user_id":2,"role":"company_admin","message":"...","stack":"..."}
@@ -188,7 +188,7 @@ Worker が返すすべての応答に `X-Content-Type-Options: nosniff` を、HT
 
 ### 6.2 Web Push（プッシュ通知）
 
-- 本文を送らない方式です。プッシュを受けた端末の Service Worker（`/sw.js`）が、スタッフは `/api/staff/push/latest`、本部は `/api/hq/push/latest`、会社管理者は `/api/admin/push/latest` から最新の未読を取りに来て表示します（`src/index.tsx:153`〜`191`）。購読の API はスタッフ・本部・管理画面で同じ関数 `pushDeviceRoutes` から作ります（`src/notifications.ts:1962`・`2039`・`2071`・`2093`）。管理画面で受け取るのは会社管理者だけで、今はログインの失敗が続いたときの知らせ（`login_failures`）だけです（[decisions.md](decisions.md) の D-43）。暗号化を省けるので、Free プランの CPU 時間に収まります（`src/lib/web-push.ts:3`〜`4`）。
+- 本文を送らない方式です。プッシュを受けた端末の Service Worker（`/sw.js`）が、スタッフは `/api/staff/push/latest`、本部は `/api/hq/push/latest`、会社管理者は `/api/admin/push/latest` から最新の未読を取りに来て表示します（`src/index.tsx:152`〜`190`）。購読の API はスタッフ・本部・管理画面で同じ関数 `pushDeviceRoutes` から作ります（`src/notifications.ts:1962`・`2039`・`2071`・`2093`）。管理画面で受け取るのは会社管理者だけで、今はログインの失敗が続いたときの知らせ（`login_failures`）だけです（[decisions.md](decisions.md) の D-43）。暗号化を省けるので、Free プランの CPU 時間に収まります（`src/lib/web-push.ts:3`〜`4`）。
 - 鍵: シークレット `VAPID_PUBLIC_KEY`・`VAPID_PRIVATE_KEY` があればそれを使い、なければ初回に作って D1 の `push_vapid_keys` に保存します（`src/lib/web-push.ts:37`〜`54`）。
 - アプリ内の通知（`user_notifications`）が入ると、トリガー（`migrations/0081_push.sql` の `trg_user_notifications_push`）で `push_queue` に積まれ、API の応答の後と15分おきの cron で送ります。送り先が 404・410 を返した購読は消します（`src/lib/web-push.ts:106`）。
 
@@ -200,8 +200,8 @@ Worker が返すすべての応答に `X-Content-Type-Options: nosniff` を、HT
 
 ### 6.4 jsDelivr（画面のライブラリ）
 
-- 版を固定し、SRI のハッシュを付けて読みます（`src/index.tsx:200`〜`216`）。版を上げるときはハッシュも計算し直します（計算方法は `src/index.tsx:199` のコメント）。CSP（`script-src`・`style-src`）はこの一覧のファイルのパスだけを許すので、ファイルを足したら一覧にも足します。
-- CDN を読めないとき（店舗の Wi-Fi のフィルタなど）は、白い画面のままにせず理由を出します（`src/index.tsx:218`）。
+- 版を固定し、SRI のハッシュを付けて読みます（`src/index.tsx:199`〜`215`）。版を上げるときはハッシュも計算し直します（計算方法は `src/index.tsx:198` のコメント）。CSP（`script-src`・`style-src`）はこの一覧のファイルのパスだけを許すので、ファイルを足したら一覧にも足します。
+- CDN を読めないとき（店舗の Wi-Fi のフィルタなど）は、白い画面のままにせず理由を出します（`src/index.tsx:217`）。
 
 ## 7. デプロイの仕組み
 
@@ -292,7 +292,7 @@ docs/                     この資料と機能ごとの仕様
 | `hq.js`（と `security.js`・`audit-log.js`） | `/hq` | 本部画面 |
 | `apply.js` / `report-link.js` | `/apply/:token` / `/r/:token` | 公開ページ |
 
-画面を書くときの決まり: 値は必ず `esc` を通して HTML に入れる。`onclick` などのイベント属性の文字列に値を埋め込まず、`data-*` と `delegate` を使う（古い画面には `onclick` などのイベント属性が残っているため、CSP の `script-src` の `'unsafe-inline'` はまだ外せません。`src/index.tsx:49`〜`50`）。
+画面を書くときの決まり: 値は必ず `esc` を通して HTML に入れる。`onclick` などのイベント属性の文字列に値を埋め込まず、`data-*` と `delegate` を使う（古い画面には `onclick` などのイベント属性が残っているため、CSP の `script-src` の `'unsafe-inline'` はまだ外せません。`src/index.tsx:48`〜`49`）。
 
 ### 8.3 スクリプト（`scripts/`）
 
