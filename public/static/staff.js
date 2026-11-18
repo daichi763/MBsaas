@@ -148,18 +148,182 @@ async function renderHome() {
 }
 // offline: 通信できず、前に読んだホームを出している
 function drawHome(data, offline) {
+  // 打刻の結果のカード（#home-result）は先頭に、次の報告の固定のボタン（homeNextBarHtml）は最後に置く（Sprint 30 #9986）
   $app.innerHTML = `
     ${offline ? homeOfflineHtml() : ''}
+    <div id="home-result">${homeResultHtml(data)}</div>
     <div id="home-outbox">${homeOutboxHtml()}</div>
     ${homeNoticeBannerHtml(data)}
     ${homeConsultBannerHtml(data)}
     ${homeMissedHtml(data)}
     ${data.shift ? homeShiftCardHtml(data) + homeReportButtonsHtml(data) + homeNextShiftHtml(data) : homeNoShiftHtml() + homeNextShiftHtml(data)}
     ${homeNoticesHtml(data)}
-    ${homeMenuHtml()}`
+    ${homeMenuHtml()}
+    ${homeNextBarHtml(data)}`
+  homeNextBarFit()
   applyBadges() // 先に取れていた通知の件数を案内に足す
   fillHomeEmergency(data, offline)
+  punchResultSchedule()
 }
+
+// ---------- 次の報告の固定のボタン（Sprint 30 #9986。11/16 の打合せの No.10・ui-staff-01） ----------
+// 「今やる報告」を1つだけ、下のタブのすぐ上に固定して出す（スクロールの位置に関係なく親指で押せる）。押すと、報告の一覧のボタンと同じ処理（homeReport）。
+// 入店・退店（写真が要る報告）は、今までどおりの流れ（飛ばす報告があれば確認 → 写真の画面）を始める。
+// どの報告を出すか（homeNextTarget）: 押せる報告の先頭。ただし起床・出発が済んでいなくても、入店などの予定の時刻が NEXT_LOOKAHEAD_MIN 分以内なら、
+// 時刻の近い方を出す（現場に着いた人が、起床・出発を押してからでないと入店を押せない、とならないように。飛ばす報告は灰色の1行で知らせる）。
+// 報告の一覧（#attendance-section。案内の吹き出しが指す先）はそのまま残す
+const NEXT_BAR_HOLD_MS = 1500 // 送った直後は、固定のボタンを少しの間押せなくする（同じ場所のボタンが次の報告に変わるので、二度押しで送らないように）
+let NEXT_BAR_HOLD_UNTIL = 0
+const ARRIVAL_GROUP = ['wake_up', 'departure', 'check_in'] // 予定の時刻で飛ばせる報告
+const EXPECTED_OFFSET_MIN = { wake_up: -120, departure: -60, check_in: 0 } // 予定の時刻（開始からの分）。打刻履歴（staff-attendance.js の notDueYet）と同じ
+const NEXT_LOOKAHEAD_MIN = 30
+function homeNextTarget(data, order, states) {
+  const open = order.filter(t => states[t] === 'open')
+  if (!open.length) return null
+  const first = open[0]
+  if (!ARRIVAL_GROUP.includes(first) || !data.shift || data.carryover) return first
+  const start = dayjs(`${data.shift.work_date}T${String(data.shift.start_time || '00:00').slice(0, 5)}`)
+  if (!start.isValid()) return first
+  const soon = dayjs().add(NEXT_LOOKAHEAD_MIN, 'minute')
+  const due = open.filter(t => ARRIVAL_GROUP.includes(t) && !start.add(EXPECTED_OFFSET_MIN[t], 'minute').isAfter(soon))
+  return due.length ? due[due.length - 1] : first
+}
+// 報告の名前 → ボタンの言葉（「入店報告をする」「勤務開始を報告する」）
+const reportActionLabel = (t) => { const l = REPORT_LABELS[t] || ''; return /報告$/.test(l) ? l + 'をする' : l + 'を報告する' }
+function homeNextBarHtml(data) {
+  if (!data || !data.shift || !homeTabActive()) return ''
+  const s = data.shift
+  const order = data.required_attendance || ['wake_up', 'departure', 'check_in', 'check_out']
+  const r = homeReportsWithQueued(data)
+  const states = homeReportStates(order, r, data.pending_corrections || {}, data.carryover, data.report_window_open)
+  const t = homeNextTarget(data, order, states)
+  const place = [formatShiftTime(s.start_time, s.end_time), s.site_name || s.location || s.project_name || ''].filter(Boolean).join('・')
+  const hold = Date.now() < NEXT_BAR_HOLD_UNTIL
+  let btn = ''
+  if (t) {
+    const photo = data.photo_required_attendance !== false && PHOTO_REQUIRED_TYPES.includes(t)
+    const skipping = order.filter(x => states[x] === 'open' && REPORT_ORDER.indexOf(x) < REPORT_ORDER.indexOf(t))
+    const how = photo ? '写真を付けて報告します' : t === 'check_in' ? '位置情報を付けて、すぐ送ります' : `すぐ送ります（${WITHDRAW_MINUTES}分以内なら取り消せます）`
+    btn = `<button type="button" class="next-bar-btn" data-action="homeReport" data-from-bar="1" data-type="${esc(t)}" data-shift-id="${Number(s.shift_id)}" ${hold ? 'disabled' : ''}>
+        <span class="w-11 h-11 rounded-xl bg-surface/15 flex items-center justify-center text-xl shrink-0"><i class="fas ${photo ? 'fa-camera' : REPORT_ICONS[t]}"></i></span>
+        <span class="flex-1 min-w-0"><span class="block text-xl font-bold leading-tight">${esc(reportActionLabel(t))}</span>
+          <span class="block text-xs font-normal mt-0.5 truncate">${esc(how)}・${esc(place)}</span></span>
+        <i class="fas fa-chevron-right"></i>
+      </button>
+      ${skipping.length ? `<p class="text-xs text-neutral-700 mt-1.5 px-1 truncate" id="next-bar-skip"><i class="fas fa-circle-info mr-1 text-neutral-500"></i>${esc(skipping.map(x => REPORT_LABELS[x]).join('・'))}は押さずに進みます</p>` : ''}`
+  } else if (data.daily_report_required !== false && !data.daily_report_done && !order.some(x => states[x] !== 'done' || (r[x] && r[x].queued))) {
+    btn = `<a href="#report/${Number(s.shift_id)}" class="next-bar-btn">
+        <span class="w-11 h-11 rounded-xl bg-surface/15 flex items-center justify-center text-xl shrink-0"><i class="fas fa-pen-to-square"></i></span>
+        <span class="flex-1 min-w-0"><span class="block text-xl font-bold leading-tight">日報を入力する</span>
+          <span class="block text-xs font-normal mt-0.5 truncate">${esc(place)}</span></span>
+        <i class="fas fa-chevron-right"></i></a>`
+  }
+  if (!btn) return ''
+  const q = outboxQueued().length
+  return `<div class="next-bar-space" aria-hidden="true"></div>
+    <div id="home-next-bar" class="next-bar" role="region" aria-label="次の報告">
+      <div class="max-w-lg mx-auto px-4">
+        ${q ? `<p class="text-xs font-bold text-warning-800 mb-1 px-1"><i class="fas fa-cloud-arrow-up mr-1"></i>まだ送れていない報告 ${q}件（電波が戻ると自動で送ります）</p>` : ''}
+        ${btn}
+      </div>
+    </div>`
+}
+// 下のタブの高さを --nav-h に入れる（固定のボタン・日報の提出のボタンを、その上に置く）
+function staffNavHeightSync() {
+  const nav = document.getElementById('bottom-nav')
+  document.documentElement.style.setProperty('--nav-h', (nav && nav.offsetHeight ? nav.offsetHeight : 64) + 'px')
+}
+// 固定のボタンを置く位置を決める。送った直後に押せなくしたボタンは、少したってから押せるようにする
+function homeNextBarFit() {
+  const bar = document.getElementById('home-next-bar')
+  document.body.classList.toggle('has-next-bar', !!bar)
+  if (!bar) return
+  staffNavHeightSync()
+  const left = NEXT_BAR_HOLD_UNTIL - Date.now()
+  if (left > 0) setTimeout(() => { const b = document.querySelector('#home-next-bar .next-bar-btn'); if (b && Date.now() >= NEXT_BAR_HOLD_UNTIL) b.disabled = false }, left + 20)
+}
+window.addEventListener('hashchange', () => { if (!homeTabActive()) document.body.classList.remove('has-next-bar') })
+
+// ---------- 打刻の結果のカード（Sprint 30 #9986。11/16 の打合せの No.1・ui-staff-02・05） ----------
+// 送信に成功したら、ホームの先頭に「入店報告 13:52 を記録しました」のカードを出す（トーストの数秒だけでは、記録されたか分かりにくいため）。
+// 遅延・位置情報なし・早い終了・現場から離れた位置などの注意は、黄色のカードの中に1行ずつ出し、することのボタン（遅れた理由を送る など）を並べる。
+// 次の操作（報告のボタンを押す・ほかの画面へ移る・✕）をするか、PUNCH_RESULT_MS たつまで消さない。打刻の送り方（端末に保存して送る・送り直し）は変えない
+const PUNCH_RESULT_MS = 30000
+let PUNCH_RESULT = null // { type, at, photoless, notes: [{ icon, text, action }], shiftId, until }
+let PUNCH_RESULT_TIMER = null
+function punchResultClear() {
+  PUNCH_RESULT = null
+  if (PUNCH_RESULT_TIMER) { clearTimeout(PUNCH_RESULT_TIMER); PUNCH_RESULT_TIMER = null }
+  const box = document.getElementById('home-result')
+  if (box) box.innerHTML = ''
+}
+function punchResultSchedule() {
+  if (PUNCH_RESULT_TIMER) { clearTimeout(PUNCH_RESULT_TIMER); PUNCH_RESULT_TIMER = null }
+  if (!PUNCH_RESULT) return
+  const left = PUNCH_RESULT.until - Date.now()
+  if (left <= 0) { punchResultClear(); return }
+  PUNCH_RESULT_TIMER = setTimeout(punchResultClear, left)
+}
+// ほかの画面へ移ったら消す（戻ったときに古い結果を出さない）
+window.addEventListener('hashchange', () => { if (PUNCH_RESULT && !homeTabActive()) punchResultClear() })
+function homeResultHtml(data) {
+  const x = PUNCH_RESULT
+  if (!x || x.until <= Date.now()) return ''
+  // 次の報告の名前（ボタンは画面の下に固定して出すので、ここでは名前だけ）
+  let next = ''
+  if (data && data.shift) {
+    const order = data.required_attendance || ['wake_up', 'departure', 'check_in', 'check_out']
+    const states = homeReportStates(order, homeReportsWithQueued(data), data.pending_corrections || {}, data.carryover, data.report_window_open)
+    const t = homeNextTarget(data, order, states)
+    if (t) next = `<p class="mt-3 text-sm font-bold ${x.notes.length ? 'text-warning-900' : 'text-white'}"><i class="fas fa-arrow-down mr-1"></i>次は ${esc(REPORT_LABELS[t])}（画面の下のボタンから）</p>`
+  }
+  const title = `${esc(REPORT_LABELS[x.type] || '')} <span class="tabular-nums">${esc(x.at)}</span> を記録しました${x.photoless ? '（写真なし）' : ''}`
+  const close = `<button type="button" class="w-9 h-9 shrink-0 rounded-full flex items-center justify-center ${x.notes.length ? 'text-warning-900 hover:bg-warning-100' : 'text-white hover:bg-success-700'}" data-action="punchResultClose" aria-label="閉じる"><i class="fas fa-xmark"></i></button>`
+  if (!x.notes.length) {
+    return `<section class="punch-result rounded-2xl p-4 mb-4 bg-success-600 text-white shadow-lg" role="status" id="punch-result" data-kind="ok">
+        <div class="flex items-start gap-3">
+          <span class="w-11 h-11 rounded-full bg-surface text-success-700 flex items-center justify-center text-xl shrink-0"><i class="fas fa-check"></i></span>
+          <p class="flex-1 text-lg font-bold leading-snug pt-1.5">${title}</p>
+          ${close}
+        </div>
+        ${next}
+      </section>`
+  }
+  const acts = []
+  if (x.notes.some(n => n.action === 'late')) acts.push(`<button type="button" class="btn btn-outline bg-surface border-warning-300 text-warning-900" data-action="punchLateReason" data-shift-id="${Number(x.shiftId) || 0}"><i class="fas fa-comment-dots"></i>遅れた理由を送る</button>`)
+  if (x.notes.some(n => n.action === 'location')) acts.push('<button type="button" class="btn btn-outline bg-surface border-warning-300 text-warning-900" data-action="punchLocationHelp"><i class="fas fa-location-crosshairs"></i>位置情報の許可のしかた</button>')
+  return `<section class="punch-result rounded-2xl p-4 mb-4 bg-warning-50 border-2 border-warning-300 text-warning-900" role="status" id="punch-result" data-kind="warn">
+      <div class="flex items-start gap-3">
+        <span class="w-11 h-11 rounded-full bg-success-600 text-white flex items-center justify-center text-xl shrink-0"><i class="fas fa-check"></i></span>
+        <p class="flex-1 text-lg font-bold leading-snug pt-1.5 text-neutral-900">${title}</p>
+        ${close}
+      </div>
+      <p class="text-sm font-bold mt-3">次のとおり記録しました</p>
+      <ul class="mt-1 space-y-1.5">${x.notes.map(n => `<li class="flex gap-2 text-sm leading-relaxed"><i class="fas ${n.icon} mt-1 w-4 text-center shrink-0"></i><span>${esc(n.text)}</span></li>`).join('')}</ul>
+      ${acts.length ? `<div class="flex flex-wrap gap-2 mt-3">${acts.join('')}</div>` : ''}
+      ${next}
+    </section>`
+}
+delegate('punchResultClose', () => punchResultClear())
+// 遅れた理由: 相談・連絡を、遅刻・欠勤相談・そのシフトを選んだ状態で開く（書きかけの本文は残す）
+delegate('punchLateReason', (el) => {
+  const old = draftLoad('consult') || {}
+  const sid = Number(el.dataset.shiftId)
+  draftSave('consult', { category: 'absence', shift_id: sid > 0 ? String(sid) : '', body: typeof old.body === 'string' ? old.body : '', urgency: 'normal' })
+  location.hash = 'consult'
+  toast('遅刻・欠勤相談として、今日のシフトを選びました。遅れた理由を書いて送信してください', 5000)
+})
+// 位置情報の案内: 最後に取れなかった理由（許可されていない・取れない・時間切れ）に合わせて、事象・原因・対処を出す
+delegate('punchLocationHelp', () => {
+  const err = LAST_GEO_ERR || 'denied'
+  const h = GEO_HELP[err] || GEO_HELP.denied
+  modal(`<h3 class="font-bold text-neutral-800 mb-2"><i class="fas fa-location-crosshairs text-primary-600 mr-1"></i>${esc(h.title)}</h3>
+    <p class="text-sm text-neutral-700 mb-2">${esc(h.cause)}${esc(h.later)}</p>
+    <p class="text-sm text-neutral-700 mb-3">入店の報告では、現場に着いたことを確かめるために位置情報を使います。取れないと「位置情報なし」として記録されます。</p>
+    <div class="space-y-1 text-sm text-neutral-700">${err === 'denied' ? geoStepsHtml() : `<p class="font-bold mt-2">許可していない場合</p>${geoStepsHtml()}`}</div>
+    <p class="text-xs text-neutral-600 mt-3">直らないときは、管理者に連絡してください。</p>
+    <button type="button" class="btn btn-primary w-full mt-4" onclick="closeModal()">閉じる</button>`)
+})
 function homeOfflineHtml() {
   return `<div class="bg-neutral-100 border border-neutral-200 rounded-xl px-4 py-2.5 mb-4 text-xs text-neutral-700" role="status">
       <i class="fas fa-plane mr-1"></i>通信できないため、前に読み込んだ内容を表示しています。報告を押すと、押した時刻で端末に保存し、電波が戻ってから送ります
@@ -403,19 +567,24 @@ function homeDayShiftsHtml(data, cur) {
     </div>`
 }
 
-// 前日以前の報告漏れ（#483）。項目をタップすると、打刻履歴の打刻漏れの追加の申請を開く
+// 前日以前の報告漏れ（#483）。項目をタップすると、打刻履歴の打刻漏れの追加の申請を開く。
+// 1行（「前日までの報告漏れ 6件のシフト 送る」）にたたみ、押すと今までの項目のボタンを出す（Sprint 30 #9986。11/16 の打合せの No.3。出す場所は今のまま）。
+// 件数は下のタブの「その他」の印にも足す（applyBadges）
 function homeMissedHtml(data) {
   const m = data.missed_reports
   if (!m || !m.total) return ''
-  return `<section class="bg-danger-50 border border-danger-200 rounded-xl px-4 py-3 mb-4 text-sm text-danger-800" role="alert" id="missed-reports">
-      <p class="font-bold"><i class="fas fa-triangle-exclamation mr-1"></i>前日までの報告漏れがあります（${Number(m.total)}件のシフト）</p>
+  const items = (m.shifts || []).reduce((n, x) => n + (x.missing || []).length, 0)
+  const head = Number(m.total) === 1 && m.shifts.length === 1 ? `${fmtDate(m.shifts[0].work_date)} の報告漏れ ${items}件` : `前日までの報告漏れ ${Number(m.total)}件のシフト`
+  return `<details class="bg-danger-50 border border-danger-200 rounded-xl px-4 py-1 mb-4 text-sm text-danger-800" id="missed-reports">
+      <summary class="flex items-center gap-2 py-2 cursor-pointer select-none font-bold"><i class="fas fa-triangle-exclamation"></i><span class="flex-1">${esc(head)}</span><span class="underline whitespace-nowrap">送る<i class="fas fa-chevron-down text-3xs ml-1"></i></span></summary>
       <p class="text-xs mt-0.5">項目をタップすると、打刻漏れの追加を申請できます。管理者が承認すると記録されます</p>
       ${m.shifts.map(x => `<div class="mt-2 pt-2 border-t border-danger-100">
         <p class="text-xs font-bold">${esc(fmtDate(x.work_date))} ${esc(formatShiftTime(x.start_time, x.end_time))} ${esc(x.project_name)}${data.multi_company ? `（${esc(x.company_name)}）` : ''}</p>
         <div class="flex flex-wrap gap-1.5 mt-1">${x.missing.map(t => `<button type="button" class="text-xs bg-surface border border-danger-200 text-danger-700 rounded-full px-2.5 py-1" data-action="openMissedReport" data-shift-id="${Number(x.shift_id)}" data-type="${esc(t)}">${esc(REPORT_LABELS[t] || t)}<i class="fas fa-chevron-right text-3xs ml-1"></i></button>`).join('')}</div>
       </div>`).join('')}
       ${m.total > m.shifts.length ? `<a href="#attendance" class="block text-xs underline mt-2">ほか ${Number(m.total) - m.shifts.length}件は打刻履歴から申請してください</a>` : ''}
-    </section>`
+      <div class="pb-2"></div>
+    </details>`
 }
 delegate('openMissedReport', (el) => {
   const shiftId = Number(el.dataset.shiftId), type = el.dataset.type
@@ -704,6 +873,7 @@ function homeReportButtonsHtml(data) {
   const states = homeReportStates(order, r, pend, data.carryover, data.report_window_open)
   const nextType = order.find(t => states[t] === 'open')
   const nextIdx = nextType ? order.indexOf(nextType) : -1
+  const target = homeNextTarget(data, order, states) // 画面の下の固定のボタンと同じ報告を「次の報告」として目立たせる（#9986）
   const skipped = order.filter(t => states[t] === 'skipped')
   const allDone = nextIdx === -1 && !skipped.length && !queuedAny && !order.some(t => states[t] === 'pending') && (!dailyRequired || data.daily_report_done)
   // ほかのシフトで、報告は済んだが日報が未提出のもの（1日に複数のシフトがある場合）
@@ -727,28 +897,31 @@ function homeReportButtonsHtml(data) {
           const st = states[t]
           const queued = st === 'done' && !!r[t].queued
           const done = st === 'done' && !queued
-          const isNext = i === nextIdx
+          const isNext = t === target
           const open = st === 'open'
           const photoOn = data.photo_required_attendance !== false
+          // 今は押せない報告（後の報告が済んだ・修正の申請中・受付の時間外）は、点線の枠と鍵・砂時計のアイコンで分ける（#9986。11/16 の打合せの No.2）。
+          // 無効にはせず、押すとボタンのすぐ下に理由と次にすることを出す（homeReportExplain）
+          const locked = st === 'skipped' || st === 'pending'
           const sub = queued ? esc(PUNCH_STATE.retrying ? `送信中（${formatReportedTime(r[t].reported_at, s.work_date)} に押した報告。電波や混雑で時間がかかっています。自動で送り直します）`
               : `未送信（${formatReportedTime(r[t].reported_at, s.work_date)} に押した報告を端末に保存しています。電波が戻ると自動で送ります）`)
             : done ? homeDoneSubHtml(r[t], s.work_date, noBreak && (t === 'break_start' || t === 'break_end'))
             : esc(st === 'pending' ? `打刻修正を申請中 ${formatReportedTime(pend[t], s.work_date)}（承認待ち）`
-              : st === 'skipped' ? '未報告（打刻履歴から追加を申請してください）'
-              : isNext ? 'タップして報告' : 'タップして報告（前の報告を飛ばします）')
-          return `<button class="report-btn ${done ? 'done' : isNext ? 'next' : ''}" ${open ? '' : 'disabled'} data-action="homeReport" data-type="${esc(t)}" data-shift-id="${Number(s.shift_id)}">
-            <span class="w-11 h-11 rounded-xl flex items-center justify-center text-lg ${done ? 'bg-success-500 text-white' : isNext ? 'bg-primary-600 text-white' : st === 'pending' || queued ? 'bg-warning-100 text-warning-600' : 'bg-neutral-100 text-neutral-400'}">
-              <i class="fas ${done ? 'fa-check' : queued ? 'fa-cloud-arrow-up' : st === 'pending' ? 'fa-hourglass-half' : REPORT_ICONS[t]}"></i>
+              : st === 'skipped' ? '未報告・打刻履歴から申請'
+              : isNext ? '今の時刻で記録します' : '')
+          return `<button class="report-btn ${done ? 'done' : isNext ? 'next' : locked ? 'locked' : ''}" ${open || locked ? '' : 'disabled'} ${locked ? 'aria-disabled="true"' : ''} data-action="homeReport" data-type="${esc(t)}" data-shift-id="${Number(s.shift_id)}">
+            <span class="w-11 h-11 rounded-xl flex items-center justify-center text-lg ${done ? 'bg-success-500 text-white' : isNext ? 'bg-primary-600 text-white' : st === 'pending' || queued ? 'bg-warning-100 text-warning-700' : locked ? 'bg-surface border border-neutral-300 text-neutral-500' : 'bg-neutral-100 text-neutral-600'}">
+              <i class="fas ${done ? 'fa-check' : queued ? 'fa-cloud-arrow-up' : st === 'pending' ? 'fa-hourglass-half' : locked ? 'fa-lock' : REPORT_ICONS[t]}"></i>
             </span>
             <span class="flex-1">
-              <span class="block font-bold ${done ? 'text-success-700' : queued ? 'text-warning-700' : isNext ? 'text-primary-700' : 'text-neutral-500'}">${REPORT_LABELS[t]}</span>
-              <span class="block text-xs ${done ? 'text-success-600' : st === 'pending' || queued ? 'text-warning-700' : 'text-neutral-400'}">
+              <span class="block font-bold ${done ? 'text-success-800' : queued ? 'text-warning-800' : isNext ? 'text-primary-700' : locked ? 'text-neutral-700' : 'text-neutral-900'}">${REPORT_LABELS[t]}</span>
+              <span class="block text-xs ${done ? 'text-success-800 font-bold' : st === 'pending' || queued ? 'text-warning-800' : 'text-neutral-600'}">
                 ${sub}
                 ${t === 'check_in' && open ? (photoOn ? ' (位置情報・写真が必要です)' : ' (位置情報を取得します)') : ''}
                 ${t === 'check_out' && open && photoOn ? ' (写真が必要です)' : ''}
               </span>
             </span>
-            ${isNext ? '<i class="fas fa-chevron-right text-primary-400"></i>' : ''}
+            ${isNext ? '<i class="fas fa-chevron-right text-primary-400"></i>' : locked ? '<i class="fas fa-circle-info text-neutral-400"></i>' : ''}
           </button>${t === 'break_start' && canNoBreak ? `
           <div class="flex justify-end -mt-1 px-1"><button type="button" class="text-xs text-neutral-600 underline" data-action="homeNoBreak" data-shift-id="${Number(s.shift_id)}"><i class="fas fa-mug-hot mr-1"></i>休憩を取らなかった（休憩なしで記録する）</button></div>` : ''}${wd && wd.type === t ? `
           <div class="flex justify-end -mt-1 px-1"><button type="button" class="text-xs text-danger-600 underline" data-action="homeWithdraw" data-type="${esc(t)}" data-no-break="${wd.noBreak ? '1' : ''}" data-shift-id="${Number(s.shift_id)}"><i class="fas fa-rotate-left mr-1"></i>押し間違いを取り消す（送信から${WITHDRAW_MINUTES}分以内）</button></div>` : ''}`
@@ -760,7 +933,7 @@ function homeReportButtonsHtml(data) {
           </span>
           <span class="flex-1">
             <span class="block font-bold ${data.daily_report_done ? 'text-success-700' : 'text-neutral-700'}">日報・実績入力</span>
-            <span class="block text-xs text-neutral-400">${!data.daily_report_done ? '稼働終了後に入力してください'
+            <span class="block text-xs ${data.daily_report_done ? 'text-success-800' : 'text-neutral-600'}">${!data.daily_report_done ? '稼働終了後に入力してください'
               : checkedAt != null ? `管理者が確認済み${checkedAt ? '（' + esc(dayjs(checkedAt).format('M/D HH:mm')) + '）' : ''}・修正可` : '提出済み・管理者の確認待ち（修正可）'}</span>
           </span>
           <i class="fas fa-chevron-right text-neutral-300"></i>
@@ -833,29 +1006,54 @@ function homeMenuHtml() {
     </div>`
 }
 
-// 報告ボタン: 未確定のシフト・前の報告を飛ばす場合は確認してから、写真が必要なら写真の画面、それ以外はそのまま送信する。
-// 勤務終了・退店（写真の画面を通らない場合）と、休憩入からすぐの休憩出は、押し間違いを防ぐため確認してから送る（#323 #324）
+// 報告ボタン（一覧のボタンと、画面の下の固定のボタン）。
+//   - 写真が要る報告（入店・退店）は、今までどおり、前の報告を飛ばす場合は確認してから写真の画面を開く
+//   - 写真が要らない報告は、押したらすぐ送る（前の報告を飛ばすとき・勤務終了・退店の確認は出さない。押し間違いは5分以内の取り消しで直す。
+//     #9986。11/16 の打合せの No.14）。未確定のシフト（お金に関わる）と、休憩入からすぐの休憩出（#324）の確認は残す
+//   - 今は押せない報告（点線の枠と鍵）は、押すと理由をボタンのすぐ下に出す（homeReportExplain）
 const TENTATIVE_CONFIRM = 'このシフトはまだ確定していません（希望（仮））。確定されるまでは支払いの対象になりません。\n管理者に勤務を確認したうえで報告しますか？'
 const SHORT_BREAK_MINUTES = 5
 delegate('homeReport', (el) => {
   if (!HOME || !HOME.shift) return
+  // 二重に押さない: 送っている間・送った直後（固定のボタン）は受け付けない
+  if (el.dataset.busy === '1' || ATTENDANCE_SENDING) return
+  if (el.dataset.fromBar && Date.now() < NEXT_BAR_HOLD_UNTIL) return
   const type = el.dataset.type, shiftId = Number(el.dataset.shiftId)
-  if (HOME.tentative && !confirm(TENTATIVE_CONFIRM)) return
   const order = HOME.required_attendance || []
   const reports = homeReportsWithQueued(HOME)
   const states = homeReportStates(order, reports, HOME.pending_corrections || {}, HOME.carryover, HOME.report_window_open)
+  if (states[type] === 'skipped' || states[type] === 'pending') { homeReportExplain(el, type, states[type], reports); return }
+  if (states[type] !== 'open') return
+  punchResultClear() // 次の操作をしたら、前の結果のカードは消す
+  document.querySelectorAll('.report-why').forEach(x => x.remove())
+  if (HOME.tentative && !confirm(TENTATIVE_CONFIRM)) return
   const skipping = order.filter(t => states[t] === 'open' && REPORT_ORDER.indexOf(t) < REPORT_ORDER.indexOf(type))
-  if (skipping.length && !confirm(`${skipping.map(t => REPORT_LABELS[t]).join('・')} が未報告です。\n飛ばして${REPORT_LABELS[type]}を報告すると、飛ばした報告はこの画面から押せなくなります（打刻履歴から打刻漏れの追加を申請してください）。\n報告しますか？`)) return
   const photoOn = HOME.photo_required_attendance !== false
-  const now = dayjs().format('HH:mm')
+  if (photoOn && PHOTO_REQUIRED_TYPES.includes(type)) {
+    if (skipping.length && !confirm(`${skipping.map(t => REPORT_LABELS[t]).join('・')} が未報告です。\n飛ばして${REPORT_LABELS[type]}を報告すると、飛ばした報告はこの画面から押せなくなります（打刻履歴から打刻漏れの追加を申請してください）。\n報告しますか？`)) return
+    openPhotoAttendance(type, shiftId)
+    return
+  }
   if (type === 'break_end' && reports.break_start) {
     const mins = Math.floor(dayjs().diff(dayjs(reports.break_start.reported_at), 'minute', true))
-    if (mins < SHORT_BREAK_MINUTES && !confirm(`休憩入（${formatReportedTime(reports.break_start.reported_at, HOME.shift.work_date)}）から${Math.max(0, mins)}分しかたっていません。\n休憩出を今の時刻（${now}）で報告しますか？`)) return
+    if (mins < SHORT_BREAK_MINUTES && !confirm(`休憩入（${formatReportedTime(reports.break_start.reported_at, HOME.shift.work_date)}）から${Math.max(0, mins)}分しかたっていません。\n休憩出を今の時刻（${dayjs().format('HH:mm')}）で報告しますか？`)) return
   }
-  if (photoOn && PHOTO_REQUIRED_TYPES.includes(type)) { openPhotoAttendance(type, shiftId); return }
-  if (!skipping.length && (type === 'work_end' || type === 'check_out') && !confirm(`${REPORT_LABELS[type]}を今の時刻（${now}）で報告します。よろしいですか？`)) return
   submitAttendance(type, shiftId, el)
 })
+
+// 押せない報告を押したとき（#9986。11/16 の打合せの No.2）: ボタンのすぐ下に、押せない理由と次にすること（打刻履歴）を出す
+function homeReportExplain(el, type, st, reports) {
+  document.querySelectorAll('.report-why').forEach(x => x.remove())
+  const label = REPORT_LABELS[type] || ''
+  const later = REPORT_ORDER.slice(REPORT_ORDER.indexOf(type) + 1).filter(t => reports[t]).map(t => REPORT_LABELS[t])
+  const msg = st === 'pending'
+    ? `${label}は打刻修正を申請中です（管理者の承認待ち）。今の時刻で報告し直す場合は、打刻履歴の「修正申請」から申請を取り消してください。`
+    : later.length ? `${label}は、後の報告（${later[0]}）が済んでいるため、ここからは報告できません。押し忘れた場合は、打刻履歴から打刻漏れの追加を申請してください。`
+    : `${label}は、今は受け付けていない時間です。押し忘れた場合は、打刻履歴から打刻漏れの追加を申請してください。`
+  el.insertAdjacentHTML('afterend', `<div class="report-why bg-neutral-50 border border-neutral-300 rounded-xl px-4 py-3 -mt-1 text-sm text-neutral-800" role="alert" data-type="${esc(type)}">
+      <p>${esc(msg)}</p>
+      <a href="#attendance" class="btn btn-outline mt-2 text-sm"><i class="fas fa-user-clock"></i>打刻履歴を開く</a></div>`)
+}
 
 // 休憩なし（#324）: 休憩入・休憩出を今の時刻で記録し、休憩0分にする。理由は管理者に伝わる
 const NO_BREAK_REASONS = ['忙しく休憩を取れなかった', '休憩のない短いシフトだった', '管理者・現場の指示で休憩なしになった']
@@ -903,25 +1101,62 @@ delegate('homeWithdraw', (el) => {
   })
 })
 
-// 位置情報（取れなければ null）。端末が応答しない場合も 10 秒で諦める
-function getPositionOrNull() {
-  if (!navigator.geolocation) return Promise.resolve(null)
+// ---------- 位置情報（#9986。11/16 の打合せの No.12・ui-staff-06） ----------
+// getCurrentPosition の失敗の理由（error.code）を捨てずに返し、理由ごとに「何が起きたか・なぜか・どうするか」を出す。
+// err: 'denied' 許可されていない / 'unavailable' 取れない（端末の位置情報がオフ・GPS が届かない）/ 'timeout' 時間切れ / 'unsupported' 使えない端末
+// 端末が応答しない場合も 10 秒で諦める（時間切れとして扱う）
+const GEO_ERR_BY_CODE = { 1: 'denied', 2: 'unavailable', 3: 'timeout' }
+let LAST_GEO_ERR = null // 最後に取れなかった理由（結果のカードの「位置情報の許可のしかた」で使う）
+function getPositionDetail() {
+  if (!navigator.geolocation) { LAST_GEO_ERR = 'unsupported'; return Promise.resolve({ pos: null, err: 'unsupported' }) }
   return new Promise(resolve => {
-    const timer = setTimeout(() => resolve(null), 10000)
-    navigator.geolocation.getCurrentPosition(
-      pos => { clearTimeout(timer); resolve(pos) },
-      () => { clearTimeout(timer); toast('位置情報が取得できませんでした（位置なしで送信します）'); resolve(null) },
-      { timeout: 8000 })
+    let done = false
+    let timer = null
+    const fin = (pos, err) => { if (done) return; done = true; clearTimeout(timer); LAST_GEO_ERR = pos ? null : err; resolve({ pos, err }) }
+    timer = setTimeout(() => fin(null, 'timeout'), 10000)
+    try {
+      navigator.geolocation.getCurrentPosition(pos => fin(pos, null), e => fin(null, GEO_ERR_BY_CODE[e && e.code] || 'unavailable'), { timeout: 8000 })
+    } catch (e) { fin(null, 'unavailable') }
   })
 }
-
-// 位置情報（取れなければ null）。知らせは出さない（写真の画面の中で、取れたかどうかを表示する。#347）
-function getPositionQuiet() {
-  if (!navigator.geolocation) return Promise.resolve(null)
-  return new Promise(resolve => {
-    const timer = setTimeout(() => resolve(null), 10000)
-    navigator.geolocation.getCurrentPosition(pos => { clearTimeout(timer); resolve(pos) }, () => { clearTimeout(timer); resolve(null) }, { timeout: 8000 })
+// 位置情報（取れなければ null）。取れなければ理由を短く知らせる（写真が要らない入店）
+function getPositionOrNull() {
+  return getPositionDetail().then(({ pos, err }) => {
+    if (!pos) toast((GEO_HELP[err] || GEO_HELP.unavailable).title + '（位置なしで送信します）', 4000)
+    return pos
   })
+}
+// 位置情報（取れなければ null）。知らせは出さない（写真の画面の中で、取れたかどうかを表示する。#347）
+function getPositionQuiet() { return getPositionDetail().then(x => x.pos) }
+
+const isIOS = () => /iPhone|iPad|iPod/.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1)
+const isAndroid = () => /Android/.test(navigator.userAgent)
+const GEO_FIX_IOS = '「設定」→「プライバシーとセキュリティ」→「位置情報サービス」をオンにし、「Safari の Web サイト」を「使用中のみ」にします。そのあと、このページを開き直してください。'
+const GEO_FIX_ANDROID = 'アドレスバーの左のマーク →「権限」（または「サイトの設定」）→「位置情報」を「許可」にします。端末の「位置情報」もオンにしてください。ホーム画面のアイコンから開いているときは、アイコンを長押し →「アプリ情報」→「権限」→「位置情報」を「許可」にします。'
+// 何が起きたか（title）・なぜか（cause）・どうするか（fix）・次から（later）
+const GEO_HELP = {
+  denied: { title: '位置情報を使えません', cause: 'このサイトに、位置情報の利用が許可されていません。', fix: '端末の設定で許可してから、「もう一度取る」を押してください。', later: '端末の設定で許可すると、次の報告から位置情報が付きます。', steps: true },
+  unavailable: { title: '位置情報を取れませんでした', cause: '端末の位置情報がオフになっているか、GPS・電波が届いていません。', fix: '端末の設定で位置情報をオンにして、屋外か窓の近くで「もう一度取る」を押してください。', later: '端末の位置情報をオンにして、屋外か窓の近くで報告すると取れやすくなります。' },
+  timeout: { title: '位置情報の取得が時間切れになりました', cause: 'GPS・電波が弱く、時間内に場所が分かりませんでした。', fix: '屋外か窓の近くに移って、「もう一度取る」を押してください。', later: '屋外か窓の近くで報告すると取れやすくなります。' },
+  unsupported: { title: 'この端末では位置情報を使えません', cause: 'このブラウザは位置情報に対応していません。', fix: 'Safari（iPhone）か Chrome（Android）で開き直してください。', later: 'Safari（iPhone）か Chrome（Android）で開き直してください。' },
+}
+// 許可のしかた（端末ごと）。iPhone・Android と分かれば、その手順だけを出す
+function geoStepsHtml() {
+  const one = (name, text) => `<p class="mt-1"><span class="font-bold">${name}:</span> ${esc(text)}</p>`
+  if (isIOS()) return one('iPhone', GEO_FIX_IOS)
+  if (isAndroid()) return one('Android', GEO_FIX_ANDROID)
+  return one('iPhone', GEO_FIX_IOS) + one('Android', GEO_FIX_ANDROID)
+}
+// 位置情報が取れなかったときの案内。retry: 「もう一度取る」のボタンを付ける（写真の画面）
+function geoErrorHtml(err, retry) {
+  const h = GEO_HELP[err] || GEO_HELP.unavailable
+  return `<div class="text-sm text-warning-900 bg-warning-50 border border-warning-200 rounded-xl px-3 py-2.5 mt-2" role="alert" id="geo-error" data-geo-err="${esc(err || '')}">
+      <p class="font-bold"><i class="fas fa-location-crosshairs mr-1"></i>${esc(h.title)}</p>
+      <p class="mt-1">${esc(h.cause)}${esc(h.fix)}</p>
+      ${h.steps ? `<div class="text-xs mt-1 leading-relaxed">${geoStepsHtml()}</div>` : ''}
+      <p class="text-xs mt-1.5">このまま送ることもできます（「位置情報なし」として記録されます）。直らないときは、管理者に連絡してください。</p>
+      ${retry ? '<button type="button" class="btn btn-outline bg-surface border-warning-300 text-warning-900 mt-2" data-action="photoRetryPosition"><i class="fas fa-rotate-right"></i>もう一度取る</button>' : ''}
+    </div>`
 }
 
 // 勤怠報告の失敗の文言。すでに報告済み（前の送信が届いていた・別の端末で報告した・管理者が記録した）なら、エラーではなく報告済みと伝える（#182 #426）
@@ -943,14 +1178,24 @@ function attendanceNeedsReload(e) {
 // 報告の結果の知らせ（#347）。遅延・位置情報なし・予定より早い終了で記録されたら、その旨と連絡の方法を長めに出す。
 // noPos: 入店で位置情報を送れなかった（遅延のときは status が late になり no_location が付かないため、画面側で分かる値も使う）
 // sent: 『送信しました』の文言（写真なしの報告など。省略で『を送信しました』）
+// #9986（11/16 の打合せの No.1）: 結果はホームの先頭のカード（homeResultHtml）に出し、注意は1行ずつ並べる。ホームを開いていないときだけ、今までどおりトーストで出す
 function showAttendanceResult(type, d, noPos, sent) {
   const notes = []
-  if (d && d.status === 'late') notes.push(`開始時刻を過ぎていたため「遅延」${Number(d.late_minutes) > 0 ? `（${Number(d.late_minutes)}分）` : ''}として記録しました。遅れた理由は「相談・連絡」から管理者に伝えてください`)
-  if ((d && d.status === 'no_location') || (type === 'check_in' && noPos)) notes.push('位置情報が取れなかったため「位置情報なし」として記録しました。端末の設定で、このサイトの位置情報を許可してください')
-  if (d && Number(d.early_leave_minutes) > 0) notes.push(`予定の終了より${Number(d.early_leave_minutes)}分早い報告として記録しました`)
+  if (d && d.status === 'late') notes.push({ icon: 'fa-clock', action: 'late', text: `開始時刻を過ぎていたため「遅延」${Number(d.late_minutes) > 0 ? `（${Number(d.late_minutes)}分）` : ''}として記録しました` })
+  if ((d && d.status === 'no_location') || (type === 'check_in' && noPos)) notes.push({ icon: 'fa-location-crosshairs', action: 'location', text: '位置情報が取れなかったため「位置情報なし」として記録しました' })
+  if (d && Number(d.early_leave_minutes) > 0) notes.push({ icon: 'fa-person-walking-arrow-right', text: `予定の終了より${Number(d.early_leave_minutes)}分早い報告として記録しました` })
   // 入店の位置が現場から離れていた（#277）
-  if (d && d.far) notes.push(`現場から約${Number(d.distance_m) >= 1000 ? (Number(d.distance_m) / 1000).toFixed(1) + 'km' : Number(d.distance_m) + 'm'}離れた位置で記録されました。現場に着いていない場合は、着いてから管理者に連絡してください`)
-  toast(REPORT_LABELS[type] + (sent || 'を送信しました') + (notes.length ? '。' + notes.join('。') : ''), notes.length ? 7000 : 2500)
+  if (d && d.far) notes.push({ icon: 'fa-map-location-dot', text: `現場から約${Number(d.distance_m) >= 1000 ? (Number(d.distance_m) / 1000).toFixed(1) + 'km' : Number(d.distance_m) + 'm'}離れた位置で記録されました。現場に着いていない場合は、着いてから管理者に連絡してください` })
+  // 記録した時刻（サーバーの reported_at。無ければ端末の今の時刻）
+  const hm = d && d.reported_at ? String(d.reported_at).slice(11, 16) : ''
+  const at = /^\d{2}:\d{2}$/.test(hm) ? hm : dayjs().format('HH:mm')
+  PUNCH_RESULT = { type, at, photoless: /写真なし/.test(sent || ''), notes, shiftId: (HOME && HOME.shift && HOME.shift.shift_id) || 0, until: Date.now() + PUNCH_RESULT_MS }
+  NEXT_BAR_HOLD_UNTIL = Date.now() + NEXT_BAR_HOLD_MS // 次の報告に変わった固定のボタンを、少しの間押せなくする（二度押しで次の報告を送らないように）
+  try { if (navigator.vibrate) navigator.vibrate(50) } catch (e) { /* 振動できない端末 */ }
+  if (!homeTabActive()) {
+    const old = notes.map(n => n.text + (n.action === 'late' ? '。遅れた理由は「相談・連絡」から管理者に伝えてください' : n.action === 'location' ? '。端末の設定で、このサイトの位置情報を許可してください' : ''))
+    toast(REPORT_LABELS[type] + (sent || 'を送信しました') + (old.length ? '。' + old.join('。') : ''), old.length ? 7000 : 2500)
+  }
 }
 
 // 勤怠報告送信（送信中は押せない。位置情報を待つ間も含む）。成功しても失敗しても、ホームを読み直して今の状態を出す（#426）
@@ -999,10 +1244,10 @@ window.openPhotoAttendance = function (type, shiftId) {
 // posState: 'loading' 取得中 / 'ok' 取得済み / 'fail' 取れなかった
 function photoFetchPosition() {
   const cur = pendingPhoto
-  cur.posState = 'loading'; cur.pos = null
+  cur.posState = 'loading'; cur.pos = null; cur.posErr = null
   photoPosRefresh()
-  cur.posPromise = getPositionQuiet().then(pos => {
-    cur.pos = pos; cur.posState = pos ? 'ok' : 'fail'; cur.posPromise = null
+  cur.posPromise = getPositionDetail().then(({ pos, err }) => {
+    cur.pos = pos; cur.posErr = err; cur.posState = pos ? 'ok' : 'fail'; cur.posPromise = null
     if (pendingPhoto === cur) photoPosRefresh()
     return pos
   })
@@ -1013,9 +1258,8 @@ function photoPosHtml() {
   if (pendingPhoto.type !== 'check_in' || !st) return ''
   if (st === 'loading') return '<p class="text-xs text-neutral-500 mt-2"><span class="spin" style="width:12px;height:12px;border-width:2px;vertical-align:-1px"></span> 位置情報を取得しています...</p>'
   if (st === 'ok') return '<p class="text-xs text-success-700 mt-2"><i class="fas fa-location-dot mr-1"></i>位置情報を取得しました</p>'
-  return `<div class="text-xs text-warning-800 bg-warning-50 rounded-lg px-2.5 py-2 mt-2" role="alert">
-      <p><i class="fas fa-location-crosshairs mr-1"></i>位置情報を取得できませんでした。このまま送ると「位置情報なし」として記録されます。端末の設定でこのサイトの位置情報を許可してから、もう一度取得してください</p>
-      <button type="button" class="btn btn-outline text-xs mt-2" data-action="photoRetryPosition"><i class="fas fa-rotate-right"></i>もう一度取得する</button></div>`
+  // 取れなかった理由ごとの案内と「もう一度取る」（#9986。11/16 の打合せの No.12）
+  return geoErrorHtml(pendingPhoto.posErr, true)
 }
 function photoPosRefresh() { const el = document.getElementById('photo-pos'); if (el) el.innerHTML = photoPosHtml() }
 delegate('photoRetryPosition', () => { if (pendingPhoto.type === 'check_in' && pendingPhoto.posState !== 'loading') photoFetchPosition() })
@@ -1540,7 +1784,7 @@ async function renderReport() {
     </section>
     <div id="report-handover"></div>
     <form id="report-form" class="space-y-4 pb-8" novalidate>
-      ${reportFormBodyHtml(fields, pv, { incident: prev && prev.incident_flag, complaint: prev && prev.complaint_flag, submitLabel: prev ? '日報を修正して再提出' : '日報を提出する', submitDisabled: !!sh.blocked })}
+      ${reportFormBodyHtml(fields, pv, { incident: prev && prev.incident_flag, complaint: prev && prev.complaint_flag, submitLabel: prev ? '日報を修正して再提出' : '日報を提出する', submitDisabled: !!sh.blocked, stickySubmit: true })}
     </form>`
 
   const sel = document.getElementById('report-shift')
@@ -1548,6 +1792,7 @@ async function renderReport() {
   loadReportHandover(sh.shift_id)
   const form = document.getElementById('report-form')
   reportFormBind(form)
+  staffNavHeightSync() // 提出のボタンを下のタブの上に固定する位置（#9986）
   // 下書き（#421）: 送っていない入力があれば戻し、入力のたびに保存する
   const draftName = 'report:' + Number(sh.shift_id)
   const draft = draftLoad(draftName)
@@ -1572,16 +1817,9 @@ async function renderReport() {
   form.addEventListener('change', saveReportDraft)
   form.addEventListener('submit', (e) => {
     e.preventDefault()
-    // 入力の確認（空のまま提出して「提出済み」にならないように。#349）。サーバーでもテンプレートの必須を確かめる
-    const stop = (el, msg) => { toast(msg); if (el) el.focus(); return true }
-    const blankNum = [...form.querySelectorAll('.rpt-num')].find(el => el.value.trim() === '')
-    if (blankNum && stop(blankNum, `「${blankNum.dataset.label}」が未入力です。0件の場合は0を入力してください`)) return
-    const blankText = [...form.querySelectorAll('textarea.rpt-field')].find(el => el.dataset.required && !el.value.trim())
-    if (blankText && stop(blankText, `「${blankText.dataset.label}」を入力してください`)) return
-    for (const [kind, label] of [['incident', 'インシデント'], ['complaint', 'クレーム']]) {
-      const note = document.getElementById(kind + '-note')
-      if (document.getElementById(kind + '-flag').checked && !note.value.trim() && stop(note, `${label}の内容（何が・いつ・どう対応したか）を入力してください`)) return
-    }
+    // 入力の確認（空のまま提出して「提出済み」にならないように。#349）。サーバーでもテンプレートの必須を確かめる。
+    // 空の欄は1件ずつトーストで出さず、全部の欄に印と文を付け、フォームの先頭にまとめて出す（report-form.js の reportFormCheck。#9986）
+    if (reportFormCheck(form)) return
     const values = {}
     form.querySelectorAll('.rpt-field').forEach(el => {
       const k = el.dataset.key
@@ -2771,11 +3009,13 @@ function applyBadges() {
   if (!BADGES) return
   const set = (id, n) => { const el = document.getElementById(id); if (el) { el.textContent = n > 99 ? '99+' : String(n); el.classList.toggle('hidden', !n) } }
   const notices = Number(BADGES.notices) || 0, notifs = Number(BADGES.notifications) || 0
-  set('nav-more-badge', notices + notifs)
+  // 前日までの報告漏れ（ホームで読んだ件数）も「その他」の印に足す（#9986。11/16 の打合せの No.3）
+  const missed = HOME && HOME.missed_reports ? Number(HOME.missed_reports.total) || 0 : 0
+  set('nav-more-badge', notices + notifs + missed)
   set('more-notice-count', notices)
   set('more-notif-count', notifs)
   const nav = document.getElementById('nav-more-badge')
-  if (nav) nav.setAttribute('aria-label', `未読のお知らせ ${notices}件・通知 ${notifs}件`)
+  if (nav) nav.setAttribute('aria-label', `未読のお知らせ ${notices}件・通知 ${notifs}件${missed ? `・前日までの報告漏れ ${missed}件のシフト` : ''}`)
   const banner = document.getElementById('home-unread-banner')
   if (banner) banner.innerHTML = homeUnreadBannerInner(notices, notifs, Number(BADGES.notices_other) || 0)
 }

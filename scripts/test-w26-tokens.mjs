@@ -151,7 +151,7 @@ ok(':root に変数がある（段の色・役割の色・角丸・影・文字�
   for (const m of cfg.matchAll(/rgb\('([a-z0-9-]+)'\)/g)) used.add(`--color-${m[1]}`)
   for (const m of cfg.matchAll(/var\((--[a-z0-9-]+)\)/g)) used.add(m[1])
   for (const f of cm.targetFiles()) for (const m of read(f).matchAll(/var\((--color-[a-z0-9-]+)\)/g)) used.add(m[1])
-  const local = new Set(['--side-w', '--tw-shadow', '--tw-ring-offset-shadow', '--tw-ring-shadow'])
+  const local = new Set(['--side-w', '--nav-h', '--tw-shadow', '--tw-ring-offset-shadow', '--tw-ring-shadow'])
   const missing = [...used].filter(v => !v.endsWith('-') && !VARS.has(v) && !local.has(v))
   ok('4) 使っている変数（input.css・tailwind.config.js・画面の JS の style）は、すべて :root にある', missing.length === 0, missing)
   const need = ['--color-bg', '--color-backdrop', '--color-surface', '--color-primary', '--color-primary-hover', '--color-primary-soft', '--color-text', '--color-text-sub', '--color-muted', '--color-border', '--color-danger', '--color-success', '--color-warning', '--color-on-primary', '--radius-card', '--radius-ctrl', '--shadow-card', '--font-sans']
