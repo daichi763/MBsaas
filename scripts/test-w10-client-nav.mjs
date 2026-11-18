@@ -40,7 +40,8 @@ const EXPECTED = [
   ['money', 'お金', ['settlement', 'billing']],
   ['notices', 'お知らせ', ['notices', 'notice-reports']],
   ['analytics', '分析', ['analytics']],
-  ['settings', '設定', ['account', 'security']],
+  // 操作の記録（Sprint 31 #9988。会社管理者だけ）
+  ['settings', '設定', ['account', 'security', 'audit-logs']], // 現場責任者には操作の記録を出さない（下の確かめで外す）
 ]
 function parseSideNav(html) {
   const nav = html.slice(html.indexOf('id="side-nav"'), html.indexOf('</nav>', html.indexOf('id="side-nav"')))
@@ -104,7 +105,7 @@ function parseMobileNav(html) {
   const mgrHtml = (await client(await login('sample', 'mgr01')).get('/admin')).text
   const mgrSide = parseSideNav(mgrHtml)
   ok('#9305 役割での出し分け（従業員管理を扱えないロールは項目を外す）はそのまま（現場責任者のメニューに従業員管理がない・ほかは同じ）',
-    JSON.stringify(mgrSide) === JSON.stringify(EXPECTED.map(([k, l, t]) => [k, l, t.filter(x => x !== 'employees')])) && !mgrHtml.includes('<option value="employees">'), mgrSide)
+    JSON.stringify(mgrSide) === JSON.stringify(EXPECTED.map(([k, l, t]) => [k, l, t.filter(x => x !== 'employees' && x !== 'audit-logs')])) && !mgrHtml.includes('<option value="employees">'), mgrSide)
   ok('#9305 出勤可能日・スタッフの申請は、シフト管理・打刻修正承認の下（＝シフト・勤怠の見出しの中）に入る',
     JSON.stringify(side[1][2].slice(0, 5)) === JSON.stringify(['shifts', 'availability', 'reports', 'corrections', 'staff-requests']) && !a.includes('insertAdjacentHTML(\'afterend\', \'<a href="#availability"'))
   const css = await (await fetchRetry(`${BASE}/static/style.css`)).text()
@@ -117,7 +118,7 @@ function parseMobileNav(html) {
   const mgr = client(await login('sample', 'mgr01'))
   const r = await mgr.get('/admin')
   const me = must(await mgr.get('/api/auth/me'), 'me')
-  ok('#9305 現場責任者も見出し付きのメニューで開ける', r.status === 200 && JSON.stringify(parseSideNav(r.text)) === JSON.stringify(EXPECTED.map(([k, l, t]) => [k, l, t.filter(x => x !== 'employees')])), r.status)
+  ok('#9305 現場責任者も見出し付きのメニューで開ける', r.status === 200 && JSON.stringify(parseSideNav(r.text)) === JSON.stringify(EXPECTED.map(([k, l, t]) => [k, l, t.filter(x => x !== 'employees' && x !== 'audit-logs')])), r.status)
   ok('#9305 現場責任者は従業員管理を扱えない（画面で項目を外す判定に使う can_manage_hr はこれまでどおり）', me.can_manage_hr === false, me.can_manage_hr)
 }
 

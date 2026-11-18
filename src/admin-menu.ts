@@ -71,6 +71,8 @@ export const ADMIN_MENU: AdminMenuItem[] = [
 
   { group: 'settings', hash: 'account', label: 'アカウント設定', icon: 'fa-user-gear', render: 'renderAccount' },
   { group: 'settings', hash: 'security', label: 'セキュリティ', icon: 'fa-shield-halved', render: 'renderSecurity' },
+  // 操作の記録（#9988）: CSV の書き出し・管理の操作・シフトと精算の操作・ログインを1つの一覧で見る（会社管理者だけ。public/static/audit-log.js）
+  { group: 'settings', hash: 'audit-logs', label: '操作の記録', icon: 'fa-file-shield', perm: 'audit_logs.view', render: 'renderAuditLogs' },
 ]
 
 // メニューにない画面（ほかの画面のリンクから開く）

@@ -13,6 +13,8 @@ import { summaryMarksBeforeStmt, summaryRowsBeforeStmts } from '../lib/monthly-s
 //   user_notifications         : created_at から2年（既存の notice_reads の保持期間に合わせる）
 //   email_logs                 : created_at から1年（宛先のメールアドレスを含む送信記録。#240）
 //   operation_logs             : created_at から7年（シフト・精算の操作履歴。#159）。担当スタッフの退職後7年でも、その人の分を消す
+//   audit_logs                 : created_at から1年（操作の記録。#9988）。毎日の cron の auth_purge（src/lib/auth.ts）で消す。
+//                                退職後7年の削除でも、その人を対象にした行を消す。解約の削除（OFFBOARDING_TABLES）の対象
 //   error_logs / error_alerts  : created_at から90日（障害の記録と通知の記録。#9622。利用者の ID・入力値は持たないので、退職後の削除の対象はない）
 //   db_size_logs               : created_at から2年。alert_destination_status / alert_cooldowns: updated_at から90日（#9971 #9974。会社・利用者の情報は持たない）
 //   打刻修正申請・その操作履歴・通知メールの送信状態・報告設定（スタッフ別）とその変更履歴
@@ -733,6 +735,9 @@ async function cleanupRetiredStaffData(db: D1Database, buckets: RetentionBuckets
         [null, db.prepare(`DELETE FROM staff_pay_requests WHERE staff_id = ? OR ${ofShifts}`).bind(staffId, staffId)],
         // シフト・精算の操作履歴（#159）。その人が担当していたシフトの履歴（削除したシフトの分を含む）も消す。shifts より先に消す
         [null, db.prepare(`DELETE FROM operation_logs WHERE staff_id = ? OR (entity = 'shift' AND entity_id IN (SELECT shift_id FROM shifts WHERE staff_id = ?))`).bind(staffId, staffId)],
+        // 操作の記録（#9988）のうち、その人を対象にした行（ふつうは1年で消えているが、保留を解いた人などのために消す）
+        // 会社で絞って会社の索引（idx_audit_logs_company）を使う（表の全部を読まないように）
+        [null, db.prepare(`DELETE FROM audit_logs WHERE company_id = (SELECT company_id FROM staff_profiles WHERE staff_id = ?) AND target_type = 'staff' AND target_id = ?`).bind(staffId, staffId)],
         // シフトの取消の記録（メモ・金額）・精算の確認済みの印・区分変更で対象外にした記録（#9952）。shifts より先に消す
         [null, db.prepare(`DELETE FROM shift_cancellations WHERE ${ofShifts}`).bind(staffId)],
         [null, db.prepare(`DELETE FROM settlement_issue_acks WHERE ${ofShifts}`).bind(staffId)],
@@ -1226,6 +1231,8 @@ export const OFFBOARDING_TABLES: OffboardingTable[] = [
   { target: 'settlement_issue_acks', label: '精算の確認済みの印', table: 'settlement_issue_acks', where: OB_CO },
   { target: 'shift_cancellations', label: 'シフトの取消', table: 'shift_cancellations', where: OB_CO },
   { target: 'operation_logs', label: 'シフト・精算の操作履歴', table: 'operation_logs', where: OB_CO },
+  // Sprint 31（w31-audit）: 操作の記録（CSV の書き出し・管理の操作。#9988。1年で自動削除）
+  { target: 'audit_logs', label: '操作の記録', table: 'audit_logs', where: OB_CO },
   { target: 'recruit_application_notes', label: '応募の対応メモ', table: 'recruit_application_notes', where: OB_CO },
   { target: 'recruit_application_items', label: '応募の明細', table: 'recruit_application_items',
     where: 'application_id IN (SELECT application_id FROM recruit_applications WHERE company_id = $C)' },

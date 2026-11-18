@@ -824,6 +824,7 @@ app.get('/admin', async (c) => {
   <script src="/static/recruit.js"></script>
   <script src="/static/board.js"></script>
   <script src="/static/security.js"></script>
+  <script src="/static/audit-log.js"></script>
 </body>
 </html>`)
 })
@@ -863,6 +864,7 @@ app.get('/hq', async (c) => {
   <script src="/static/hq.js"></script>
   ${cdnJs('qrcode-generator@1.4.4/qrcode.min.js')}
   <script src="/static/security.js"></script>
+  <script src="/static/audit-log.js"></script>
 </body>
 </html>`)
 })

@@ -409,6 +409,8 @@ const MIDDLEWARE_DEFS = [
   { file: 'src/api.ts', path: '/*', name: 'd1RowsHook', kind: 'note', label: 'テスト用の仕掛け（TEST_HOOKS のローカルだけ。D1 の読み書きの行数。src/lib/d1-retry.ts）' },
   { file: 'src/api.ts', path: '/*', kind: 'auth', label: 'ログイン必須（セッションの確認・延長・二段階認証の登録待ちの制限）' },
   { file: 'src/api.ts', path: '/auth/*', kind: 'note', label: '本部の閲覧中は書き込み不可' },
+  // 操作の記録（Sprint 31 #9988）。本部の閲覧の確かめより前に置く
+  { file: 'src/api.ts', path: '/admin/*', name: 'auditMiddleware', kind: 'note', label: 'CSV・ファイルの書き出しと管理の操作を audit_logs に1操作1行で記録（src/lib/audit-log.ts）' },
   { file: 'src/api.ts', path: '/admin/*', name: 'hqViewAdminGuard', kind: 'hqview', label: '本部は、企業が許可した閲覧の間だけ GET を通す（閲覧中は sales_manager として扱う）' },
   // requirePerm('操作') のミドルウェア（/admin/*・/staff/*・/hq/* の入口、労務・セキュリティ・管理者アカウント・休暇・企業間チャット）は、
   // ここに書かずに権限の表（src/lib/permissions.ts）から作る（permDef）

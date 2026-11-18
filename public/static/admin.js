@@ -6948,6 +6948,8 @@ window.exportBillingCsv = function () {
   a.download = `billing_${data.month}.csv`
   a.click()
   setTimeout(() => URL.revokeObjectURL(a.href), 10000)
+  // 操作の記録に残す（#9988。画面で作る CSV なので画面から知らせる）
+  if (window.logClientExport) logClientExport('billing', { file: a.download, rows: rows.length, filters: { month: data.month } })
   toast('CSVをダウンロードしました')
 }
 // 画面で組み立てる CSV（#71）。サーバーの src/csv.ts の toCsv と同じ規則にする:

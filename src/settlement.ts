@@ -1006,8 +1006,11 @@ app.get('/settlement/export', async (c) => {
         r.settle_status === 'confirmed' ? '確定' : '未確定', r.issues.join(' / '), r.staff_id,
         minHours(r.premium_night_minutes), minHours(r.premium_overtime_minutes), minHours(r.premium_holiday_minutes), r.premium_night_minutes == null ? '' : r.pay_premium]), { textCols: ['社員番号'] })
   }
-  await logExport(c.env.DB, u, kind, f, kind === 'billing' ? by_client.length + monthlyCount : kind === 'payment' ? by_payee.length : rows.length)
+  const exportRows = kind === 'billing' ? by_client.length + monthlyCount : kind === 'payment' ? by_payee.length : rows.length
+  await logExport(c.env.DB, u, kind, f, exportRows)
   return new Response(csv, { headers: {
+    // 操作の記録（#9988。src/lib/audit-log.ts）に残す行数
+    'X-Export-Rows': String(exportRows),
     'Content-Type': 'text/csv; charset=utf-8',
     'Content-Disposition': `attachment; filename="settlement.csv"; filename*=UTF-8''${encodeURIComponent(name)}`,
     'Cache-Control': 'no-store',
