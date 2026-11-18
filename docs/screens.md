@@ -30,18 +30,18 @@ Mobital の画面の一覧です。新しく加わる開発者や外部の開発
 <!-- BEGIN GENERATED: screens-pages -->
 | パス | 定義 | ログイン | 読み込む画面の JS |
 |---|---|---|---|
-| `/api/health` | [index.tsx:113](../src/index.tsx#L113) |  |  |
-| `/sw.js` | [index.tsx:189](../src/index.tsx#L189) |  | `common.js` |
-| `/` | [index.tsx:236](../src/index.tsx#L236) |  |  |
-| `/login` | [index.tsx:256](../src/index.tsx#L256) |  |  |
-| `/reset-password` | [index.tsx:485](../src/index.tsx#L485) |  |  |
-| `/verify-email` | [index.tsx:566](../src/index.tsx#L566) |  |  |
-| `/notice-ack` | [index.tsx:614](../src/index.tsx#L614) |  |  |
-| `/r/:token` | [index.tsx:672](../src/index.tsx#L672) |  | `report-link.js` |
-| `/apply/:token` | [index.tsx:686](../src/index.tsx#L686) |  | `apply.js` |
-| `/staff` | [index.tsx:700](../src/index.tsx#L700) | `if (u.role !== 'staff') return c.redirect('/')` | `tour.js` `report-form.js` `staff.js` `staff-attendance.js` `staff-profile.js` |
-| `/admin` | [index.tsx:740](../src/index.tsx#L740) | `if (u.role === 'staff') return c.redirect('/staff')` | `hq-support.js` `tour.js` `report-form.js` `admin.js` `roster.js` `roster-chat.js` `shift-board.js` `staff-lifecycle.js` `settlement.js` `report-settings.js` `corrections.js` `notifications.js` `attendance-history.js` `recruit.js` `board.js` `security.js` |
-| `/hq` | [index.tsx:832](../src/index.tsx#L832) | `if (u.role !== 'system_admin') return c.redirect('/')` | `hq.js` `security.js` |
+| `/api/health` | [index.tsx:114](../src/index.tsx#L114) |  |  |
+| `/sw.js` | [index.tsx:190](../src/index.tsx#L190) |  | `common.js` |
+| `/` | [index.tsx:237](../src/index.tsx#L237) |  |  |
+| `/login` | [index.tsx:257](../src/index.tsx#L257) |  |  |
+| `/reset-password` | [index.tsx:486](../src/index.tsx#L486) |  |  |
+| `/verify-email` | [index.tsx:567](../src/index.tsx#L567) |  |  |
+| `/notice-ack` | [index.tsx:615](../src/index.tsx#L615) |  |  |
+| `/r/:token` | [index.tsx:673](../src/index.tsx#L673) |  | `report-link.js` |
+| `/apply/:token` | [index.tsx:687](../src/index.tsx#L687) |  | `apply.js` |
+| `/staff` | [index.tsx:701](../src/index.tsx#L701) | `if (u.role !== 'staff') return c.redirect('/')` | `tour.js` `report-form.js` `staff.js` `staff-attendance.js` `staff-profile.js` |
+| `/admin` | [index.tsx:741](../src/index.tsx#L741) | `if (u.role === 'staff') return c.redirect('/staff')` | `hq-support.js` `tour.js` `report-form.js` `admin.js` `roster.js` `roster-chat.js` `shift-board.js` `staff-lifecycle.js` `settlement.js` `report-settings.js` `corrections.js` `notifications.js` `attendance-history.js` `recruit.js` `board.js` `security.js` |
+| `/hq` | [index.tsx:833](../src/index.tsx#L833) | `if (u.role !== 'system_admin') return c.redirect('/')` | `hq.js` `security.js` |
 <!-- END GENERATED: screens-pages -->
 
 | ページ | 使う人 | 入り口 |
@@ -169,6 +169,7 @@ flowchart LR
 - `#support` 伴走支援
 - `#announcements` 企業へのお知らせ
 - `#security` セキュリティ
+- `#sharing` 使い回しの疑い
 - `#errors` 障害
 - `#offboarding` 解約・データ
 <!-- END GENERATED: screens-hqNav -->
@@ -257,20 +258,21 @@ flowchart LR
 | `#staff-requests` | スタッフの申請 | `renderStaffRequests` [static/admin.js:2448](../public/static/admin.js#L2448) | GET `/api/admin/staff-requests/documents`<br>GET `/api/admin/staff-requests/leave`<br>GET `/api/admin/staff-requests/profile`<br>GET `/api/admin/staff-requests/summary` |
 | `#staff/<ID>` | スタッフマスタ（詳細） | `renderStaffDetail` [static/admin.js:1879](../public/static/admin.js#L1879) | GET `/api/admin/report-settings/staff/:staffId`<br>GET `/api/admin/roster-chat/:staffId`<br>POST `/api/admin/roster-chat/:staffId`<br>GET `/api/admin/roster/:id/links`<br>GET `/api/admin/roster/:id/share-code`<br>GET `/api/admin/settings/site-contact`<br>GET `/api/admin/staff-affiliations`<br>GET `/api/admin/staff-lookup`<br>GET `/api/admin/staff/:id`<br>PUT `/api/admin/staff/:id`<br>GET `/api/admin/staff/:id/documents`<br>GET `/api/admin/staff/:id/lifecycle`<br>PUT `/api/admin/staff/:id/report-settings`<br>GET `/api/admin/staff/:id/skill-sheet` |
 
-### `/hq`（ルートの表: [static/hq.js:2304](../public/static/hq.js#L2304)）
+### `/hq`（ルートの表: [static/hq.js:2518](../public/static/hq.js#L2518)）
 
 | ハッシュ | 画面 | 描画する関数（定義） | 使う API（描画する関数と、そこから呼ぶ関数を2段まで。ボタンの操作で呼ぶものを含む） |
 |---|---|---|---|
-| `#announcements` | 企業へのお知らせ | `renderAnnouncements` [static/hq.js:1721](../public/static/hq.js#L1721) | GET `/api/hq/announcements` |
+| `#announcements` | 企業へのお知らせ | `renderAnnouncements` [static/hq.js:1732](../public/static/hq.js#L1732) | GET `/api/hq/announcements` |
 | `#companies` | 導入企業 | `renderCompanies` [static/hq.js:97](../public/static/hq.js#L97) | GET `/api/hq/companies` |
-| `#companies/<ID>` | 導入企業（詳細） | `renderCompanyDetail` [static/hq.js:480](../public/static/hq.js#L480) | GET `/api/hq/companies/:id` |
-| `#errors` | 障害 | `renderErrors` [static/hq.js:2001](../public/static/hq.js#L2001) | GET `/api/hq/errors`<br>GET `/api/hq/monitor`<br>GET `/api/hq/push/config` |
-| `#mail` | メール送信 | `renderHqMail` [static/hq.js:1816](../public/static/hq.js#L1816) | GET `/api/hq/email-logs`<br>GET `/api/hq/email-stats`<br>GET `/api/hq/email-suppressions` |
-| `#offboarding` | 解約・データ | `renderOffboardingDetail` [static/hq.js:2486](../public/static/hq.js#L2486)<br>`renderOffboardingList` [static/hq.js:2351](../public/static/hq.js#L2351) | GET `/api/hq/offboarding`<br>GET `/api/hq/offboarding/:cid`<br>GET `/api/hq/offboarding/:cid/record.csv` |
-| `#retention` | データ保持・定期処理 | `renderRetention` [static/hq.js:1167](../public/static/hq.js#L1167) | GET `/api/hq/cron/status`<br>GET `/api/hq/retention/logs`<br>GET `/api/hq/retention/schedule`<br>GET `/api/hq/retention/settings` |
+| `#companies/<ID>` | 導入企業（詳細） | `renderCompanyDetail` [static/hq.js:486](../public/static/hq.js#L486) | GET `/api/hq/companies/:id`<br>GET `/api/hq/share-detect` |
+| `#errors` | 障害 | `renderErrors` [static/hq.js:2012](../public/static/hq.js#L2012) | GET `/api/hq/errors`<br>GET `/api/hq/monitor`<br>GET `/api/hq/push/config` |
+| `#mail` | メール送信 | `renderHqMail` [static/hq.js:1827](../public/static/hq.js#L1827) | GET `/api/hq/email-logs`<br>GET `/api/hq/email-stats`<br>GET `/api/hq/email-suppressions` |
+| `#offboarding` | 解約・データ | `renderOffboardingDetail` [static/hq.js:2704](../public/static/hq.js#L2704)<br>`renderOffboardingList` [static/hq.js:2569](../public/static/hq.js#L2569) | GET `/api/hq/offboarding`<br>GET `/api/hq/offboarding/:cid`<br>GET `/api/hq/offboarding/:cid/record.csv` |
+| `#retention` | データ保持・定期処理 | `renderRetention` [static/hq.js:1178](../public/static/hq.js#L1178) | GET `/api/hq/cron/status`<br>GET `/api/hq/retention/logs`<br>GET `/api/hq/retention/schedule`<br>GET `/api/hq/retention/settings` |
 | `#security` | セキュリティ | `renderHqSecurity` [static/security.js:408](../public/static/security.js#L408) | GET `/api/admin/login-history`<br>GET `/api/auth/mfa`<br>GET `/api/auth/sessions`<br>GET `/api/hq/companies`<br>GET `/api/hq/login-history`<br>GET `/api/hq/security` |
-| `#support` | 伴走支援 | `renderSupport` [static/hq.js:1538](../public/static/hq.js#L1538) | GET `/api/hq/companies`<br>GET `/api/hq/support-requests`<br>GET `/api/hq/view-sessions` |
-| `#templates` | テンプレート配信 | `renderTemplates` [static/hq.js:862](../public/static/hq.js#L862) | GET `/api/hq/templates` |
+| `#sharing` | 使い回しの疑い | `renderSharing` [static/hq.js:2369](../public/static/hq.js#L2369) | GET `/api/hq/share-detect` |
+| `#support` | 伴走支援 | `renderSupport` [static/hq.js:1549](../public/static/hq.js#L1549) | GET `/api/hq/companies`<br>GET `/api/hq/support-requests`<br>GET `/api/hq/view-sessions` |
+| `#templates` | テンプレート配信 | `renderTemplates` [static/hq.js:872](../public/static/hq.js#L872) | GET `/api/hq/templates` |
 <!-- END GENERATED: screens-routes -->
 
 `/r/:token`（`public/static/report-link.js`）と `/apply/:token`（`public/static/apply.js`）は、ハッシュで切り替えない1枚の画面です。使う API は、下の表と [API 一覧](api.md) の `/api/public/…` にあります。
@@ -286,7 +288,7 @@ flowchart LR
 | `board.js` | 32 | 26 |  |
 | `corrections.js` | 26 | 21 |  |
 | `hq-support.js` | 8 | 7 |  |
-| `hq.js` | 74 | 62 |  |
+| `hq.js` | 80 | 67 |  |
 | `index.tsx` | 8 | 7 |  |
 | `notifications.js` | 19 | 18 |  |
 | `recruit.js` | 22 | 16 |  |
@@ -311,6 +313,6 @@ flowchart LR
 |---|---|
 | `homePathFor` | [lib/auth.ts:145](../src/lib/auth.ts#L145) |
 | `route` | [static/admin.js:7295](../public/static/admin.js#L7295) |
-| `route` | [static/hq.js:2310](../public/static/hq.js#L2310) |
+| `route` | [static/hq.js:2526](../public/static/hq.js#L2526) |
 | `renderSecurity` | [static/security.js:377](../public/static/security.js#L377) |
 <!-- END GENERATED: screens-refs -->

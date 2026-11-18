@@ -166,6 +166,7 @@ Worker が返すすべての応答に `X-Content-Type-Options: nosniff` を、HT
 | `30 18 * * *` | 毎日 3:30 | `retention_in_service` | 在職中の保存期間による削除（位置情報・写真・相談・フォロー記録など） | `src/services/retention.ts:1034` |
 | `30 18 * * *` | 毎日 3:30 | `report_token_hash` | 報告用URLの古いトークン（0105 より前の平文）を、1日に500件ずつハッシュへ移す（すべて移せば平文は残らない。残りが無ければ問い合わせ1回） | `src/staff-lifecycle.ts` の `runLegacyReportTokenHashJob` |
 | `30 18 * * *` | 毎日 3:30 | `notice_read_reports` | 既読率レポートの集計 | `src/api.ts:320` |
+| `30 18 * * *` | 毎日 3:30 | `share_detect` | アカウントの使い回しの疑いの集計（#9989。その週にまだ集計していなければ動く。ふだんは月曜。済んだ週は問い合わせ1回。見つけるだけで、ログインは止めない） | `src/lib/share-detect.ts` の `runShareDetectJob` |
 | `*/15 * * * *` | 15分おき | `notice_scheduled_publish` | 予約したお知らせのメール配信 | `src/api.ts:7163` |
 | `*/15 * * * *` | 15分おき | `doc_expiry_notice` | 書類の有効期限（30日以内・期限切れ）を管理者に知らせる | `src/notifications.ts` の `notifyExpiringDocuments` |
 | `*/15 * * * *` | 15分おき | `monitor_daily` | D1 の DB の大きさを記録し（1日1行の `db_size_logs`）、上限（`DB_SIZE_LIMIT_MB`）に対する段階を本部の管理者と送り先に知らせる。送り先への障害の通知の毎朝のまとめも送る（毎朝8時以降の最初の起動で1回。済んだ後は問い合わせ1回。[monitoring.md](monitoring.md) の 9・10 章） | `src/services/monitor.ts` の `runMonitorDaily` |

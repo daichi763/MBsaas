@@ -42,6 +42,9 @@ import { notificationsHqApi, notifyCompanyAdmins, LOGIN_FAILURE_NOTIFY_KIND, hid
 import { hqErrorsApi } from './hq-errors'
 // 障害の通知の送り先・DB の大きさ（#9971 #9974。src/hq-monitor.ts）
 import { hqMonitorApi } from './hq-monitor'
+// アカウントの使い回しの疑い（#9989。src/hq-share.ts・src/lib/share-detect.ts）
+import { hqShareApi } from './hq-share'
+import { loginConcurrency } from './lib/share-detect'
 import { toCsv, csvResponse } from './csv'
 import {
   SESSION_COOKIE, SESSION_HOURS, LOGIN_WINDOW_MINUTES, hashPassword, verifyPassword, needsRehash, dummyVerify, validatePassword, normalizeEmail,
@@ -441,12 +444,15 @@ async function issueSession(c: any, user: any, company: any, method: 'password' 
   const token = genToken()
   const expires = new Date(Date.now() + SESSION_HOURS * 3600 * 1000)
   const meta = requestMeta(c)
+  // 使い回しの疑いの手がかり（#9989）: 別の種類の端末のセッションが使われている間のログインか。読むだけで、ログインは止めない（本部のアカウントは見ない）
+  const concurrent = user.role === 'system_admin' ? null
+    : await loginConcurrency(db, user.user_id, meta.ua, SESSION_IDLE_HOURS[user.role] ?? SESSION_HOURS).catch(e => { console.log(`login concurrency check failed: ${e}`); return null })
   await db.prepare('INSERT INTO sessions (token, user_id, company_id, expires_at, ip, user_agent) VALUES (?, ?, ?, ?, ?, ?)')
     .bind(await hashToken(token), user.user_id, user.company_id, expires.toISOString(), meta.ip, meta.ua).run()
   const loginAt = nowJST()
   await db.prepare('UPDATE users SET last_login_at = ?, last_seen_at = ? WHERE user_id = ?').bind(loginAt, loginAt, user.user_id).run()
   setCookie(c, SESSION_COOKIE, token, sessionCookieOptions(c))
-  await recordLoginEvent(db, c, { company_id: user.company_id, user_id: user.user_id, company_code: user.role === 'system_admin' ? '' : company.company_code, user_code: user.user_code, result: 'success', method })
+  await recordLoginEvent(db, c, { company_id: user.company_id, user_id: user.user_id, company_code: user.role === 'system_admin' ? '' : company.company_code, user_code: user.user_code, result: 'success', method, concurrent })
   // 会社コード・ID は登録どおりの表記で返す（ログイン画面が次回の入力欄に入れておく。#308）
   return c.json({ ok: true, user: { user_id: user.user_id, name: user.name, role: user.role, company_name: company.company_name, must_change_password: !!user.must_change_password },
     company_code: user.role === 'system_admin' ? '' : company.company_code, user_code: user.user_code, redirect: homePathFor(user.role) })
@@ -1298,6 +1304,7 @@ api.route('/hq', mailHqApi)
 // 障害の記録（#9622）と、本部の管理者の端末のプッシュ通知（障害の通知）
 api.route('/hq', hqErrorsApi)
 api.route('/hq', hqMonitorApi)
+api.route('/hq', hqShareApi)
 api.route('/hq', notificationsHqApi)
 // 伴走支援の依頼・本部からのお知らせ・管理画面の閲覧（#179 #516 #293。src/hq-support.ts）
 api.route('/admin', hqSupportAdminApi)
