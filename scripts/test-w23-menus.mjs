@@ -122,7 +122,7 @@ const STAFF_SCREENS = [
 ]
 // 本部画面の上のタブ
 const HQ_NAV = [['companies', '導入企業'], ['templates', 'テンプレート配信'], ['retention', 'データ保持・定期処理'], ['mail', 'メール送信'], ['support', '伴走支援'],
-  ['announcements', '企業へのお知らせ'], ['security', 'セキュリティ'], ['errors', '障害'], ['offboarding', '解約・データ']]
+  ['announcements', '企業へのお知らせ'], ['security', 'セキュリティ'], ['sharing', '使い回しの疑い'], ['errors', '障害'], ['offboarding', '解約・データ']]
 
 // ---------- コード ----------
 {
