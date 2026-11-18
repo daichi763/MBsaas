@@ -118,7 +118,7 @@
 | 操作履歴 | シフト・枠・精算の変更の前後の記録 | `operation_logs`（`src/lib/operation-log.ts`） |
 | 変更履歴 | 従業員データとスタッフ基本情報の変更の記録 | `employee_change_logs`（`src/lib/change-log.ts`） |
 | 本部の操作の履歴 | 本部の書き込みの記録 | `hq_audit_logs` |
-| 参照番号 | 予期しないエラーのときに画面に出る8文字。ログの `ref`・`error_logs.ref` と同じ | `newErrorRef()`（`src/lib/error-log.ts:55`）、`app.onError`（`src/index.tsx:84`） |
+| 参照番号 | 予期しないエラーのときに画面に出る8文字。ログの `ref`・`error_logs.ref` と同じ | `newErrorRef()`（`src/lib/error-log.ts:55`）、`app.onError`（`src/index.tsx:85`） |
 | Sprint | 修正のまとまりの単位（以前は「波」）。ブランチ名の `w12` などは Sprint の番号 | D-34 |
 | 作業単位 | Sprint の中で分けた作業（例: `w13-docs-arch-ops`） | ブランチ `fix/<作業単位>` |
 

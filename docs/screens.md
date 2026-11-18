@@ -170,6 +170,7 @@ flowchart LR
 - `#support` 伴走支援
 - `#announcements` 企業へのお知らせ
 - `#security` セキュリティ
+- `#sharing` 使い回しの疑い
 - `#errors` 障害
 - `#offboarding` 解約・データ
 <!-- END GENERATED: screens-hqNav -->
@@ -289,7 +290,7 @@ flowchart LR
 | `board.js` | 32 | 26 |  |
 | `corrections.js` | 26 | 21 |  |
 | `hq-support.js` | 8 | 7 |  |
-| `hq.js` | 74 | 62 |  |
+| `hq.js` | 80 | 67 |  |
 | `index.tsx` | 8 | 7 |  |
 | `notifications.js` | 19 | 18 |  |
 | `recruit.js` | 22 | 16 |  |

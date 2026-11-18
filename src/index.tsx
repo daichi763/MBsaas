@@ -20,6 +20,7 @@ import { hostRedirectTarget, HOST_REDIRECT_MAX_AGE } from './lib/host-redirect'
 import { nowJST } from './lib/time'
 import { CRITICAL_PLACES, notifyCriticalFailure, notifyCronFailure, sendErrorThresholdAlert, type AlertEnv } from './services/alerts'
 import { runMonitorDaily, type MonitorEnv } from './services/monitor'
+import { runShareDetectJob } from './lib/share-detect'
 
 type Bindings = { DB: D1Database; PHOTOS: R2Bucket; DOCUMENTS: R2Bucket; RETENTION_ENABLED?: string; DEMO_MODE?: string } & Omit<ErrorAlertEnv, 'DB'> & Omit<MonitorEnv, 'DB'>
 
@@ -852,6 +853,7 @@ app.get('/hq', async (c) => {
           <a href="#support" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="support">伴走支援<span id="hq-support-badge" class="hidden ml-1 text-3xs bg-danger-500 text-white rounded-full px-1.5 py-0.5"></span></a>
           <a href="#announcements" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="announcements">企業へのお知らせ</a>
           <a href="#security" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="security">セキュリティ</a>
+          <a href="#sharing" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="sharing">使い回しの疑い<span id="hq-sharing-badge" class="hidden ml-1 text-3xs bg-danger-500 text-white rounded-full px-1.5 py-0.5"></span></a>
           <a href="#errors" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="errors">障害<span id="hq-errors-badge" class="hidden ml-1 text-3xs bg-danger-500 text-white rounded-full px-1.5 py-0.5"></span></a>
           <a href="#offboarding" class="hq-nav px-3 py-1.5 rounded-lg" data-tab="offboarding">解約・データ</a>
         </nav>
@@ -923,6 +925,8 @@ const CRON_JOBS = defineCronJobs<Bindings>([
   // 報告用URLの古いトークン（0105 より前の平文）を、1日に500件ずつハッシュへ移す（#9975。残りが無ければ問い合わせ1回で終わる）
   { name: 'report_token_hash', label: '報告用URLの古いトークンのハッシュへの置き換え', cron: CRON_REPORTS, run: env => runLegacyReportTokenHashJob(env.DB) },
   { name: 'notice_read_reports', label: '既読率レポートの集計', cron: CRON_REPORTS, run: env => generateFiscalYearReportsForAllCompanies(env.DB) },
+  // アカウントの使い回しの疑いの集計（#9989。週に1回: その週にまだ集計していなければ動く。ふだんは月曜。済んだ週は問い合わせ1回で終わる）
+  { name: 'share_detect', label: 'アカウントの使い回しの疑いの集計（週1回）', cron: CRON_REPORTS, run: env => runShareDetectJob(env.DB) },
   // 予約配信のお知らせのメール（#291。画面には時刻どおりに出る。管理者・スタッフがお知らせを開いたときにもその会社の分を送る）
   // 予約の時刻から遅れないよう15分おきに確かめる。予約がなければ問い合わせ1回で終わる
   { name: 'notice_scheduled_publish', label: 'お知らせの予約配信（メール）', cron: CRON_REMINDERS, run: async env => {

@@ -469,6 +469,12 @@ function cleanupRetentionLogs(db: D1Database, dryRun: boolean): Promise<Retentio
 function cleanupHqViewLogs(db: D1Database, dryRun: boolean): Promise<RetentionTargetResult> {
   return cleanupByCreatedAt(db, dryRun, { target: 'hq_view_logs', table: 'hq_view_logs', idCol: 'log_id', years: 0, days: LOG_TABLES_KEEP_DAYS })
 }
+// アカウントの使い回しの疑い（#9989。migrations/0116）は、ログインの履歴（login_events）と同じ1年で消す。
+// 退職後の削除（7年）より先に消えるので、退職スタッフの削除の対象には入れない。解約した会社の分は OFFBOARDING_TABLES で消す
+async function cleanupShareDetect(db: D1Database, dryRun: boolean): Promise<RetentionTargetResult[]> {
+  return [await cleanupByCreatedAt(db, dryRun, { target: 'share_suspicions', table: 'share_suspicions', idCol: 'suspicion_id', years: 0, days: LOG_TABLES_KEEP_DAYS }),
+    await cleanupByCreatedAt(db, dryRun, { target: 'share_detect_runs', table: 'share_detect_runs', idCol: 'run_id', years: 0, days: LOG_TABLES_KEEP_DAYS })]
+}
 // 障害に気づく仕組みの表（#9971 #9974。migrations/0109）。会社・利用者の情報は持たないので、退職後の削除・解約の削除の対象はない。
 // DB の大きさの記録は2年（増え方は直近3か月で見る）、送り先の最後の送信の結果・同じ通知の間隔の印は、最後の更新から90日で消す（使わなくなった送り先の分）
 function cleanupDbSizeLogs(db: D1Database, dryRun: boolean): Promise<RetentionTargetResult> {
@@ -1010,6 +1016,7 @@ export async function runRetentionCleanup(db: D1Database, buckets: RetentionBuck
       ...await stage('operation_logs', async () => [await cleanupOperationLogs(db, opts.dryRun)]),
       ...await stage('error_logs', async () => [await cleanupErrorLogs(db, opts.dryRun), await cleanupErrorAlerts(db, opts.dryRun)]),
       ...await stage('retention_logs', async () => [await cleanupRetentionLogs(db, opts.dryRun), await cleanupHqViewLogs(db, opts.dryRun)]),
+      ...await stage('share_detect', () => cleanupShareDetect(db, opts.dryRun)),
       ...await stage('monitor_logs', async () => [await cleanupDbSizeLogs(db, opts.dryRun),
         await cleanupMonitorState(db, opts.dryRun, 'alert_destination_status'), await cleanupMonitorState(db, opts.dryRun, 'alert_cooldowns')]),
       ...await stage('retired_staff', async () => Object.values(opts.dryRun ? await dryRunRetiredStaffData(db) : await cleanupRetiredStaffData(db, buckets))),
@@ -1320,6 +1327,8 @@ export const OFFBOARDING_TABLES: OffboardingTable[] = [
   { target: 'email_logs', label: 'メールの送信記録', table: 'email_logs', where: OB_CO },
   // 障害の記録（#9622）。その企業の利用者の操作で起きたエラーの要約（個人の情報は持たない）。書き出さずに消す
   { target: 'error_logs', label: '障害の記録', table: 'error_logs', where: OB_CO, noExport: true },
+  // Sprint 31（w31-share-detect #9989）: アカウントの使い回しの疑い。本部の判断の記録で会社には見せないので、書き出さずに消す
+  { target: 'share_suspicions', label: 'アカウントの使い回しの疑い（本部）', table: 'share_suspicions', where: OB_CO, noExport: true },
   { target: 'sessions', label: 'ログイン中のセッション', table: 'sessions', where: `${OB_CO} OR user_id IN ${OB_USERS}`, noExport: true },
   { target: 'password_reset_tokens', label: 'パスワード再設定のトークン', table: 'password_reset_tokens', where: `user_id IN ${OB_USERS}`, noExport: true },
   { target: 'login_email_verifications', label: 'メールアドレスの確認', table: 'login_email_verifications', where: OB_CO, noExport: true },

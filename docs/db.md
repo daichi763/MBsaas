@@ -471,6 +471,7 @@ erDiagram
   users ||--o{ counterparty_assignees : "user_id *"
   projects ||--o{ monthly_bill_rules : "project_id"
   staff_profiles ||--o{ monthly_bill_rules : "staff_id *"
+  users ||--o{ share_suspicions : "user_id *"
   alert_cooldowns {
     TEXT alert_key PK
   }
@@ -488,6 +489,12 @@ erDiagram
   }
   error_logs {
     INTEGER error_id PK
+  }
+  share_detect_runs {
+    INTEGER run_id PK
+  }
+  share_detect_settings {
+    TEXT key PK
   }
   user_tour_progress {
     INTEGER user_id PK
@@ -510,7 +517,7 @@ erDiagram
 | 位置・端末・写真 | `attendance_reports.latitude`・`attendance_reports.longitude`・`attendance_reports.address`・`attendance_reports.device_info`・`attendance_reports.device_id`・`attendance_reports.photo_key`・`attendance_correction_attachments.photo_key`・`staff_pay_requests.receipt_key` | 位置情報と写真は、在職中でも保存期間で消します（下の 6） |
 | 相談・やり取りの本文 | `consultations.body`・`consultation_messages.body`・`roster_comments.body`・`board_messages.body`・`recruit_application_notes.body`・`daily_reports.incident_memo` | |
 | 書類のファイル | `staff_documents.storage_key`・`employee_documents.storage_key`・`client_documents.storage_key` | 中身は R2 にあります |
-| ログイン・接続の記録 | `sessions.ip`・`sessions.user_agent`・`login_events.ip`・`login_events.user_agent`・`roster_consents.ip_address`・`roster_consents.user_agent`・`push_subscriptions.endpoint` | 応募の IP はハッシュ（`recruit_applications.ip_hash`）で持ちます |
+| ログイン・接続の記録 | `sessions.ip`・`sessions.user_agent`・`login_events.ip`・`login_events.user_agent`・`login_events.country`・`login_events.region_code`・`login_events.region`・`login_events.city`（接続元のおおよその場所。#9989）・`roster_consents.ip_address`・`roster_consents.user_agent`・`push_subscriptions.endpoint` | 応募の IP はハッシュ（`recruit_applications.ip_hash`）で持ちます |
 | 他社に渡す人材の情報 | `board_proposals.snapshot`・`board_proposals.disclosed` | 下の 5.3 |
 
 ## 5. 他社と共有される範囲
@@ -551,6 +558,7 @@ erDiagram
 - 削除の保留: `staff_profiles.retention_hold_at`・`companies.retention_hold_at` が入っている人・会社のデータは消しません
 - 期限切れのトークン（パスワード再設定・報告用URL・予定確認URL）は、別の定期処理（[`purgeExpiredTokens`](../src/services/retention.ts)）で消します。予定確認URL（`staff_schedule_tokens`）は、期限か取り消し（発行し直した前のURL）から30日で消します（#9968）
 - 実行の記録: `retention_logs`（データ保持・トークンの削除の実行ログ）と `hq_view_logs`（本部の閲覧で開いた画面）は、保存期間が決まっていなかったので作成から1年で消します（#9968。`cron_runs` は180日、`error_logs` は90日）。本部の操作の記録 `hq_audit_logs` は消しません
+- アカウントの使い回しの疑い（#9989）: `share_suspicions`（疑いのあるアカウントと本部の確認の結果）と `share_detect_runs`（集計の実行の記録）は、ログインの履歴と同じく作成から1年で消します。`share_suspicions` は解約した会社の削除の対象で、会社には書き出しません（本部だけの記録）
 
 対象の一覧（コードから生成）:
 
@@ -778,6 +786,9 @@ company_id の列がある表は、すべてどちらかに入っています。
 | [`error_alerts`](#error_alerts) |  | 直近のエラーが閾値を超えたときに、本部の管理者へ送った通知の記録。 同じ通知を繰り返さないための判定（最後の通知から一定時間は送らない）に使う。created_at から90日で消す | 0093 | 作成から90日で削除（[services/retention.ts:458](../src/services/retention.ts#L458)） |
 | [`error_logs`](#error_logs) | 障害の記録 | サーバーの予期しないエラー（index.tsx の app.onError。利用者には参照番号を返している #230）と、 定期処理（cron）の失敗を1件ずつ残す。書き込みは src/lib/error-log.ts の recordE… | 0093 | 作成から90日で削除（[services/retention.ts:455](../src/services/retention.ts#L455)）<br>解約時: 削除（書き出さない） |
 | [`monthly_bill_rules`](#monthly_bill_rules) | 月額（固定）の請求のルール | 案件の月額の請求。その月に確定・代打のシフトが1件以上ある案件について、月に1回だけ請求する （staff_id のあるルールは、そのスタッフのその案件のシフトが1件以上ある月に1回）。シフトの数・時間には左右されない。 金額はシフトの請… | 0096 | 解約時: 書き出して削除 |
+| [`share_detect_runs`](#share_detect_runs) |  | 2. 集計の実行（週に1回の定期処理と、本部の画面の「今すぐ集計する」）。会社・利用者の情報は持たない。1年で消す（src/services/retention.ts） period_from・period_to: 集計した期間（日本時間… | 0116 | 作成から365日で削除（[services/retention.ts:474](../src/services/retention.ts#L474)） |
+| [`share_detect_settings`](#share_detect_settings) |  | 4. 判定の決まりの値（本部の画面で変えられる。行がない項目は src/lib/share-detect.ts の既定値） | 0116 |  |
+| [`share_suspicions`](#share_suspicions) | アカウントの使い回しの疑い（本部） | 3. 疑いのあるアカウント（集計1回につき、決まりの点数を超えたアカウントごとに1行）。 reasons_json: 理由の配列（[{ "code": concurrent / many_devices / far_apart / pun… | 0116 | 作成から365日で削除（[services/retention.ts:473](../src/services/retention.ts#L473)）<br>解約時: 削除（書き出さない） |
 | [`user_tour_progress`](#user_tour_progress) | 案内（チュートリアル）の進み具合 | 人（users の行）ごと・案内（tour_key）ごとに、見終わった・スキップした・途中まで進んだかを残す。 別の端末で開いても同じ状態になるよう、端末ではなくサーバーに残す。書き込みは src/tours.ts だけ。 | 0094 | 解約時: 削除（書き出さない） |
 <!-- END GENERATED: db-tables -->
 
@@ -890,6 +901,12 @@ UNIQUE 制約: (company_code)
 | `user_agent` | TEXT | 可 |  |  |  |  |
 | `actor_user_id` | INTEGER | 可 |  |  |  |  |
 | `created_at` | TEXT |  |  |  |  |  |
+| `country` | TEXT | 可 |  |  | 0116 | 1. ログインの履歴に、接続元のおおよその場所（Cloudflare の request.cf）と、ログインの時点で別の端末で使っていたかを足す。 country: 国（ISO 3166-1 の2文字。例 JP）。region_code: 都道府県のコード（ISO 3166-2 の後ろ。例 13 = 東京都）。 re… |
+| `region_code` | TEXT | 可 |  |  | 0116 | 1. ログインの履歴に、接続元のおおよその場所（Cloudflare の request.cf）と、ログインの時点で別の端末で使っていたかを足す。 country: 国（ISO 3166-1 の2文字。例 JP）。region_code: 都道府県のコード（ISO 3166-2 の後ろ。例 13 = 東京都）。 re… |
+| `region` | TEXT | 可 |  |  | 0116 | 1. ログインの履歴に、接続元のおおよその場所（Cloudflare の request.cf）と、ログインの時点で別の端末で使っていたかを足す。 country: 国（ISO 3166-1 の2文字。例 JP）。region_code: 都道府県のコード（ISO 3166-2 の後ろ。例 13 = 東京都）。 re… |
+| `city` | TEXT | 可 |  |  | 0116 | 1. ログインの履歴に、接続元のおおよその場所（Cloudflare の request.cf）と、ログインの時点で別の端末で使っていたかを足す。 country: 国（ISO 3166-1 の2文字。例 JP）。region_code: 都道府県のコード（ISO 3166-2 の後ろ。例 13 = 東京都）。 re… |
+| `concurrent_device` | TEXT | 可 |  |  | 0116 | 1. ログインの履歴に、接続元のおおよその場所（Cloudflare の request.cf）と、ログインの時点で別の端末で使っていたかを足す。 country: 国（ISO 3166-1 の2文字。例 JP）。region_code: 都道府県のコード（ISO 3166-2 の後ろ。例 13 = 東京都）。 re… |
+| `concurrent_minutes` | INTEGER | 可 |  |  | 0116 | 1. ログインの履歴に、接続元のおおよその場所（Cloudflare の request.cf）と、ログインの時点で別の端末で使っていたかを足す。 country: 国（ISO 3166-1 の2文字。例 JP）。region_code: 都道府県のコード（ISO 3166-2 の後ろ。例 13 = 東京都）。 re… |
 
 索引:
 
@@ -4464,6 +4481,77 @@ UNIQUE 制約: (day)
 
 - `idx_monthly_bill_rules_staff`: (staff_id)
 - `idx_monthly_bill_rules_project`: (company_id, project_id)
+
+<a id="share_detect_runs"></a>
+#### share_detect_runs
+
+> 2. 集計の実行（週に1回の定期処理と、本部の画面の「今すぐ集計する」）。会社・利用者の情報は持たない。1年で消す（src/services/retention.ts） period_from・period_to: 集計した期間（日本時間の日付）。rows_read: 集計の問い合わせで D1 が読んだ行数の合計（読み取りの枠の確認用）
+
+作成: [migrations/0116_share_detect.sql:1](../migrations/0116_share_detect.sql#L1)　／　作成から365日で削除（[services/retention.ts:474](../src/services/retention.ts#L474)）
+
+| 列 | 型 | NULL | 既定値 | キー・参照 | 追加 | 説明（マイグレーションのコメント） |
+|---|---|---|---|---|---|---|
+| `run_id` | INTEGER |  |  | PK |  |  |
+| `trigger_type` | TEXT |  |  |  |  | cron / manual |
+| `status` | TEXT |  |  |  |  | ok / failed |
+| `period_from` | TEXT |  |  |  |  |  |
+| `period_to` | TEXT |  |  |  |  |  |
+| `flagged` | INTEGER |  | 0 |  |  |  |
+| `rows_read` | INTEGER | 可 |  |  |  |  |
+| `settings_json` | TEXT | 可 |  |  |  |  |
+| `error_message` | TEXT | 可 |  |  |  |  |
+| `triggered_by` | INTEGER | 可 |  |  |  |  |
+| `created_at` | TEXT |  |  |  |  |  |
+| `finished_at` | TEXT | 可 |  |  |  |  |
+
+索引:
+
+- `idx_share_detect_runs_created`: (created_at)
+
+<a id="share_detect_settings"></a>
+#### share_detect_settings
+
+> 4. 判定の決まりの値（本部の画面で変えられる。行がない項目は src/lib/share-detect.ts の既定値）
+
+作成: [migrations/0116_share_detect.sql:1](../migrations/0116_share_detect.sql#L1)
+
+| 列 | 型 | NULL | 既定値 | キー・参照 | 追加 | 説明（マイグレーションのコメント） |
+|---|---|---|---|---|---|---|
+| `key` | TEXT |  |  | PK |  |  |
+| `value` | INTEGER |  |  |  |  |  |
+| `updated_by` | INTEGER | 可 |  |  |  |  |
+| `updated_at` | TEXT | 可 |  |  |  |  |
+
+<a id="share_suspicions"></a>
+#### share_suspicions — アカウントの使い回しの疑い（本部）
+
+> 3. 疑いのあるアカウント（集計1回につき、決まりの点数を超えたアカウントごとに1行）。 reasons_json: 理由の配列（[{ "code": concurrent / many_devices / far_apart / punch_far / punch_devices, "count": 回数, "points": 点, "detail": 説明 }]）。 first_at・last_at: 手がかりが見つかった最初と最後の日時（日本時間）。 review_status: open（未確認）/ ok（確認して問題なし）/ contacted（会社に連絡した）。本部の確認のメモを review_note に残す。 解約した会社の削除の対象（OFFBOARDING_TABLES。書き出さない）。1年で消す
+
+作成: [migrations/0116_share_detect.sql:1](../migrations/0116_share_detect.sql#L1)　／　作成から365日で削除（[services/retention.ts:473](../src/services/retention.ts#L473)）　／　解約時: 削除（書き出さない）
+
+| 列 | 型 | NULL | 既定値 | キー・参照 | 追加 | 説明（マイグレーションのコメント） |
+|---|---|---|---|---|---|---|
+| `suspicion_id` | INTEGER |  |  | PK |  |  |
+| `run_id` | INTEGER |  |  |  |  |  |
+| `company_id` | INTEGER |  |  |  |  |  |
+| `user_id` | INTEGER |  |  | （users） |  |  |
+| `score` | INTEGER |  |  |  |  |  |
+| `reasons_json` | TEXT |  |  |  |  |  |
+| `period_from` | TEXT |  |  |  |  |  |
+| `period_to` | TEXT |  |  |  |  |  |
+| `first_at` | TEXT | 可 |  |  |  |  |
+| `last_at` | TEXT | 可 |  |  |  |  |
+| `review_status` | TEXT |  | 'open' |  |  |  |
+| `review_note` | TEXT | 可 |  |  |  |  |
+| `reviewed_by` | INTEGER | 可 |  |  |  |  |
+| `reviewed_at` | TEXT | 可 |  |  |  |  |
+| `created_at` | TEXT |  |  |  |  |  |
+
+索引:
+
+- `idx_share_suspicions_user`: (user_id, created_at)
+- `idx_share_suspicions_company`: (company_id, created_at)
+- `idx_share_suspicions_run`: (run_id, score)
 
 <a id="user_tour_progress"></a>
 #### user_tour_progress — 案内（チュートリアル）の進み具合

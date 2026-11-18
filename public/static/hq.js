@@ -295,6 +295,8 @@ const HQ_AUDIT_ACTION = {
   'billing.update': '請求の記録の修正', 'support_log.add': '伴走支援の記録', 'security.reset_mfa': '二段階認証の解除', 'security.clear_ip': '接続元の制限の解除',
   // 企業の操作の記録を見た・書き出した（#9988。public/static/audit-log.js）
   'audit_logs.view': '企業の操作の記録の閲覧', 'audit_logs.export': '企業の操作の記録の CSV',
+  // 使い回しの疑い（#9989）
+  'share.run': '使い回しの疑いの集計', 'share.review': '使い回しの疑いの確認', 'share.settings': '使い回しの疑いの判定の決まりの変更',
 }
 const HQ_AUDIT_FIELD = {
   company_name: '会社名', plan: 'プラン', user_limit: 'ユーザー上限', active_status: '利用状態', billing_status: '請求状態', maturity_level: '運営成熟度',
@@ -302,10 +304,14 @@ const HQ_AUDIT_FIELD = {
   contact_name: '担当者', contact_phone: '電話', contact_email: 'メール', billing_address: '請求先の住所',
   status: '入金状態', amount: '金額', paid_at: '入金日', note: 'メモ', created: '記録した企業数', mfa_enabled: '二段階認証',
   base_fee: '基本料金', included_users: '含む人数', per_user_fee: '追加1人',
+  review_status: '確認の結果', review_note: '確認のメモ', run_id: '集計の番号', flagged: '疑いの件数', rows_read: '読んだ行数',
+  concurrent_admin_minutes: '管理者の同時の間隔（分）', concurrent_staff_minutes: 'スタッフの同時の間隔（分）', concurrent_min_count: '同時の回数',
+  device_days: '端末を数える日数', device_threshold: '端末の数', device_group: '端末の数え方', far_km: '離れた距離（km）', far_hours: '離れた場所の間隔（時間）',
+  punch_minutes: '打刻の間隔（分）', punch_km: '打刻の距離（km）', punch_speed_kmh: '打刻の速さ（時速km）', min_score: '一覧に出す点数',
 }
 const HQ_AUDIT_VALUE = {
   plan: PLAN_LABELS, active_status: { active: '利用中', trial: 'トライアル', inactive: '停止' }, billing_status: { active: '正常', overdue: '滞納', suspended: '停止' },
-  status: BILLING_MONTH_LABEL,
+  status: BILLING_MONTH_LABEL, review_status: { open: '未確認', ok: '問題なし', contacted: '会社に連絡した' }, device_group: { 1: 'OS とブラウザ', 2: 'OS だけ' },
 }
 function hqAuditValue(k, v) {
   if (v == null || v === '') return '（なし）'
@@ -590,6 +596,8 @@ async function renderCompanyDetail(cid) {
       </section>
     </div>
 
+    <section id="hq-share-company" class="bg-hq-800 border border-hq-700 rounded-xl p-4 mt-4"><p class="text-sm text-hq-400">アカウントの使い回しの疑いを読み込み中…</p></section>
+
     <div class="grid lg:grid-cols-2 gap-4 mt-4">
       ${hqBillingSection(data, cid)}
       ${hqSupportLogSection(data, cid)}
@@ -610,6 +618,8 @@ async function renderCompanyDetail(cid) {
       </div>
       <div id="hq-co-audit-logs" class="mt-2"></div>
     </section>`
+  // アカウントの使い回しの疑い（#9989。本部だけ）は、企業詳細を出してから読む
+  loadCompanySharing(cid)
 }
 // 月ごとの請求記録（#295）
 function hqBillingSection(data, cid) {
@@ -1050,6 +1060,7 @@ const RETENTION_TARGET_LABEL = {
   retired_staff_deferred: '上限で翌日に回した退職スタッフ（人数）', r2_pending: '翌日以降に消すR2ファイル（残り）',
   password_reset_tokens: 'パスワード再設定のリンク（期限切れ・使用済み）', expired_report_tokens: '報告用URL（期限から30日・取り消し済み）', expired_schedule_tokens: '予定確認URL（期限・取り消しから30日）',
   retention_logs: 'データ保持・定期削除の実行ログ（1年）', hq_view_logs: '本部の閲覧で開いた画面の記録（1年）',
+  share_suspicions: 'アカウントの使い回しの疑い（1年）', share_detect_runs: '使い回しの疑いの集計の記録（1年）',
   // 在職中の保存期間（期間は「保存期間の設定」で変えられる。#420 #511 #350 #425）
   attendance_location: '入店などの位置情報・端末情報（在職中）', attendance_photos: '入店などの写真（在職中・R2の削除に回す）',
   consultations_done: '対応済みの相談（在職中）', follow_logs_done: '完了したフォロー記録（在職中）',
@@ -2309,12 +2320,217 @@ if (HQ_PUSH_SUPPORTED) {
   })
 }
 
+// ============ 使い回しの疑い（Sprint 31 #9989。API は src/hq-share.ts、集計は src/lib/share-detect.ts） ============
+// 1つのアカウントを複数の人で使っている疑いのあるアカウントを、週に1回の集計から出す。見つけるだけで止めない（利用者の決定 11/18）。
+// 本部だけの画面（会社の画面には出さない）。企業詳細にも同じ行を出す（loadCompanySharing）
+const HQ_SHARE = { run_id: '', status: '', data: null }
+const SHARE_REVIEW_LABEL = { open: '未確認', ok: '問題なし', contacted: '会社に連絡した' }
+const SHARE_REVIEW_BADGE = { open: 'badge-yellow', ok: 'badge-green', contacted: 'badge-blue' }
+const SHARE_REASON_ICON = { concurrent: 'fa-clone', many_devices: 'fa-mobile-screen-button', far_apart: 'fa-location-dot', punch_far: 'fa-person-running', punch_devices: 'fa-fingerprint' }
+const SHARE_REASON_FALLBACK = { concurrent: '別の端末で同時に利用', many_devices: '端末の種類が多い', far_apart: '離れた場所からのログイン', punch_far: '離れた場所で続けて打刻', punch_devices: '同じ日に別の端末で打刻' }
+const shareTime = v => !v ? '' : String(v).length <= 10 ? dayjs(v).format('M/D') : dayjs(String(v).replace(' ', 'T')).format('M/D HH:mm')
+const shareWhen = v => { const t = dayjs(String(v || '').replace(' ', 'T')); return t.isValid() ? `${t.format('M/D')}（${'日月火水木金土'[t.day()]}）${t.format('HH:mm')}` : '' }
+const shareScoreBadge = s => `<span class="badge ${Number(s) >= 80 ? 'badge-red' : 'badge-yellow'} whitespace-nowrap">${Number(s)}点</span>`
+function updateSharingBadge(n) {
+  const b = document.getElementById('hq-sharing-badge')
+  if (!b) return
+  b.textContent = Number(n) || 0
+  b.classList.toggle('hidden', !Number(n))
+}
+async function refreshSharingBadge() {
+  try { updateSharingBadge((await axios.get('/api/hq/share-detect/summary', { headers: { 'X-Background': '1' } })).data.open) } catch { }
+}
+function shareReasonLabel(r, role, labels) {
+  // 管理者の「同時に別の端末」は、同じ時刻に別の端末から操作していたことを表す
+  if (r.code === 'concurrent' && role && role !== 'staff') return '同じ時刻に別の端末から操作（管理者）'
+  return (labels && labels[r.code]) || SHARE_REASON_FALLBACK[r.code] || r.code
+}
+function shareReasonsHtml(it, labels) {
+  return (it.reasons || []).map(r => `<div class="mb-1 last:mb-0">
+      <span class="font-bold"><i class="fas ${SHARE_REASON_ICON[r.code] || 'fa-circle-info'} text-hq-accent-400 mr-1" aria-hidden="true"></i>${esc(shareReasonLabel(r, it.role, labels))}</span>
+      <span class="text-2xs text-hq-400 ml-1">${Number(r.points)}点</span>
+      <div class="text-2xs text-hq-300 text-wrap-any">${esc(r.detail || '')}</div></div>`).join('')
+}
+function shareReviewHtml(it) {
+  const st = it.review_status || 'open'
+  const prev = it.previous_review
+  return `<span class="badge ${SHARE_REVIEW_BADGE[st] || 'badge-gray'} whitespace-nowrap">${esc(SHARE_REVIEW_LABEL[st] || st)}</span>
+    ${st !== 'open' && it.reviewed_at ? `<div class="text-2xs text-hq-400 mt-0.5">${esc(shareTime(it.reviewed_at))}${it.reviewer_name ? '・' + esc(it.reviewer_name) : ''}</div>` : ''}
+    ${it.review_note ? `<div class="text-2xs text-hq-300 text-wrap-any mt-0.5">${esc(it.review_note)}</div>` : ''}
+    ${st === 'open' && prev ? `<div class="text-2xs text-hq-400 mt-0.5">前回（${esc(shareTime(prev.period_to))}までの集計）: ${esc(SHARE_REVIEW_LABEL[prev.review_status] || prev.review_status)}${prev.review_note ? `「${esc(prev.review_note)}」` : ''}</div>` : ''}
+    <button class="block text-hq-accent-400 text-xs hover:underline mt-1" data-action="hqShareReview" data-id="${Number(it.suspicion_id)}">確認する</button>`
+}
+function shareRowsHtml(items, labels, withCompany) {
+  return items.map(it => `<tr class="border-b border-hq-700/40 align-top">
+      ${withCompany ? `<td class="px-2 py-2"><a href="#companies/${Number(it.company_id)}" class="text-hq-accent-400 hover:underline">${esc(it.company_name || ('企業 ' + it.company_id))}</a><div class="text-2xs text-hq-500">${esc(it.company_code || '')}</div></td>` : ''}
+      <td class="px-2 py-2 whitespace-nowrap"><div class="font-bold">${esc(it.name || '（削除された利用者）')}</div><div class="text-2xs text-hq-400">${esc(it.user_code || '')}・${esc(ROLE_LABELS[it.role] || it.role || '')}${it.user_status && it.user_status !== 'active' ? '・停止中' : ''}</div></td>
+      <td class="px-2 py-2 text-center">${shareScoreBadge(it.score)}</td>
+      <td class="px-2 py-2 text-xs">${shareReasonsHtml(it, labels)}</td>
+      <td class="px-2 py-2 text-xs whitespace-nowrap">${esc(shareTime(it.first_at))}${it.last_at && it.last_at !== it.first_at ? `〜<br>${esc(shareTime(it.last_at))}` : ''}
+        <div class="text-2xs text-hq-500 mt-0.5">集計 ${esc(shareTime(it.period_from))}〜${esc(shareTime(it.period_to))}</div></td>
+      <td class="px-2 py-2 text-xs">${shareReviewHtml(it)}</td></tr>`).join('')
+}
+function shareTableHtml(items, labels, withCompany, empty) {
+  return `<div class="overflow-x-auto"><table class="w-full text-sm" style="min-width:${withCompany ? 900 : 760}px">
+    <thead><tr class="text-hq-400 text-xs border-b border-hq-700">${withCompany ? '<th class="text-left px-2 py-2">会社</th>' : ''}<th class="text-left px-2 py-2">アカウント</th><th class="px-2">点数</th><th class="text-left px-2">理由</th><th class="text-left px-2">見つかった日時</th><th class="text-left px-2">確認</th></tr></thead>
+    <tbody>${shareRowsHtml(items, labels, withCompany) || `<tr><td colspan="${withCompany ? 6 : 5}" class="text-center text-hq-500 py-6">${esc(empty)}</td></tr>`}</tbody></table></div>`
+}
+const shareRunLabel = r => `${dayjs(r.period_from).format('M/D')}〜${dayjs(r.period_to).format('M/D')}（${r.trigger_type === 'manual' ? '手動' : '定期'}・${hqTime(r.created_at)}）${r.status === 'ok' ? ` ${Number(r.flagged)}件` : ' 失敗'}`
+async function renderSharing() {
+  loading()
+  let d
+  try { d = (await axios.get('/api/hq/share-detect', { params: HQ_SHARE.run_id ? { run_id: HQ_SHARE.run_id } : {} })).data } catch (e) {
+    $app.innerHTML = `<p class="text-danger-400">${esc(errMsg(e, '読み込めませんでした'))}</p>`
+    if (HQ_SHARE.run_id) { HQ_SHARE.run_id = ''; $app.innerHTML += '<button class="text-hq-accent-400 text-sm hover:underline mt-2" data-action="hqShareReload">最新の集計を開く</button>' }
+    return
+  }
+  if (location.hash.slice(1).split('/')[0] !== 'sharing') return // 読み込み中にほかのタブへ移った
+  HQ_SHARE.data = d
+  const latestOk = d.runs.find(r => r.status === 'ok')
+  const isLatest = d.run && latestOk && d.run.run_id === latestOk.run_id
+  const openN = d.items.filter(i => i.review_status === 'open').length
+  if (isLatest) updateSharingBadge(openN)
+  const lastFailed = d.runs[0] && d.runs[0].status !== 'ok' ? d.runs[0] : null
+  const counts = Object.fromEntries(Object.keys(SHARE_REVIEW_LABEL).map(k => [k, d.items.filter(i => i.review_status === k).length]))
+  const shown = HQ_SHARE.status ? d.items.filter(i => i.review_status === HQ_SHARE.status) : d.items
+  const st = d.settings || {}
+  $app.innerHTML = `
+    <div class="flex items-center justify-between flex-wrap gap-2 mb-4">
+      <h2 class="text-xl font-bold">使い回しの疑い</h2>
+      <div class="flex flex-wrap gap-2">
+        <button class="btn btn-dark-outline text-sm" data-action="hqShareSettings"><i class="fas fa-sliders"></i>判定の決まり</button>
+        <button class="btn btn-primary text-sm" style="background:rgb(var(--color-hq-accent-700))" data-action="hqShareRun"><i class="fas fa-magnifying-glass-chart"></i>今すぐ集計する</button>
+      </div>
+    </div>
+    <section class="bg-hq-800 border border-hq-700 rounded-xl p-4 mb-4 text-sm">
+      <p class="mb-1">1つのアカウントを複数の人で使っている疑いのあるアカウントです（アカウントの数で課金するため）。ログインと打刻の記録から手がかりを点数にして、${Number(st.min_score) || 40}点以上を出します。</p>
+      <p class="text-xs text-hq-400">見つけて知らせるだけで、ログインを止めたり締め出したりはしません。この画面と企業詳細の欄は本部だけが見られます（会社の画面には出ません）。同じ人のスマホとパソコン、携帯の回線での場所の変わり方でも出ることがあるので、確かめたら「確認する」で結果を残してください（次の集計でも前回の結果を出します）。</p>
+    </section>
+    ${lastFailed ? `<div class="bg-danger-900/40 border border-danger-700 text-danger-200 rounded-xl p-3 mb-4 text-sm"><i class="fas fa-triangle-exclamation mr-1"></i>最後の集計（${esc(hqTime(lastFailed.created_at))}）が失敗しました。${esc(lastFailed.error_message || '')}</div>` : ''}
+    <div class="flex flex-wrap items-center gap-x-4 gap-y-2 mb-3 text-sm">
+      ${d.runs.length ? `<label class="flex items-center gap-2 min-w-0 w-full sm:w-auto"><span class="text-hq-400 text-xs shrink-0">集計</span>
+        <select id="hs-run" class="bg-hq-900 border border-hq-600 rounded-lg px-2 py-1 min-w-0 flex-1 sm:flex-none max-w-full" aria-label="集計を選ぶ">${d.runs.map(r => `<option value="${Number(r.run_id)}" ${d.run && d.run.run_id === r.run_id ? 'selected' : ''} ${r.status === 'ok' ? '' : 'disabled'}>${esc(shareRunLabel(r))}</option>`).join('')}</select></label>` : ''}
+      <span class="text-xs text-hq-400">次の定期の集計: ${esc(shareWhen(d.next_run_at))}ごろ（週に1回）</span>
+      ${d.run && d.run.rows_read != null ? `<span class="text-2xs text-hq-500">この集計で読んだ行数: ${Number(d.run.rows_read).toLocaleString()}</span>` : ''}
+    </div>
+    ${d.run ? `
+    <div class="flex flex-wrap gap-1 mb-3">
+      ${[['', 'すべて', d.items.length], ...Object.entries(SHARE_REVIEW_LABEL).map(([k, v]) => [k, v, counts[k]])].map(([k, v, n]) => `<button class="text-xs px-2 py-1 rounded-lg border ${HQ_SHARE.status === k ? 'border-hq-accent-500 text-hq-accent-300' : 'border-hq-600 text-hq-400'}" data-action="hqShareFilter" data-status="${esc(k)}">${esc(v)}（${Number(n)}）</button>`).join('')}
+    </div>
+    <section class="bg-hq-800 border border-hq-700 rounded-xl p-2 md:p-4 mb-4">${shareTableHtml(shown, d.reason_labels, true, HQ_SHARE.status ? 'この確認の状態のアカウントはありません' : 'この集計では、疑いのあるアカウントは見つかりませんでした')}</section>`
+    : `<section class="bg-hq-800 border border-hq-700 rounded-xl p-6 mb-4 text-center text-sm text-hq-400">まだ集計していません。定期の集計を待つか、「今すぐ集計する」を押してください。</section>`}
+    <section class="bg-hq-800 border border-hq-700 rounded-xl p-4 mb-4">
+      <h3 class="font-bold mb-2 text-sm"><i class="fas fa-circle-question text-hq-accent-400 mr-1"></i>手がかりと点数</h3>
+      <ul class="text-xs text-hq-300 space-y-1">
+        <li><span class="font-bold">${esc(SHARE_REASON_FALLBACK.concurrent)}</span>（${Number(d.reason_points.concurrent)}点）: 別の種類の端末（OS・ブラウザ）のセッションを使っている間に、ほかの端末からログインした回数（直近${Number(d.period_days)}日）と、集計の時点で別の種類の端末が2つ以上ログイン中なこと。${Number(st.concurrent_min_count)}回から数えます。管理者は「同じ時刻に別の端末から操作」と出します。</li>
+        <li><span class="font-bold">${esc(SHARE_REASON_FALLBACK.many_devices)}</span>（${Number(d.reason_points.many_devices)}点）: ${Number(st.device_days)}日のあいだにログインした端末の種類が${Number(st.device_threshold)}つ以上（${Number(st.device_group) === 2 ? 'OS だけで数える' : 'OS とブラウザの組み合わせで数える'}）。</li>
+        <li><span class="font-bold">${esc(SHARE_REASON_FALLBACK.far_apart)}</span>（${Number(d.reason_points.far_apart)}点）: ${Number(st.far_hours)}時間以内に、約${Number(st.far_km)}km 以上離れた都道府県（か別の国）からログイン。場所は Cloudflare が接続元から推定した都道府県です。</li>
+        <li><span class="font-bold">${esc(SHARE_REASON_FALLBACK.punch_far)}</span>（${Number(d.reason_points.punch_far)}点）: スタッフのアプリからの打刻で、${Number(st.punch_minutes)}分以内の2回が${Number(st.punch_km)}km 以上離れ、時速${Number(st.punch_speed_kmh)}km 以上でないと移動できないもの。</li>
+        <li><span class="font-bold">${esc(SHARE_REASON_FALLBACK.punch_devices)}</span>（${Number(d.reason_points.punch_devices)}点）: 同じ日に、別の種類の端末から打刻した日数。</li>
+      </ul>
+      <p class="text-2xs text-hq-500 mt-2">回数が多いと、1回ごとに10点（最大20点）を足します。日報は送った端末を記録していないので、手がかりに使いません。記録は1年で消えます。</p>
+    </section>`
+  const sel = document.getElementById('hs-run')
+  if (sel) sel.addEventListener('change', () => { HQ_SHARE.run_id = sel.value; HQ_SHARE.status = ''; renderSharing() })
+}
+delegate('hqShareReload', () => { HQ_SHARE.run_id = ''; renderSharing() })
+delegate('hqShareFilter', (el) => { HQ_SHARE.status = el.dataset.status || ''; renderSharing() })
+delegate('hqShareRun', (el) => withSubmitLock(el, async () => {
+  try {
+    const { data } = await axios.post('/api/hq/share-detect/run')
+    toast(data.run.flagged ? `集計しました。疑いのあるアカウントは${Number(data.run.flagged)}件です` : '集計しました。疑いのあるアカウントは見つかりませんでした')
+    HQ_SHARE.run_id = ''; HQ_SHARE.status = ''
+    renderSharing()
+  } catch (e) { hqErr(e, '集計できませんでした') }
+}))
+// 企業詳細の「アカウントの使い回しの疑い」の欄（renderCompanyDetail の後に読む）
+async function loadCompanySharing(cid) {
+  const box = document.getElementById('hq-share-company')
+  if (!box) return
+  let d
+  try { d = (await axios.get('/api/hq/share-detect', { params: { company_id: cid } })).data } catch (e) {
+    box.innerHTML = `<p class="text-sm text-danger-400">${esc(errMsg(e, '使い回しの疑いを読み込めませんでした'))}</p>`
+    return
+  }
+  if (!document.getElementById('hq-share-company')) return
+  HQ_SHARE.data = d
+  const last = d.runs.find(r => r.status === 'ok')
+  box.innerHTML = `
+    <div class="flex items-center justify-between flex-wrap gap-2 mb-2">
+      <h3 class="font-bold"><i class="fas fa-user-group text-hq-accent-400 mr-1"></i>アカウントの使い回しの疑い <span class="text-2xs font-normal text-hq-400">本部だけに出ます</span></h3>
+      <a href="#sharing" class="text-hq-accent-400 text-xs hover:underline">すべての企業の一覧へ</a>
+    </div>
+    ${shareTableHtml(d.items, d.reason_labels, false, last ? `疑いのあるアカウントはありません（最後の集計: ${hqTime(last.created_at)}）` : 'まだ集計していません')}
+    <p class="text-2xs text-hq-500 mt-2">週に1回の集計で見つかったものを、新しい順に${d.items.length >= 50 ? '50件まで' : ''}出します（1年で消えます）。見つけるだけで、ログインは止めません。</p>`
+}
+delegate('hqShareReview', (el) => {
+  const id = Number(el.dataset.id)
+  const it = ((HQ_SHARE.data && HQ_SHARE.data.items) || []).find(x => x.suspicion_id === id)
+  if (!it) return
+  const labels = HQ_SHARE.data.reason_labels
+  modal(`
+    <h3 class="font-bold text-lg mb-1 text-neutral-800">使い回しの疑いの確認</h3>
+    <p class="text-xs text-neutral-500 mb-3">${esc(it.company_name || '')}・${esc(it.name || '')}（${esc(it.user_code || '')}）・${Number(it.score)}点</p>
+    <ul class="text-xs text-neutral-700 mb-3 space-y-1 bg-neutral-50 rounded-lg p-2">${(it.reasons || []).map(r => `<li><span class="font-bold">${esc(shareReasonLabel(r, it.role, labels))}</span>: ${esc(r.detail || '')}</li>`).join('')}</ul>
+    <div class="space-y-3">
+      <div><label class="text-xs text-neutral-600 block mb-1" for="sr-status">確認の結果</label>
+        <select id="sr-status" class="inp">${Object.entries(SHARE_REVIEW_LABEL).map(([k, v]) => `<option value="${k}" ${it.review_status === k ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select></div>
+      <div><label class="text-xs text-neutral-600 block mb-1" for="sr-note">メモ（確かめた内容・会社とのやり取り。500文字まで）</label>
+        <textarea id="sr-note" rows="3" maxlength="500" class="inp" placeholder="例: 同じ人のスマホとパソコンと確認した">${esc(it.review_note || '')}</textarea></div>
+      <p class="text-2xs text-neutral-500">会社の画面には出ません。結果を残しても、ログインは止めません。</p>
+      <div class="flex gap-2 pt-1">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="hqShareReviewSave" data-id="${id}">保存する</button>
+      </div>
+    </div>`)
+})
+delegate('hqShareReviewSave', (el) => withSubmitLock(el, async () => {
+  const id = Number(el.dataset.id)
+  try {
+    await axios.put(`/api/hq/share-detect/items/${id}/review`, { status: document.getElementById('sr-status').value, note: document.getElementById('sr-note').value })
+  } catch (e) { hqErr(e, '保存できませんでした'); return }
+  closeModal(true); toast('確認の結果を残しました')
+  const [tab, cid] = location.hash.slice(1).split('/')
+  if (tab === 'companies' && cid) loadCompanySharing(cid)
+  else { renderSharing(); refreshSharingBadge() }
+}))
+delegate('hqShareSettings', () => {
+  const d = HQ_SHARE.data
+  if (!d) return
+  const inp = (k, def) => def.options
+    ? `<select id="ss-${k}" class="inp">${Object.entries(def.options).map(([v, l]) => `<option value="${esc(v)}" ${Number(d.settings[k]) === Number(v) ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>`
+    : `<input id="ss-${k}" type="number" class="inp" min="${Number(def.min)}" max="${Number(def.max)}" step="1" value="${Number(d.settings[k])}">`
+  modal(`
+    <h3 class="font-bold text-lg mb-1 text-neutral-800">判定の決まり</h3>
+    <p class="text-xs text-neutral-500 mb-3">次の集計から使います。誤って出るアカウントが多いときは、間隔を短く・数を多くしてください。</p>
+    <div class="space-y-3 max-h-[60vh] overflow-y-auto pr-1">
+      ${Object.entries(d.defs).map(([k, def]) => `<div><label class="text-xs text-neutral-700 font-bold block mb-1" for="ss-${k}">${esc(def.label)}</label>${inp(k, def)}
+        <p class="text-2xs text-neutral-500 mt-0.5">${esc(def.help)}（既定 ${def.options ? esc(def.options[def.def]) : Number(def.def)}${def.options ? '' : `、${Number(def.min)}〜${Number(def.max)}`}）</p></div>`).join('')}
+    </div>
+    <div class="flex gap-2 mt-4">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="hqShareSettingsSave">保存する</button>
+    </div>`)
+})
+delegate('hqShareSettingsSave', (el) => withSubmitLock(el, async () => {
+  const d = HQ_SHARE.data
+  const body = {}
+  for (const [k, def] of Object.entries(d.defs)) {
+    const v = Number(document.getElementById('ss-' + k).value)
+    if (!Number.isInteger(v) || v < def.min || v > def.max) { hqMarkField('ss-' + k, `${def.label}は ${def.min}〜${def.max} の整数で入力してください`); return }
+    body[k] = v
+  }
+  try {
+    const { data } = await axios.put('/api/hq/share-detect/settings', body)
+    closeModal(true); toast(data.changed ? '判定の決まりを保存しました。次の集計から使います' : '変更はありませんでした')
+    renderSharing()
+  } catch (e) { hqErr(e, '保存できませんでした') }
+}))
+
 // ============ ルーティング ============
 // 上のタブは src/index.tsx の /hq の HTML。セキュリティの画面は security.js、解約・データ（#offboarding/<企業ID>）はこのファイルの下
 const routes = { companies: renderCompanies, templates: renderTemplates, retention: renderRetention, support: renderSupport, mail: renderHqMail,
   security: () => renderHqSecurity(),
   // 導入企業へのお知らせ（#516）・障害（#9622）
   announcements: renderAnnouncements, errors: renderErrors,
+  // アカウントの使い回しの疑い（#9989）
+  sharing: renderSharing,
   offboarding: () => { const id = (location.hash.slice(1).split('/')[1] || ''); return id ? renderOffboardingDetail(id) : renderOffboardingList() } }
 
 function route() {
@@ -2339,6 +2555,8 @@ window.addEventListener('hashchange', route)
   if (!/^#support/.test(location.hash) && !HQ_ME.mfa_setup_required) refreshSupportBadge()
   // 未読の障害の通知の件数（#9622）。障害のタブは自分で描き直す
   if (!/^#errors/.test(location.hash) && !HQ_ME.mfa_setup_required) refreshErrorsBadge()
+  // 最後の集計の、未確認の使い回しの疑いの件数（#9989）。使い回しの疑いのタブは自分で描き直す
+  if (!/^#sharing/.test(location.hash) && !HQ_ME.mfa_setup_required) refreshSharingBadge()
   // DB の大きさが「緊急」のときの上部の赤い帯（#9971）。障害のタブは自分で描き直す
   if (!/^#errors/.test(location.hash) && !HQ_ME.mfa_setup_required) refreshDbSizeBand()
 })()
