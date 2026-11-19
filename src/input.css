@@ -296,6 +296,10 @@ body.has-next-bar #toast { bottom: calc(var(--nav-h, 64px) + 6.5rem); }
 .board-chip.st-absent { background: rgb(var(--color-surface-muted)); color: rgb(var(--color-faint)); text-decoration: line-through; }
 /* SortableJS がドラッグ中に付ける */
 .sortable-ghost { opacity: .45; }
+/* シフト表のドラッグ中は、通り道の文字を選択しない（#9991。body.is-dragging は shift-board.js が付け外しする）。
+   ドラッグできるチップ・候補は、長押しで文字の選択や iPhone の長押しメニューが出ないようにする */
+body.is-dragging, body.is-dragging * { -webkit-user-select: none !important; user-select: none !important; }
+.dnd-item, #cand-list .cand-item { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
 
 /* シフト管理（D 案。Sprint 11 #9401〜#9403）: 左に案件 × 日付の表、右に選んだ枠と候補。
    名前を組み立てて付けるクラス（cand-badge av-○○ など）があるので @layer の外に書く */

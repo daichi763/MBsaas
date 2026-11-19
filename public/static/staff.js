@@ -2077,7 +2077,7 @@ async function renderPerf(month) {
 // 『その他』のメニュー。中の画面はそれぞれ URL（#notices・#consult・#manual など）で開き、戻る・下のタブで戻れるようにする（#374）。
 // 項目は画面の登録（staffScreen の more。staff-attendance.js・staff-profile.js の分も）から order の順に並べる。
 // ほかの画面の『戻る』から呼ばれたときは、URL を #more に変えて描き直す（false を返す）
-// 「使い方をもう一度見る」（tour.js）は、研修・マニュアルとマイプロフィールの間に置く
+// 「使い方をもう一度見る」（tour.js）は、資料・マニュアルとマイプロフィールの間に置く
 const MORE_TOUR_ORDER = 80
 function renderMore() {
   if ((location.hash || '') !== '#more') { location.hash = 'more'; return false }
@@ -2629,7 +2629,7 @@ delegate('consultFollowOpen', el => {
   })
 })
 
-// 研修・マニュアル（#74）: シフトに入っている案件の『案件マニュアル・注意事項』と『求められる内容』（管理画面の案件に登録したもの）
+// 資料・マニュアル（#74。名前は #9995）: シフトに入っている案件の『案件マニュアル・注意事項』と『求められる内容』（管理画面の案件に登録したもの）
 window.renderManual = async function () {
   loading()
   let data
@@ -2637,7 +2637,7 @@ window.renderManual = async function () {
   const list = data.projects || []
   $app.innerHTML = `
     ${MORE_BACK}
-    <h2 class="font-bold text-neutral-800 mb-1 px-1"><i class="fas fa-book-open text-primary-600 mr-1"></i>研修・マニュアル</h2>
+    <h2 class="font-bold text-neutral-800 mb-1 px-1"><i class="fas fa-book-open text-primary-600 mr-1"></i>資料・マニュアル</h2>
     <p class="text-xs text-neutral-500 mb-3 px-1">シフトに入っている案件（直近30日と今後）のマニュアル・注意事項です</p>
     <div class="space-y-2" id="manual-list">
       ${list.map((m, i) => {
@@ -2707,8 +2707,8 @@ staffScreen('notifications', { title: '通知', nav: 'more', render: () => rende
   more: { order: 30, icon: 'fa-bell', label: '通知', sub: '打刻修正申請の受付・承認・却下、お知らせの確認のお願い', badge: 'more-notif-count' } })
 staffScreen('attendance', { title: '打刻履歴・修正申請', nav: 'more', render: () => renderStaffAttendance(),
   more: { order: 50, icon: 'fa-user-clock', label: '打刻履歴・修正申請', sub: '打刻の確認・時刻の修正・打刻漏れの追加' } })
-staffScreen('manual', { title: '研修・マニュアル', nav: 'more', render: () => renderManual(),
-  more: { order: 70, icon: 'fa-book-open', label: '研修・マニュアル', sub: '案件マニュアル・研修資料' } })
+staffScreen('manual', { title: '資料・マニュアル', nav: 'more', render: () => renderManual(),
+  more: { order: 70, icon: 'fa-book-open', label: '資料・マニュアル', sub: '案件マニュアル・注意事項など' } })
 
 // 画面を描く。読み込みに失敗したら、読み込み中のまま止めずに再読み込みのボタンを出す（#182）。描き終わるまで待てる Promise を返す
 let LAST_TAB = null

@@ -227,7 +227,7 @@ Mobital のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 | GET | `/api/staff/emergency-contacts` | スタッフ | [api.ts:1885](../src/api.ts#L1885) | スタッフ: 所属・連携している会社の緊急連絡先（#173）。ログイン中の会社を先に、登録のある会社だけを返す（停止中の企業は返さない） | staff.js |
 | GET | `/api/staff/handover/:shiftId` | スタッフ | [api.ts:2153](../src/api.ts#L2153) | 〔見出し〕打刻（#427 #9939。本体は src/attendance-punch.ts） | staff.js |
 | GET | `/api/staff/home` | スタッフ | [api.ts:1535](../src/api.ts#L1535) | スタッフホーム。?shift_id= で対象のシフトを選べる（本日のシフトと前日からの日をまたぐシフトの中から） | staff.js |
-| GET | `/api/staff/manuals` | スタッフ | [api.ts:2521](../src/api.ts#L2521) | 研修・マニュアル（#74）: 本人がシフトに入っている案件（直近30日〜今後。同一人物の全所属。欠勤を除く）の、案件マニュアル・注意事項と求められる内容 | staff.js |
+| GET | `/api/staff/manuals` | スタッフ | [api.ts:2521](../src/api.ts#L2521) | 資料・マニュアル（#74）: 本人がシフトに入っている案件（直近30日〜今後。同一人物の全所属。欠勤を除く）の、案件マニュアル・注意事項と求められる内容 | staff.js |
 | GET | `/api/staff/me/companies` | スタッフ | [roster.ts:1623](../src/roster.ts#L1623) | 所属企業の一覧（統合ログインの企業切替用）。企業ごとの未読のお知らせの件数も返す（#203。切り替えていない企業の未読に気づけるように）。 連携が終わった会社（所属元の連携の終了・稼働先の取引終了）は出さない（personStaffRows。D-53 #9942） | staff-profile.js |
 | GET | `/api/staff/me/profile` | スタッフ | [roster.ts:1563](../src/roster.ts#L1563) | 〔見出し〕スタッフ本人向け（/api/staff/me/*） | staff-profile.js |
 | POST | `/api/staff/me/switch-company` | スタッフ | [roster.ts:1630](../src/roster.ts#L1630) | 企業切替: セッションを同一人物の別企業ユーザー行に付け替える（ログインは1つのまま。再ログイン不要）。連携が終わった会社へは切り替えない（404。D-53 #9942） | staff-profile.js |

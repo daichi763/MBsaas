@@ -1,4 +1,4 @@
-// スタッフアプリのホーム・シフト・研修・実績・過去の日報の統合テスト（w3-staff-app: #74 #75 #76 #188 #319 #371 #483 #503 #504）
+// スタッフアプリのホーム・シフト・資料・マニュアル・実績・過去の日報の統合テスト（w3-staff-app: #74 #75 #76 #188 #319 #371 #483 #503 #504）
 //
 // 前提: bash scripts/setup-test-db.sh <保存先> でローカルの D1 を作り直し、`wrangler dev --local --persist-to <保存先>` で起動していること
 // 実行: BASE=http://127.0.0.1:8799 node scripts/test-w3-staff-app.mjs
@@ -91,7 +91,7 @@ const st1 = client(await login('sample', `${PFX}HOME`))
   ok('#483 本日のシフトは報告漏れに出さない', !m.shifts.some(x => x.work_date === today), m)
 }
 
-// ---------- #74 研修・マニュアル ----------
+// ---------- #74 資料・マニュアル ----------
 {
   const r = must(await st1.get('/api/staff/manuals'), 'manuals')
   const p1 = r.projects.find(p => p.project_id === 1)
