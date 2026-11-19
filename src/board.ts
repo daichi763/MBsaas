@@ -1089,9 +1089,10 @@ boardApi.delete('/saved-searches/:id', async (c) => {
   return c.json({ ok: true })
 })
 
-// 保存したスキル（半角の空白で区切った語。normalizeSkillQuery の形）を JSON の配列の文字列にする。壊れた形なら空の配列（スキルで絞らない）
+// 保存したスキル（半角の空白で区切った語。normalizeSkillQuery の形）を JSON の配列の文字列にする。
+// 制御文字などで JSON にできない形なら、全体を1語として扱う（スキルで絞らずに全部を知らせることはしない）
 const SKILL_WORDS_RAW = `'["' || replace(replace(replace(s.skill, '\\', '\\\\'), '"', '\\"'), ' ', '","') || '"]'`
-const SKILL_WORDS_JSON = `CASE WHEN json_valid(${SKILL_WORDS_RAW}) THEN ${SKILL_WORDS_RAW} ELSE '[]' END`
+const SKILL_WORDS_JSON = `CASE WHEN json_valid(${SKILL_WORDS_RAW}) THEN ${SKILL_WORDS_RAW} ELSE json_array(s.skill) END`
 // 条件（s）と掲載（bp）・掲載企業（co）が合うか。一覧の検索（GET /posts）と同じ判定。自社の掲載・停止中の企業の掲載は知らせない（掲載日時の範囲は JOIN の条件で絞る）
 const SEARCH_MATCH_SQL = `bp.company_id != s.company_id
   AND COALESCE(co.active_status, 'active') != 'inactive'

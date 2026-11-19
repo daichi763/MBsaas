@@ -199,6 +199,12 @@ if (PERSIST) {
   sql(`UPDATE board_saved_searches SET skill = 'a"b\\c', last_checked_at = '${addDays(today, -1)} 00:00:00' WHERE search_id = ${Number(s2.search_id)}`)
   const r = await B.get('/api/admin/board/unread-count')
   ok('#9993 記号を含むスキルの条件でも、通知の確認が失敗しない', r.status === 200, r)
+  // JSON にできない形（制御文字を含む）でも、スキルで絞らずに全部の掲載を知らせることはしない
+  const before = must(await B.get('/api/admin/notifications?kind=board_saved_search'), 'n').notifications.length
+  sql(`UPDATE board_saved_searches SET skill = 'zz' || char(1) || 'zz', last_checked_at = '${addDays(today, -1)} 00:00:00' WHERE search_id = ${Number(s2.search_id)}`)
+  const r2 = await B.get('/api/admin/board/unread-count')
+  const after = must(await B.get('/api/admin/notifications?kind=board_saved_search'), 'n').notifications.length
+  ok('#9993 JSON にできないスキルの条件は、どの掲載にも合わない（全部を知らせない）', r2.status === 200 && after === before, { before, after })
   must(await B.del(`/api/admin/board/saved-searches/${s1.search_id}`), 'del s1')
   must(await B.del(`/api/admin/board/saved-searches/${s2.search_id}`), 'del s2')
 } else skip('#9992 #9993 新着の通知の照合')
