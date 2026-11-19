@@ -2517,7 +2517,7 @@ function parseGoals(json: any, fields: { key: string }[]): Record<string, number
   return out
 }
 
-// 研修・マニュアル（#74）: 本人がシフトに入っている案件（直近30日〜今後。同一人物の全所属。欠勤を除く）の、案件マニュアル・注意事項と求められる内容
+// 資料・マニュアル（#74）: 本人がシフトに入っている案件（直近30日〜今後。同一人物の全所属。欠勤を除く）の、案件マニュアル・注意事項と求められる内容
 api.get('/staff/manuals', async (c) => {
   const u = c.get('user'); const db = c.env.DB
   const ids = await personStaffIds(db, u)

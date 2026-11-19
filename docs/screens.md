@@ -201,7 +201,7 @@ flowchart LR
 | `#calendar` | カレンダーに追加 | `renderShiftCalendar` [static/staff.js:2926](../public/static/staff.js#L2926) | GET `/api/staff/calendar-token`<br>GET `/api/staff/shifts`<br>GET `/api/staff/shifts/:id/ics` |
 | `#consult` | 相談・連絡 | `renderConsult` [static/staff.js:2435](../public/static/staff.js#L2435) | GET `/api/staff/consultation-photo/:id{[0-9]+}`<br>GET `/api/staff/consultations`<br>POST `/api/staff/consultations`<br>POST `/api/staff/consultations/:id{[0-9]+}/photos`<br>POST `/api/staff/consultations/read-replies`<br>GET `/api/staff/emergency-contacts` |
 | `#home` | ホーム | `renderHome` [static/staff.js:133](../public/static/staff.js#L133) | POST `/api/staff/attendance`<br>POST `/api/staff/attendance-photo`<br>GET `/api/staff/home` |
-| `#manual` | 研修・マニュアル | `renderManual` [static/staff.js:2633](../public/static/staff.js#L2633) | GET `/api/staff/manuals` |
+| `#manual` | 資料・マニュアル | `renderManual` [static/staff.js:2633](../public/static/staff.js#L2633) | GET `/api/staff/manuals` |
 | `#more` | その他 | `renderMore` [static/staff.js:2082](../public/static/staff.js#L2082) | GET `/api/staff/emergency-contacts` |
 | `#my-docs` | 書類の提出 | `renderMyDocs` [static/staff-profile.js:354](../public/static/staff-profile.js#L354) | GET `/api/staff/self/documents`<br>POST `/api/staff/self/documents`<br>GET `/api/staff/self/documents/:id/download` |
 | `#my-leave` | 有給・休暇 | `renderMyLeave` [static/staff-profile.js:434](../public/static/staff-profile.js#L434) | GET `/api/staff/self/leave` |

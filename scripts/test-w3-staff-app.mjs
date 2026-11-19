@@ -91,7 +91,7 @@ const st1 = client(await login('sample', `${PFX}HOME`))
   ok('#483 本日のシフトは報告漏れに出さない', !m.shifts.some(x => x.work_date === today), m)
 }
 
-// ---------- #74 研修・マニュアル ----------
+// ---------- #74 資料・マニュアル ----------
 {
   const r = must(await st1.get('/api/staff/manuals'), 'manuals')
   const p1 = r.projects.find(p => p.project_id === 1)

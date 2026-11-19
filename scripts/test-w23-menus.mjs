@@ -105,7 +105,7 @@ const STAFF_MORE = [
   ['#notify-settings', '通知の設定', 'プッシュ通知・メールの受け取り', 'fa-sliders', '', false],
   ['#attendance', '打刻履歴・修正申請', '打刻の確認・時刻の修正・打刻漏れの追加', 'fa-user-clock', '', false],
   ['#pay', '勤務時間・支払', '月の勤務日数・実働時間の確認、交通費・延長の申請', 'fa-yen-sign', '', false],
-  ['#manual', '研修・マニュアル', '案件マニュアル・研修資料', 'fa-book-open', '', false],
+  ['#manual', '資料・マニュアル', '案件マニュアル・注意事項など', 'fa-book-open', '', false],
   ['tourStaffReplay', '使い方をもう一度見る', 'ホーム画面に追加・打刻・日報・通知の案内', 'fa-circle-question', '', false],
   ['#profile', 'マイプロフィール / スタッフID', '登録情報と企業間連携用QRコード', 'fa-id-badge', '', false],
   ['#my-docs', '書類の提出', '資格証・身分証・入社書類などを写真やPDFで提出', 'fa-file-arrow-up', '', false],
@@ -115,7 +115,7 @@ const STAFF_MORE = [
 // 画面ごとの上の見出しと、下のナビで選んだ表示になるタブ（'' はどれも選ばない）
 const STAFF_SCREENS = [
   ['home', 'ホーム', 'home'], ['shift', 'シフト', 'shift'], ['report', '日報入力', 'report'], ['perf', '実績', 'perf'], ['more', 'その他', 'more'],
-  ['attendance', '打刻履歴・修正申請', 'more'], ['notifications', '通知', 'more'], ['notices', 'お知らせ', 'more'], ['consult', '相談・連絡', 'more'], ['manual', '研修・マニュアル', 'more'],
+  ['attendance', '打刻履歴・修正申請', 'more'], ['notifications', '通知', 'more'], ['notices', 'お知らせ', 'more'], ['consult', '相談・連絡', 'more'], ['manual', '資料・マニュアル', 'more'],
   ['profile', 'マイプロフィール', 'more'], ['password', 'パスワードの変更', 'more'], ['notify-settings', '通知の設定', 'more'], ['pay', '勤務時間・支払', 'more'],
   ['profile-request', '登録情報の変更申請', 'more'], ['my-docs', '書類の提出', 'more'], ['my-leave', '有給・休暇', 'more'],
   ['availability', '出勤可能日の提出', ''], ['calendar', 'カレンダーに追加', ''], ['nosuch', 'ホーム', ''],
