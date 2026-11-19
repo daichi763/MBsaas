@@ -29,6 +29,45 @@ const MAX_LIST = 200
 const isTime = (s: any) => typeof s === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(s)
 const str = clipText
 
+// ---------- 都道府県（#9992）。掲載は複数選べ、「全国」（場所を問わない）も選べる ----------
+// board_posts.prefectures は ',東京都,神奈川県,' の形（全国は ',全国,'）。prefecture 列には先頭の1つ（全国なら '全国'）を入れる
+export const BOARD_PREFS = ['北海道', '青森県', '岩手県', '宮城県', '秋田県', '山形県', '福島県', '茨城県', '栃木県', '群馬県', '埼玉県', '千葉県', '東京都', '神奈川県',
+  '新潟県', '富山県', '石川県', '福井県', '山梨県', '長野県', '岐阜県', '静岡県', '愛知県', '三重県', '滋賀県', '京都府', '大阪府', '兵庫県', '奈良県', '和歌山県',
+  '鳥取県', '島根県', '岡山県', '広島県', '山口県', '徳島県', '香川県', '愛媛県', '高知県', '福岡県', '佐賀県', '長崎県', '熊本県', '大分県', '宮崎県', '鹿児島県', '沖縄県']
+export const PREF_ALL = '全国'
+const PREF_SET = new Set<string>([...BOARD_PREFS, PREF_ALL])
+/** 掲載の都道府県の入力（配列・',東京都,神奈川県,' の形の文字列・1つの名前）を、重複を除いて47都道府県の順に並べる。
+ *  全国を含むときは全国だけにする。知らない名前があれば null */
+export function parsePrefectures(x: unknown): string[] | null {
+  const list: unknown[] = Array.isArray(x) ? x : x == null ? [] : String(x).split(',')
+  if (list.length > 100) return null
+  const names = list.map(n => String(n ?? '').trim()).filter(Boolean)
+  if (names.some(n => !PREF_SET.has(n))) return null
+  if (names.includes(PREF_ALL)) return [PREF_ALL]
+  const set = new Set(names)
+  return BOARD_PREFS.filter(p => set.has(p))
+}
+/** 掲載の行の都道府県の並び（prefectures が空の古い行は prefecture の1つ） */
+export const rowPrefectures = (r: any): string[] => r?.prefectures ? String(r.prefectures).split(',').filter(Boolean) : r?.prefecture ? [String(r.prefecture)] : []
+/** 都道府県1つでの絞り込み。その都道府県を含む掲載と「全国」の掲載。prefectures が空の古い行は prefecture で拾う。v は ? か列名 */
+const prefMatchSql = (v: string) => `(bp.prefectures LIKE '%,' || ${v} || ',%' OR bp.prefectures LIKE '%,${PREF_ALL},%' OR (COALESCE(bp.prefectures, '') = '' AND bp.prefecture = ${v}))`
+
+// ---------- スキルの検索（#9993）。部分一致。空白で区切った語は、すべてを含む掲載が当たる ----------
+const MAX_SKILL_TERMS = 5
+const likeEsc = (s: string) => s.replace(/[\\%_]/g, m => '\\' + m)
+const toWide = (s: string) => s.replace(/[!-~]/g, ch => String.fromCharCode(ch.charCodeAt(0) + 0xFEE0))
+/** スキルの検索語を NFKC にし、空白（半角・全角）・カンマで区切った語を半角の空白1つでつなぐ（保存した検索条件はこの形で入れる） */
+export const normalizeSkillQuery = (raw: unknown): string =>
+  String(raw ?? '').normalize('NFKC').split(/[\s,、]+/u).map(w => w.trim()).filter(Boolean).slice(0, MAX_SKILL_TERMS).join(' ')
+/** スキルの検索の LIKE の値。語ごとに、元の語・NFKC にした語・全角にした語のどれかを含めば当たる（全角のまま保存された古い掲載も拾う） */
+export function skillLikeTerms(raw: unknown): string[][] {
+  const words = String(raw ?? '').split(/[\s,、，]+/u).map(w => w.trim()).filter(Boolean).slice(0, MAX_SKILL_TERMS)
+  return words.map(w => {
+    const n = w.normalize('NFKC')
+    return [...new Set([w, n, toWide(n), toWide(n.toUpperCase()), toWide(n.toLowerCase())])].map(x => `%${likeEsc(x)}%`)
+  })
+}
+
 // 締切日を過ぎた掲載と、実施日（終了日があれば終了日）を過ぎたスポット・終了予定日を過ぎた常勤の掲載を「締切」にする
 // （cron を使わない遅延処理。一覧・詳細・編集・問い合わせ・提案のときに実行。#88）。やり取り中の企業にも知らせる（#476）
 const EXPIRED_SQL = `status = 'open' AND ((deadline IS NOT NULL AND deadline < ?)
@@ -57,31 +96,36 @@ function threadNoticeStmts(db: D1Database, postsSql: string, binds: any[], body:
 }
 
 // 他社にも返してよい項目（社内情報 source_project_id / created_by / updated_by は自社のときだけ付ける）
-const PUBLIC_COLS = `bp.post_id, bp.company_id, bp.engagement_type, bp.title, bp.description, bp.prefecture, bp.area, bp.nearest_station,
+const PUBLIC_COLS = `bp.post_id, bp.company_id, bp.engagement_type, bp.title, bp.description, bp.prefecture, bp.prefectures, bp.area, bp.nearest_station,
   bp.date_from, bp.date_to, bp.time_from, bp.time_to, bp.schedule_note, bp.headcount, bp.required_skills,
   bp.price_amount, bp.price_unit, bp.price_note, bp.deadline, bp.status, bp.published_at, bp.created_at, bp.updated_at,
   co.company_name`
 function shape(row: any, companyId: number) {
   const mine = row.company_id === companyId
-  const out: any = { ...row, is_mine: mine }
+  const out: any = { ...row, is_mine: mine, prefecture_list: rowPrefectures(row) }
   if (!mine) { delete out.source_project_id; delete out.created_by; delete out.updated_by; delete out.source_project_name }
   return out
 }
 
 /** 入力の検証・正規化。publish=true のときは掲載に必要な項目をすべて求める */
 function validatePost(b: any, publish: boolean): { v?: any; error?: string } {
+  // 都道府県は prefectures（複数）を使う。送られていなければ prefecture（1つ。前の形の呼び出し）を使う
+  const prefs = parsePrefectures(b.prefectures != null ? b.prefectures : b.prefecture)
+  if (!prefs) return { error: '都道府県の指定が正しくありません（47都道府県か「全国」から選んでください）' }
   const v: any = {
     engagement_type: b.engagement_type,
     title: str(b.title, 100),
     description: str(b.description, 4000),
-    prefecture: str(b.prefecture, 10),
+    prefecture: prefs[0] || null,
+    prefectures: prefs.length ? ',' + prefs.join(',') + ',' : null,
     area: str(b.area, 100),
     nearest_station: str(b.nearest_station, 100),
     date_from: b.date_from || null, date_to: b.date_to || null,
     time_from: b.time_from || null, time_to: b.time_to || null,
     schedule_note: str(b.schedule_note, 200),
     headcount: Number(b.headcount ?? 1),
-    required_skills: String(b.required_skills ?? '').split(/[,、，]/).map(s => s.trim()).filter(Boolean).slice(0, 30).join(','),
+    // 全角・半角の違いで検索に漏れないよう、NFKC にして保存する（#9993）
+    required_skills: String(b.required_skills ?? '').normalize('NFKC').split(/[,、，]/).map(s => s.trim()).filter(Boolean).slice(0, 30).join(','),
     price_amount: b.price_amount === '' || b.price_amount == null ? null : Number(b.price_amount),
     price_unit: b.price_unit,
     price_note: str(b.price_note, 100),
@@ -97,7 +141,7 @@ function validatePost(b: any, publish: boolean): { v?: any; error?: string } {
   for (const k of ['time_from', 'time_to']) if (v[k] && !isTime(v[k])) return { error: '時刻の形式が正しくありません' }
   if (v.date_from && v.date_to && v.date_from > v.date_to) return { error: '終了日が開始日より前になっています' }
   if (publish) {
-    if (!v.prefecture && !v.area) return { error: '掲載するには勤務地（都道府県またはエリア）を入力してください' }
+    if (!prefs.length && !v.area) return { error: '掲載するには勤務地（都道府県またはエリア）を入力してください' }
     if (!v.date_from) return { error: v.engagement_type === 'spot' ? '掲載するには実施日を入力してください' : '掲載するには開始日を入力してください' }
     if (v.engagement_type === 'spot' && (!v.time_from || !v.time_to)) return { error: 'スポットの掲載には時間帯（開始・終了）を入力してください' }
     if (v.deadline && v.deadline < todayJST()) return { error: '締切日が過去の日付です' }
@@ -134,14 +178,17 @@ boardApi.get('/posts', async (c) => {
   // 本部で停止にした企業の掲載は、他社の一覧に出さない（#66）
   else w.push(`bp.status = 'open' AND COALESCE(co.active_status, 'active') != 'inactive'`)
   if (ENGAGEMENT_TYPES.includes(q.engagement_type as any)) { w.push('bp.engagement_type = ?'); bind.push(q.engagement_type) }
-  if (q.prefecture) { w.push('bp.prefecture = ?'); bind.push(q.prefecture) }
+  if (q.prefecture) {
+    if (PREF_SET.has(q.prefecture)) { w.push(prefMatchSql('?')); bind.push(q.prefecture, q.prefecture) }
+    else { w.push('bp.prefecture = ?'); bind.push(q.prefecture) }
+  }
   if (q.area) { w.push('(bp.area LIKE ? OR bp.nearest_station LIKE ?)'); bind.push(`%${q.area}%`, `%${q.area}%`) }
   // 稼働日: その日を含む掲載。スポットで終了日が空なら実施日当日のみ、常勤で終了日が空なら長期（開始日以降すべて）
   if (isDate(q.date)) {
     w.push(`(bp.date_from IS NULL OR bp.date_from <= ?) AND (CASE WHEN bp.date_to IS NOT NULL THEN bp.date_to >= ? WHEN bp.engagement_type = 'spot' THEN bp.date_from >= ? ELSE 1 END)`)
     bind.push(q.date, q.date, q.date)
   }
-  if (q.skill) { w.push(`(',' || COALESCE(bp.required_skills,'') || ',') LIKE ?`); bind.push(`%,${q.skill.trim()},%`) }
+  for (const vs of skillLikeTerms(q.skill)) { w.push(`(${vs.map(() => `COALESCE(bp.required_skills, '') LIKE ? ESCAPE '\\'`).join(' OR ')})`); bind.push(...vs) }
   if (q.q) {
     const kw = `%${String(q.q).trim()}%`
     w.push('(bp.title LIKE ? OR bp.description LIKE ? OR co.company_name LIKE ? OR bp.required_skills LIKE ?)'); bind.push(kw, kw, kw, kw)
@@ -224,11 +271,11 @@ boardApi.post('/posts', async (c) => {
     if (!own) v.source_project_id = null
   }
   const now = nowJST()
-  const r = await db.prepare(`INSERT INTO board_posts (company_id, engagement_type, title, description, prefecture, area, nearest_station,
+  const r = await db.prepare(`INSERT INTO board_posts (company_id, engagement_type, title, description, prefecture, prefectures, area, nearest_station,
       date_from, date_to, time_from, time_to, schedule_note, headcount, required_skills, price_amount, price_unit, price_note, deadline,
       status, source_project_id, published_at, created_by, updated_by, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .bind(u.company_id, v.engagement_type, v.title, v.description, v.prefecture, v.area, v.nearest_station,
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .bind(u.company_id, v.engagement_type, v.title, v.description, v.prefecture, v.prefectures, v.area, v.nearest_station,
       v.date_from, v.date_to, v.time_from, v.time_to, v.schedule_note, v.headcount, v.required_skills, v.price_amount, v.price_unit, v.price_note, v.deadline,
       publish ? 'open' : 'draft', v.source_project_id, publish ? now : null, u.user_id, u.user_id, now, now).run()
   return c.json({ ok: true, post_id: r.meta.last_row_id })
@@ -245,19 +292,22 @@ boardApi.put('/posts/:id', async (c) => {
   if ((cur.status === 'closed' || cur.status === 'filled') && nextStatus === 'open' && b.republish !== true) {
     return c.json({ error: `この掲載は${cur.status === 'closed' ? '締切' : '充足'}です。再掲載する場合は「保存して再掲載」を使ってください`, need_republish: true }, 409)
   }
-  const { v, error } = validatePost({ ...cur, ...b }, nextStatus === 'open')
+  const merged = { ...cur, ...b }
+  // 前の形（prefecture だけ）で送られたら、その1つに置き換える
+  if (b.prefectures === undefined && b.prefecture !== undefined) merged.prefectures = null
+  const { v, error } = validatePost(merged, nextStatus === 'open')
   if (error) return c.json({ error }, 400)
   if (v.source_project_id && v.source_project_id !== cur.source_project_id) {
     const own = await db.prepare('SELECT 1 FROM projects WHERE project_id = ? AND company_id = ?').bind(v.source_project_id, u.company_id).first()
     if (!own) v.source_project_id = cur.source_project_id
   }
   const now = nowJST()
-  await db.prepare(`UPDATE board_posts SET engagement_type = ?, title = ?, description = ?, prefecture = ?, area = ?, nearest_station = ?,
+  await db.prepare(`UPDATE board_posts SET engagement_type = ?, title = ?, description = ?, prefecture = ?, prefectures = ?, area = ?, nearest_station = ?,
       date_from = ?, date_to = ?, time_from = ?, time_to = ?, schedule_note = ?, headcount = ?, required_skills = ?,
       price_amount = ?, price_unit = ?, price_note = ?, deadline = ?, status = ?, source_project_id = ?,
       published_at = CASE WHEN ? = 'open' AND published_at IS NULL THEN ? ELSE published_at END, updated_by = ?, updated_at = ?
     WHERE post_id = ? AND company_id = ?`)
-    .bind(v.engagement_type, v.title, v.description, v.prefecture, v.area, v.nearest_station,
+    .bind(v.engagement_type, v.title, v.description, v.prefecture, v.prefectures, v.area, v.nearest_station,
       v.date_from, v.date_to, v.time_from, v.time_to, v.schedule_note, v.headcount, v.required_skills,
       v.price_amount, v.price_unit, v.price_note, v.deadline, nextStatus, v.source_project_id,
       nextStatus, now, u.user_id, now, cur.post_id, u.company_id).run()
@@ -981,13 +1031,15 @@ function savedSearchValues(b: any) {
     prefecture: str(b.prefecture, 10) || null,
     area: str(b.area, 100) || null,
     work_date: isDate(b.date) ? b.date as string : null,
-    skill: str(b.skill, 60) || null,
+    // 照合（SEARCH_MATCH_SQL）では半角の空白で区切って使うので、その形にして保存する（#9993）
+    skill: normalizeSkillQuery(str(b.skill, 60)).slice(0, 60) || null,
     keyword: str(b.q, 100) || null,
   }
 }
 const ENG_LABEL: Record<string, string> = { regular: '常勤', spot: 'スポット' }
 function savedSearchLabel(v: ReturnType<typeof savedSearchValues>) {
-  return [v.engagement_type ? ENG_LABEL[v.engagement_type] : '', v.prefecture, v.area, v.work_date, v.skill, v.keyword].filter(Boolean).join('・') || 'すべての掲載'
+  return [v.engagement_type ? ENG_LABEL[v.engagement_type] : '', v.prefecture, v.area, v.work_date ? `稼働日 ${v.work_date.replace(/-/g, '/')}` : '',
+    v.skill ? `スキル ${v.skill}` : '', v.keyword].filter(Boolean).join('・') || 'すべての掲載'
 }
 const shapeSearch = (r: any) => ({ search_id: r.search_id, name: r.name, notify: !!r.notify, notify_email: !!r.notify_email, last_checked_at: r.last_checked_at,
   conditions: { engagement_type: r.engagement_type || '', prefecture: r.prefecture || '', area: r.area || '', date: r.work_date || '', skill: r.skill || '', q: r.keyword || '' } })
@@ -1001,6 +1053,7 @@ boardApi.post('/saved-searches', async (c) => {
   const u = c.get('user'); const db = c.env.DB
   const b = await c.req.json().catch(() => ({} as any))
   const v = savedSearchValues(b)
+  if (v.prefecture && !PREF_SET.has(v.prefecture)) return c.json({ error: '都道府県の指定が正しくありません' }, 400)
   const rows = (await db.prepare('SELECT * FROM board_saved_searches WHERE user_id = ? AND company_id = ?').bind(u.user_id, u.company_id).all()).results as any[]
   const same = rows.find(r => (Object.keys(v) as (keyof typeof v)[]).every(k => (r[k] ?? null) === v[k]))
   if (same) return c.json({ error: `同じ条件を「${same.name}」として保存しています`, search_id: same.search_id }, 409)
@@ -1036,15 +1089,19 @@ boardApi.delete('/saved-searches/:id', async (c) => {
   return c.json({ ok: true })
 })
 
+// 保存したスキル（半角の空白で区切った語。normalizeSkillQuery の形）を JSON の配列の文字列にする。壊れた形なら空の配列（スキルで絞らない）
+const SKILL_WORDS_RAW = `'["' || replace(replace(replace(s.skill, '\\', '\\\\'), '"', '\\"'), ' ', '","') || '"]'`
+const SKILL_WORDS_JSON = `CASE WHEN json_valid(${SKILL_WORDS_RAW}) THEN ${SKILL_WORDS_RAW} ELSE '[]' END`
 // 条件（s）と掲載（bp）・掲載企業（co）が合うか。一覧の検索（GET /posts）と同じ判定。自社の掲載・停止中の企業の掲載は知らせない（掲載日時の範囲は JOIN の条件で絞る）
 const SEARCH_MATCH_SQL = `bp.company_id != s.company_id
   AND COALESCE(co.active_status, 'active') != 'inactive'
   AND (s.engagement_type IS NULL OR bp.engagement_type = s.engagement_type)
-  AND (s.prefecture IS NULL OR bp.prefecture = s.prefecture)
+  AND (s.prefecture IS NULL OR ${prefMatchSql('s.prefecture')})
   AND (s.area IS NULL OR bp.area LIKE '%' || s.area || '%' OR bp.nearest_station LIKE '%' || s.area || '%')
   AND (s.work_date IS NULL OR ((bp.date_from IS NULL OR bp.date_from <= s.work_date)
     AND (CASE WHEN bp.date_to IS NOT NULL THEN bp.date_to >= s.work_date WHEN bp.engagement_type = 'spot' THEN bp.date_from >= s.work_date ELSE 1 END)))
-  AND (s.skill IS NULL OR (',' || COALESCE(bp.required_skills, '') || ',') LIKE '%,' || s.skill || ',%')
+  AND (s.skill IS NULL OR NOT EXISTS (SELECT 1 FROM json_each(${SKILL_WORDS_JSON}) t
+    WHERE t.value <> '' AND COALESCE(bp.required_skills, '') NOT LIKE '%' || replace(replace(replace(t.value, '\\', '\\\\'), '%', '\\%'), '_', '\\_') || '%' ESCAPE '\\'))
   AND (s.keyword IS NULL OR bp.title LIKE '%' || s.keyword || '%' OR bp.description LIKE '%' || s.keyword || '%'
     OR co.company_name LIKE '%' || s.keyword || '%' OR bp.required_skills LIKE '%' || s.keyword || '%')`
 
