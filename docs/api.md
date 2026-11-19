@@ -300,31 +300,31 @@ Mobital のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 | PUT | `/api/admin/availability/targets` | 管理者（4ロール） | [staff-schedule.ts:437](../src/staff-schedule.ts#L437) | 〔見出し〕管理者（/api/admin/*） | admin.js staff-lifecycle.js |
 | GET | `/api/admin/badges` | 管理者（4ロール）＋本部の閲覧（GET）<br>＋本文で確認: CHAT_ROLES | [admin-badges.ts:23](../src/admin-badges.ts#L23) | 〔見出し〕管理画面のバッジ（左のメニュー・スマホのメニューの件数）をまとめて返す（#9935） | admin.js |
 | GET | `/api/admin/billing-check` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:7689](../src/api.ts#L7689) | 請求前確認 | admin.js |
-| GET | `/api/admin/board/posts` | 管理者（4ロール）＋本部の閲覧（GET） | [board.ts:127](../src/board.ts#L127) | scope: open（全企業の掲載中）/ mine（自社の掲載すべて） | board.js |
-| POST | `/api/admin/board/posts` | 管理者（4ロール） | [board.ts:216](../src/board.ts#L216) | 〔見出し〕作成・更新 | board.js |
-| DELETE | `/api/admin/board/posts/:id` | 管理者（4ロール） | [board.ts:318](../src/board.ts#L318) | 削除は下書きのみ（掲載したものは履歴として残し、締切・充足で閉じる） | board.js |
-| GET | `/api/admin/board/posts/:id` | 管理者（4ロール）＋本部の閲覧（GET） | [board.ts:173](../src/board.ts#L173) | 〔見出し〕詳細 | board.js |
-| PUT | `/api/admin/board/posts/:id` | 管理者（4ロール） | [board.ts:237](../src/board.ts#L237) | 〔見出し〕作成・更新 | board.js |
-| POST | `/api/admin/board/posts/:id/status` | 管理者（4ロール） | [board.ts:298](../src/board.ts#L298) | 状態だけの変更（掲載する / 締め切る / 充足 / 下書きに戻す） | board.js |
-| POST | `/api/admin/board/posts/:id/threads` | 管理者（4ロール） | [board.ts:394](../src/board.ts#L394) | 問い合わせを開始する（既にあれば既存スレッドを返す）。自社の掲載・掲載中でない掲載には問い合わせできない | board.js |
-| GET | `/api/admin/board/project-template/:projectId` | 管理者（4ロール）＋本部の閲覧（GET） | [board.ts:200](../src/board.ts#L200) | 〔見出し〕自社案件からのコピー用 | board.js |
-| GET | `/api/admin/board/proposals` | 管理者（4ロール）＋本部の閲覧（GET） | [board.ts:812](../src/board.ts#L812) | 自社が関わる提案の一覧（提案した / 受けた） | board.js |
-| POST | `/api/admin/board/proposals/:id/import` | 管理者（4ロール） | [board.ts:863](../src/board.ts#L863) | 取り込んだ行は partner_manual（取引先所属）、所属会社名 = 提案企業名（取引先マスタにも登録）。 基本項目・業務側項目は採用時点の開示内容（氏名 + スナップショット）をコピーし、以後は自社で編集（提案元とは同期しない）。 経路は board_proposals.upstream_chain にだけ残… | board.js |
-| POST | `/api/admin/board/proposals/:id/status` | 管理者（4ロール） | [board.ts:764](../src/board.ts#L764) | 状態変更: 受け手 = 面談希望 / 採用 / 見送り、提案者 = 取り下げ（採用前のみ） | board.js |
-| GET | `/api/admin/board/saved-searches` | 管理者（4ロール）＋本部の閲覧（GET） | [board.ts:995](../src/board.ts#L995) | 〔見出し〕保存した検索条件と、条件に合う新しい掲載の知らせ（#479） | board.js |
-| POST | `/api/admin/board/saved-searches` | 管理者（4ロール） | [board.ts:1000](../src/board.ts#L1000) | 〔見出し〕保存した検索条件と、条件に合う新しい掲載の知らせ（#479） | board.js |
-| DELETE | `/api/admin/board/saved-searches/:id` | 管理者（4ロール）<br>＋本文で確認: SAVED_SEARCH_NOTIFY_ROLES | [board.ts:1032](../src/board.ts#L1032) | 〔見出し〕保存した検索条件と、条件に合う新しい掲載の知らせ（#479） | board.js |
-| PUT | `/api/admin/board/saved-searches/:id` | 管理者（4ロール） | [board.ts:1017](../src/board.ts#L1017) | 名前・知らせ方の変更（条件そのものは変えない。変えるときは保存し直す） | board.js |
-| GET | `/api/admin/board/threads` | 管理者（4ロール）＋本部の閲覧（GET） | [board.ts:424](../src/board.ts#L424) | スレッド一覧（自社が参加する全スレッド）。post_id を指定するとその掲載のスレッドのみ | board.js |
-| GET | `/api/admin/board/threads/:id` | 管理者（4ロール）＋本部の閲覧（GET） | [board.ts:459](../src/board.ts#L459) | メッセージ取得（全履歴）。取得しただけでは既読にしない（既読は POST /threads/:id/read。#250） | board.js |
-| POST | `/api/admin/board/threads/:id/messages` | 管理者（4ロール） | [board.ts:494](../src/board.ts#L494) | 投稿 | board.js |
-| GET | `/api/admin/board/threads/:id/proposal-candidates` | 管理者（4ロール）＋本部の閲覧（GET） | [board.ts:623](../src/board.ts#L623) | 提案できる自社スタッフの候補（統合済みは除外。区分ごとの注意文付き） | board.js |
-| GET | `/api/admin/board/threads/:id/proposal-preview` | 管理者（4ロール）＋本部の閲覧（GET） | [board.ts:653](../src/board.ts#L653) | 送信前のプレビュー（相手に見える内容そのもの） | board.js |
-| GET | `/api/admin/board/threads/:id/proposals` | 管理者（4ロール）＋本部の閲覧（GET） | [board.ts:753](../src/board.ts#L753) | 提案一覧（スレッド内） | board.js |
-| POST | `/api/admin/board/threads/:id/proposals` | 管理者（4ロール） | [board.ts:693](../src/board.ts#L693) | 提案の送信 | board.js |
-| POST | `/api/admin/board/threads/:id/read` | 管理者（4ロール） | [board.ts:474](../src/board.ts#L474) | 既読にする（ユーザー単位）。画面が表示されていて、やり取りの一番下まで見えているときに画面から呼ぶ（#250） message_id: 画面に表示した最後のメッセージ。省略したら最新まで | board.js |
-| POST | `/api/admin/board/threads/:id/status` | 管理者（4ロール） | [board.ts:509](../src/board.ts#L509) | やり取りの終了 / 再開（どちらの企業からでも可。履歴は残る） | board.js |
-| GET | `/api/admin/board/unread-count` | 管理者（4ロール）＋本部の閲覧（GET） | [board.ts:456](../src/board.ts#L456) | 〔見出し〕第2段階: 案件チャット（掲載1件 × 問い合わせ企業1社の1対1スレッド） | board.js |
+| GET | `/api/admin/board/posts` | 管理者（4ロール）＋本部の閲覧（GET） | [board.ts:171](../src/board.ts#L171) | scope: open（全企業の掲載中）/ mine（自社の掲載すべて） | board.js |
+| POST | `/api/admin/board/posts` | 管理者（4ロール） | [board.ts:263](../src/board.ts#L263) | 〔見出し〕作成・更新 | board.js |
+| DELETE | `/api/admin/board/posts/:id` | 管理者（4ロール） | [board.ts:368](../src/board.ts#L368) | 削除は下書きのみ（掲載したものは履歴として残し、締切・充足で閉じる） | board.js |
+| GET | `/api/admin/board/posts/:id` | 管理者（4ロール）＋本部の閲覧（GET） | [board.ts:220](../src/board.ts#L220) | 〔見出し〕詳細 | board.js |
+| PUT | `/api/admin/board/posts/:id` | 管理者（4ロール） | [board.ts:284](../src/board.ts#L284) | 〔見出し〕作成・更新 | board.js |
+| POST | `/api/admin/board/posts/:id/status` | 管理者（4ロール） | [board.ts:348](../src/board.ts#L348) | 状態だけの変更（掲載する / 締め切る / 充足 / 下書きに戻す） | board.js |
+| POST | `/api/admin/board/posts/:id/threads` | 管理者（4ロール） | [board.ts:444](../src/board.ts#L444) | 問い合わせを開始する（既にあれば既存スレッドを返す）。自社の掲載・掲載中でない掲載には問い合わせできない | board.js |
+| GET | `/api/admin/board/project-template/:projectId` | 管理者（4ロール）＋本部の閲覧（GET） | [board.ts:247](../src/board.ts#L247) | 〔見出し〕自社案件からのコピー用 | board.js |
+| GET | `/api/admin/board/proposals` | 管理者（4ロール）＋本部の閲覧（GET） | [board.ts:862](../src/board.ts#L862) | 自社が関わる提案の一覧（提案した / 受けた） | board.js |
+| POST | `/api/admin/board/proposals/:id/import` | 管理者（4ロール） | [board.ts:913](../src/board.ts#L913) | 取り込んだ行は partner_manual（取引先所属）、所属会社名 = 提案企業名（取引先マスタにも登録）。 基本項目・業務側項目は採用時点の開示内容（氏名 + スナップショット）をコピーし、以後は自社で編集（提案元とは同期しない）。 経路は board_proposals.upstream_chain にだけ残… | board.js |
+| POST | `/api/admin/board/proposals/:id/status` | 管理者（4ロール） | [board.ts:814](../src/board.ts#L814) | 状態変更: 受け手 = 面談希望 / 採用 / 見送り、提案者 = 取り下げ（採用前のみ） | board.js |
+| GET | `/api/admin/board/saved-searches` | 管理者（4ロール）＋本部の閲覧（GET） | [board.ts:1047](../src/board.ts#L1047) | 〔見出し〕保存した検索条件と、条件に合う新しい掲載の知らせ（#479） | board.js |
+| POST | `/api/admin/board/saved-searches` | 管理者（4ロール） | [board.ts:1052](../src/board.ts#L1052) | 〔見出し〕保存した検索条件と、条件に合う新しい掲載の知らせ（#479） | board.js |
+| DELETE | `/api/admin/board/saved-searches/:id` | 管理者（4ロール）<br>＋本文で確認: SAVED_SEARCH_NOTIFY_ROLES | [board.ts:1085](../src/board.ts#L1085) | 〔見出し〕保存した検索条件と、条件に合う新しい掲載の知らせ（#479） | board.js |
+| PUT | `/api/admin/board/saved-searches/:id` | 管理者（4ロール） | [board.ts:1070](../src/board.ts#L1070) | 名前・知らせ方の変更（条件そのものは変えない。変えるときは保存し直す） | board.js |
+| GET | `/api/admin/board/threads` | 管理者（4ロール）＋本部の閲覧（GET） | [board.ts:474](../src/board.ts#L474) | スレッド一覧（自社が参加する全スレッド）。post_id を指定するとその掲載のスレッドのみ | board.js |
+| GET | `/api/admin/board/threads/:id` | 管理者（4ロール）＋本部の閲覧（GET） | [board.ts:509](../src/board.ts#L509) | メッセージ取得（全履歴）。取得しただけでは既読にしない（既読は POST /threads/:id/read。#250） | board.js |
+| POST | `/api/admin/board/threads/:id/messages` | 管理者（4ロール） | [board.ts:544](../src/board.ts#L544) | 投稿 | board.js |
+| GET | `/api/admin/board/threads/:id/proposal-candidates` | 管理者（4ロール）＋本部の閲覧（GET） | [board.ts:673](../src/board.ts#L673) | 提案できる自社スタッフの候補（統合済みは除外。区分ごとの注意文付き） | board.js |
+| GET | `/api/admin/board/threads/:id/proposal-preview` | 管理者（4ロール）＋本部の閲覧（GET） | [board.ts:703](../src/board.ts#L703) | 送信前のプレビュー（相手に見える内容そのもの） | board.js |
+| GET | `/api/admin/board/threads/:id/proposals` | 管理者（4ロール）＋本部の閲覧（GET） | [board.ts:803](../src/board.ts#L803) | 提案一覧（スレッド内） | board.js |
+| POST | `/api/admin/board/threads/:id/proposals` | 管理者（4ロール） | [board.ts:743](../src/board.ts#L743) | 提案の送信 | board.js |
+| POST | `/api/admin/board/threads/:id/read` | 管理者（4ロール） | [board.ts:524](../src/board.ts#L524) | 既読にする（ユーザー単位）。画面が表示されていて、やり取りの一番下まで見えているときに画面から呼ぶ（#250） message_id: 画面に表示した最後のメッセージ。省略したら最新まで | board.js |
+| POST | `/api/admin/board/threads/:id/status` | 管理者（4ロール） | [board.ts:559](../src/board.ts#L559) | やり取りの終了 / 再開（どちらの企業からでも可。履歴は残る） | board.js |
+| GET | `/api/admin/board/unread-count` | 管理者（4ロール）＋本部の閲覧（GET） | [board.ts:506](../src/board.ts#L506) | 〔見出し〕第2段階: 案件チャット（掲載1件 × 問い合わせ企業1社の1対1スレッド） | board.js |
 | GET | `/api/admin/clients` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:4327](../src/api.ts#L4327) | クライアント | admin.js corrections.js shift-board.js tour.js |
 | POST | `/api/admin/clients` | 管理者（4ロール） | [api.ts:4346](../src/api.ts#L4346) | 〔見出し〕スタッフ履歴書ファイル管理 | admin.js tour.js |
 | GET | `/api/admin/clients/:id` | 管理者（4ロール）＋本部の閲覧（GET） | [api.ts:4386](../src/api.ts#L4386) | 〔見出し〕スタッフ履歴書ファイル管理 | admin.js |
