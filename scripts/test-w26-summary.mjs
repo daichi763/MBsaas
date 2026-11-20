@@ -247,6 +247,10 @@ ok('スキルシートの通算の稼働日（日報の数）が、日報の表�
 // ---------- 集計の作り直し（トリガーで印が消える） ----------
 {
   const M = ymAdd(cur, -3)
+  // 値を直す日報は、テンプレートの数値の項目だけを持つものを、ここで1件入れて使う（#9997）。
+  // 上で入れた日報はテストの日の日付から作るので、選ぶ日報が日によって変わり、テンプレートに無い値（値の検査で 400、仕様どおり）に当たることがあった
+  const [{ daily_report_id: rid }] = await sql(`INSERT INTO daily_reports (company_id, staff_id, project_id, work_date, report_values, manager_checked, submitted_at)
+    VALUES (1, ${A.staff_id}, ${P1}, '${M}-10', '{"koekake":10,"shodan":4,"seiyaku":1}', 0, '${M}-10 20:00:00') RETURNING daily_report_id`)
   await buildAll()
   const has = async (ym) => (await marks()).includes(ym)
   ok('集計済みの印は確定した過去の月だけ（今月・前月には作らない）', (await marks()).every(m => m <= LAST_SUM) && await has(M), await marks())
@@ -255,8 +259,6 @@ ok('スキルシートの通算の稼働日（日報の数）が、日報の表�
   await sql(`INSERT INTO daily_reports (company_id, staff_id, project_id, work_date, report_values, submitted_at) VALUES (1, ${A.staff_id}, ${P1}, '${today}', '{"mnp":1}', '${today} 10:00:00')`)
   ok('今月の日報を足しても、集計済みの印は変わらない', (await marks()).length === nMarks)
   // 確認（manager_checked）は集計に関係ないので、印は消えない
-  const rid = (await sql(`SELECT daily_report_id FROM daily_reports WHERE company_id = 1 AND project_id = ${P1} AND work_date >= '${M}-01' AND work_date < '${ymAdd(M, 1)}-01'
-    AND json_valid(report_values) AND json_type(report_values) = 'object' AND COALESCE(manager_checked, 0) = 0 ORDER BY daily_report_id LIMIT 1`))[0].daily_report_id
   must(await admin.post('/api/admin/daily-reports/check', { ids: [rid] }), 'check')
   ok('過去の月の日報を確認しても、印は消えない（集計を作り直さない）', await has(M))
   // 管理者の実績の修正（#9707）で値が変わると、その月の印が消え、次に開いたときに直った値が出る
