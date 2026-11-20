@@ -4513,7 +4513,7 @@ async function renderShifts(dateStr) {
 
 window.showAddShift = async function (defaultDate) {
   // スタッフは選択肢用の軽いAPIで取る（#463）。割り当てられる人だけが返る（退職・停止・統合・スキルシートのみ・取引終了・所属元で退職を除く #94）
-  const [{ data: st }, { data: pj }] = await Promise.all([axios.get('/api/admin/staff/options'), axios.get('/api/admin/projects'),
+  const [{ data: st }, { data: pj }] = await Promise.all([axios.get('/api/admin/staff/options'), axios.get('/api/admin/projects', { params: { counts: 0 } }),
     window.loadShiftNotifySetting ? loadShiftNotifySetting() : null]) // 通知の会社の設定（「スタッフに通知を送る」の初めの値。#9906）
   const staff = st.staff.filter(s => s.assignable !== 0)
   addShiftProjects = pj.projects.filter(p => p.status === 'active')
@@ -6142,7 +6142,7 @@ function collectNoticeForm(p) {
 async function renderNotices() {
   loading()
   try {
-    const [, p, s] = await Promise.all([loadAdminNotices(false), axios.get('/api/admin/projects'), axios.get('/api/admin/notices/recipients')])
+    const [, p, s] = await Promise.all([loadAdminNotices(false), axios.get('/api/admin/projects', { params: { counts: 0 } }), axios.get('/api/admin/notices/recipients')])
     NOTICE_FORM_DATA = { projects: p.data.projects || [], staff: s.data.staff || [] }
   } catch (e) {
     $app.innerHTML = `<div class="card p-4 text-sm text-neutral-600">お知らせを読み込めませんでした。<button class="btn btn-outline ml-2" onclick="renderNotices()">再読み込み</button></div>`

@@ -31,8 +31,8 @@ npm run docs:check    # 作り直さずに、今のコードと合っている�
 ## 1. 全体の要約
 
 <!-- BEGIN GENERATED: db-summary -->
-- マイグレーション: 117 本（0001_initial_schema.sql 〜 0117_board_prefectures.sql）
-- 表: 141・索引: 317・トリガー: 21・ビュー: 0
+- マイグレーション: 118 本（0001_initial_schema.sql 〜 0119_perf_indexes.sql）
+- 表: 141・索引: 320・トリガー: 21・ビュー: 0
 - REFERENCES（外部キー）で宣言した関係: 92・宣言のない `*_id` の列で、ほかの表の主キーと同じ名前のもの: 146
 - 主キーが INTEGER の1列（ROWID。AUTOINCREMENT を含む）の表: 104・それ以外の主キーの表: 37
 - company_id の列がある表: 111
@@ -1808,6 +1808,7 @@ UNIQUE 制約: (user_id)
 
 索引:
 
+- `idx_staff_profiles_no_person`: (company_id) WHERE `person_id IS NULL`
 - `idx_staff_profiles_retention_hold`: (retention_hold_at) WHERE `retention_hold_at IS NOT NULL`
 - `idx_staff_profiles_link_key`（UNIQUE）: (link_key) WHERE `link_key IS NOT NULL`
 - `idx_staff_profiles_retention_flagged`: (retention_flagged_at)
@@ -2713,6 +2714,7 @@ UNIQUE 制約: (shift_id, report_type)
 
 索引:
 
+- `idx_attendance_late_at`: (company_id, reported_at) WHERE `status = 'late'`
 - `idx_attendance_photo_key_nn`: (photo_key) WHERE `photo_key IS NOT NULL`
 - `idx_attendance_late`: (company_id, report_type) WHERE `status = 'late'`
 - `idx_attendance_location_photo`: (reported_at) WHERE `latitude IS NOT NULL OR longitude IS NOT NULL OR address IS NOT NULL OR device_info IS NOT NULL OR device_id IS NOT NULL OR photo_key IS NOT NULL`
@@ -2826,6 +2828,7 @@ UNIQUE 制約: (shift_id, report_type)
 
 索引:
 
+- `idx_daily_reports_csv_order`: (company_id, work_date, submitted_at) WHERE `company_id > 0`
 - `idx_daily_reports_project_flagged`: (project_id, work_date) WHERE `incident_flag = 1 OR complaint_flag = 1`
 - `idx_daily_reports_flagged`: (company_id, work_date) WHERE `incident_flag = 1 OR complaint_flag = 1`
 - `idx_daily_reports_staff_date`: (staff_id, work_date)

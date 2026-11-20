@@ -41,7 +41,7 @@
       history.replaceState(null, '', '#recruit')
     }
     loading()
-    if (!projects) projects = (await axios.get('/api/admin/projects')).data.projects || []
+    if (!projects) projects = (await axios.get('/api/admin/projects', { params: { counts: 0 } })).data.projects || []
     $app.innerHTML = `
       <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
         <h2 class="text-xl font-bold text-neutral-900"><i class="fas fa-bullhorn text-primary-600 mr-1"></i>募集・応募</h2>
