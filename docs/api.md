@@ -139,14 +139,14 @@ Mobital のサーバー（Cloudflare Workers + Hono）が受け付ける、す�
 | POST | `/webhooks/resend` | [index.tsx:205](../src/index.tsx#L205) | ログイン不要。署名（RESEND_WEBHOOK_SECRET。wrangler secret で登録する）を確かめてから送信の記録を更新する（src/services/email.ts） |
 | GET | `/` | [index.tsx:248](../src/index.tsx#L248) | ルート: ロール別リダイレクト |
 | GET | `/login` | [index.tsx:268](../src/index.tsx#L268) | ログイン済みならホームへ移す（入力し直しと、不要なセッションの増加を防ぐ） |
-| GET | `/reset-password` | [index.tsx:497](../src/index.tsx#L497) | パスワード再設定ページ（メール内リンクからアクセス。トークンはクエリパラメータで受け取る） |
-| GET | `/verify-email` | [index.tsx:578](../src/index.tsx#L578) | ログイン用メールアドレスの確認ページ（#207。管理者が登録したアドレスに届いたリンクから開く）。 メールソフトのリンクの事前読み込みで確認済みにならないよう、ボタンを押したときに確認する |
-| GET | `/notice-ack` | [index.tsx:626](../src/index.tsx#L626) | お知らせメールの「確認しました」（#454。メールのリンクから開く）。 メールソフトのリンクの事前読み込みで既読にならないよう、ボタンを押したときに既読にする（/api/public/notice-ack） |
-| GET | `/r/:token` | [index.tsx:684](../src/index.tsx#L684) | シフト専用の報告用URL（ログイン不要。public/static/report-link.js） |
-| GET | `/apply/:token` | [index.tsx:698](../src/index.tsx#L698) | 公開の募集ページ（ログイン不要。/api/public/recruit/:token） |
-| GET | `/staff` | [index.tsx:712](../src/index.tsx#L712) | スタッフ画面 (スマホファースト SPA) |
-| GET | `/admin` | [index.tsx:752](../src/index.tsx#L752) | 管理者画面 (PC向け SPA) |
-| GET | `/hq` | [index.tsx:845](../src/index.tsx#L845) | SaaS本部管理画面 |
+| GET | `/reset-password` | [index.tsx:500](../src/index.tsx#L500) | パスワード再設定ページ（メール内リンクからアクセス。トークンはクエリパラメータで受け取る） |
+| GET | `/verify-email` | [index.tsx:581](../src/index.tsx#L581) | ログイン用メールアドレスの確認ページ（#207。管理者が登録したアドレスに届いたリンクから開く）。 メールソフトのリンクの事前読み込みで確認済みにならないよう、ボタンを押したときに確認する |
+| GET | `/notice-ack` | [index.tsx:629](../src/index.tsx#L629) | お知らせメールの「確認しました」（#454。メールのリンクから開く）。 メールソフトのリンクの事前読み込みで既読にならないよう、ボタンを押したときに既読にする（/api/public/notice-ack） |
+| GET | `/r/:token` | [index.tsx:687](../src/index.tsx#L687) | シフト専用の報告用URL（ログイン不要。public/static/report-link.js） |
+| GET | `/apply/:token` | [index.tsx:701](../src/index.tsx#L701) | 公開の募集ページ（ログイン不要。/api/public/recruit/:token） |
+| GET | `/staff` | [index.tsx:715](../src/index.tsx#L715) | スタッフ画面 (スマホファースト SPA) |
+| GET | `/admin` | [index.tsx:755](../src/index.tsx#L755) | 管理者画面 (PC向け SPA) |
+| GET | `/hq` | [index.tsx:848](../src/index.tsx#L848) | SaaS本部管理画面 |
 <!-- END GENERATED: api-pages -->
 
 ## 4. エンドポイントの一覧

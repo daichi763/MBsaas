@@ -34,14 +34,14 @@ Mobital の画面の一覧です。新しく加わる開発者や外部の開発
 | `/sw.js` | [index.tsx:201](../src/index.tsx#L201) |  | `common.js` |
 | `/` | [index.tsx:248](../src/index.tsx#L248) |  |  |
 | `/login` | [index.tsx:268](../src/index.tsx#L268) |  |  |
-| `/reset-password` | [index.tsx:497](../src/index.tsx#L497) |  |  |
-| `/verify-email` | [index.tsx:578](../src/index.tsx#L578) |  |  |
-| `/notice-ack` | [index.tsx:626](../src/index.tsx#L626) |  |  |
-| `/r/:token` | [index.tsx:684](../src/index.tsx#L684) |  | `report-link.js` |
-| `/apply/:token` | [index.tsx:698](../src/index.tsx#L698) |  | `apply.js` |
-| `/staff` | [index.tsx:712](../src/index.tsx#L712) | `if (u.role !== 'staff') return c.redirect('/')` | `tour.js` `report-form.js` `staff.js` `staff-attendance.js` `staff-profile.js` |
-| `/admin` | [index.tsx:752](../src/index.tsx#L752) | `if (u.role === 'staff') return c.redirect('/staff')` | `hq-support.js` `tour.js` `report-form.js` `admin.js` `roster.js` `roster-chat.js` `shift-board.js` `staff-lifecycle.js` `settlement.js` `report-settings.js` `corrections.js` `notifications.js` `attendance-history.js` `recruit.js` `board.js` `security.js` `audit-log.js` |
-| `/hq` | [index.tsx:845](../src/index.tsx#L845) | `if (u.role !== 'system_admin') return c.redirect('/')` | `hq.js` `security.js` `audit-log.js` |
+| `/reset-password` | [index.tsx:500](../src/index.tsx#L500) |  |  |
+| `/verify-email` | [index.tsx:581](../src/index.tsx#L581) |  |  |
+| `/notice-ack` | [index.tsx:629](../src/index.tsx#L629) |  |  |
+| `/r/:token` | [index.tsx:687](../src/index.tsx#L687) |  | `report-link.js` |
+| `/apply/:token` | [index.tsx:701](../src/index.tsx#L701) |  | `apply.js` |
+| `/staff` | [index.tsx:715](../src/index.tsx#L715) | `if (u.role !== 'staff') return c.redirect('/')` | `tour.js` `report-form.js` `staff.js` `staff-attendance.js` `staff-profile.js` |
+| `/admin` | [index.tsx:755](../src/index.tsx#L755) | `if (u.role === 'staff') return c.redirect('/staff')` | `hq-support.js` `tour.js` `report-form.js` `admin.js` `roster.js` `roster-chat.js` `shift-board.js` `staff-lifecycle.js` `settlement.js` `report-settings.js` `corrections.js` `notifications.js` `attendance-history.js` `recruit.js` `board.js` `security.js` `audit-log.js` |
+| `/hq` | [index.tsx:848](../src/index.tsx#L848) | `if (u.role !== 'system_admin') return c.redirect('/')` | `hq.js` `security.js` `audit-log.js` |
 <!-- END GENERATED: screens-pages -->
 
 | ページ | 使う人 | 入り口 |

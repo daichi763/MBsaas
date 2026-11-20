@@ -46,7 +46,7 @@ export async function recordLoginEvent(db: D1Database, c: Context, ev: LoginEven
   try {
     // 成功したら、その人のまとめている途中の失敗の行（今の1分の分）を閉じる。成功の後の失敗は新しい行にし、
     // 「最後に成功してから」の失敗の回数（会社管理者への知らせ）を数え直せるようにする。当てはまる行が無ければ書き込みは起きない
-    if (ev.result === 'success' && ev.user_id) {
+    if (ev.result === 'success' && ev.user_id && (ev.event_type || 'login') === 'login') {
       await db.prepare('UPDATE login_events SET bucket_key = NULL WHERE user_id = ? AND bucket_key IS NOT NULL AND created_at >= ?')
         .bind(ev.user_id, new Date(Date.now() - 120000).toISOString()).run()
     }

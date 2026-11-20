@@ -123,6 +123,15 @@ async function session(company_code, user_code) {
   const wd = await req(WD, 'POST', '/api/auth/login', loginBody)
   const wdj = await wd.clone().json().catch(() => ({}))
   ok('本番のホスト: workers.dev のログインは 403（use_app_host・app.mobital.jp への案内）', wd.status === 403 && wdj.code === 'use_app_host' && wdj.url === APP && /app\.mobital\.jp/.test(wdj.error || ''), [wd.status, wdj])
+  // パスを %xx で書いても（Hono はほどいてからルートに振り分ける）すり抜けない（RV で追加）
+  const enc = []
+  for (const p of ['/api/%61uth/login', '/api/auth/%6Cogin', '/api/%70ublic/recruit/abcdefghijklmnop/apply']) {
+    const r = await req(WD, 'POST', p, p.includes('recruit') ? '{}' : loginBody)
+    if (r.status !== 403 || (await r.json().catch(() => ({}))).code !== 'use_app_host') enc.push([p, r.status])
+  }
+  ok('本番のホスト: workers.dev で %xx で書いたパス（/api/%61uth/login など）も 403', !enc.length && b('POST', WD + '/api/%61uth/login', env) === APP, enc)
+  ok('画面: パスワードの再設定の依頼が混雑（write_budget）・別のアドレス（use_app_host）で断られたら「送信しました」と出さない（RV で追加）',
+    /d\.code === 'write_budget' \|\| d\.code === 'use_app_host'/.test(read('src/index.tsx')))
   const app = await req(APP, 'POST', '/api/auth/login', loginBody)
   ok('本番のホスト: app.mobital.jp のログインは通る（照合まで進んで 401）', app.status === 401, app.status)
   const pub = await req(WD, 'POST', '/api/public/recruit/abcdefghijklmnop/apply', '{}')
@@ -337,6 +346,7 @@ if (!PERSIST) {
       const res = JSON.parse(last?.result_json || '{}')
       ok('使った量: 定期処理 usage_watch が問い合わせ（Bearer のトークン・アカウント ID・今日の UTC の 0 時から）、合計を記録に残す',
         got.length >= 1 && got[0].auth === 'Bearer w33-test-token' && /"a":"w33acct"/.test(got[0].body) && new RegExp(`"s":"${new Date().toISOString().slice(0, 10)}T00:00:00Z"`).test(got[0].body)
+          && new RegExp(`"d":"${new Date().toISOString().slice(0, 10)}"`).test(got[0].body) && /date_geq: \$d/.test(got[0].body)
           && last?.status === 'ok' && res.d1_rows_written === 60000 && res.d1_rows_read === 1000000 && res.workers_requests === 10000, { got: got[0], last })
       const hqUsers = await count(`(SELECT COUNT(*) FROM users WHERE role = 'system_admin' AND COALESCE(status, 'active') = 'active')`)
       ok('使った量: D1 の書き込みが 50% を超えたら本部の管理者全員に知らせる（読み取りは 20% なので知らせない）', w50b - w50a === hqUsers && r50 === 0, { w50a, w50b, r50, hqUsers })

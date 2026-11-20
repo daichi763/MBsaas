@@ -223,8 +223,10 @@ export type UsageMetric = keyof typeof FREE_DAILY_LIMITS
 export const USAGE_LABEL: Record<UsageMetric, string> = { d1_rows_written: 'D1 の書き込み（行）', d1_rows_read: 'D1 の読み取り（行）', workers_requests: 'Workers の要求' }
 export const USAGE_LINES = [80, 50] as const
 const GRAPHQL_URL = 'https://api.cloudflare.com/client/v4/graphql'
-const USAGE_QUERY = `query($a: string!, $s: Time!, $u: Time!) { viewer { accounts(filter: {accountTag: $a}) {
-  d1: d1AnalyticsAdaptiveGroups(limit: 10000, filter: {datetime_geq: $s, datetime_leq: $u}) { sum { rowsRead rowsWritten } dimensions { databaseId } }
+// D1 の集計（d1AnalyticsAdaptiveGroups）は日付（date_geq・date_leq。Date 型）で絞る（Cloudflare の D1 の資料の例。datetime の絞り込みは載っていない）。
+// Workers は日時（datetime_geq・datetime_leq）で絞る。どちらも今日（UTC）の 0 時から今まで
+const USAGE_QUERY = `query($a: string!, $d: Date!, $s: Time!, $u: Time!) { viewer { accounts(filter: {accountTag: $a}) {
+  d1: d1AnalyticsAdaptiveGroups(limit: 10000, filter: {date_geq: $d, date_leq: $d}) { sum { rowsRead rowsWritten } dimensions { databaseId } }
   w: workersInvocationsAdaptive(limit: 10000, filter: {datetime_geq: $s, datetime_leq: $u}) { sum { requests } dimensions { scriptName } }
 } } }`
 
@@ -236,7 +238,7 @@ export async function fetchUsageToday(env: UsageEnv, now = Date.now()): Promise<
   const url = env.TEST_HOOKS === 'true' && env.CF_ANALYTICS_ENDPOINT ? env.CF_ANALYTICS_ENDPOINT : GRAPHQL_URL
   const signal = typeof AbortSignal !== 'undefined' && (AbortSignal as any).timeout ? (AbortSignal as any).timeout(10000) : undefined
   const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${env.CF_ANALYTICS_TOKEN}` },
-    body: JSON.stringify({ query: USAGE_QUERY, variables: { a: env.CF_ACCOUNT_ID, s: since, u: until } }), ...(signal ? { signal } : {}) })
+    body: JSON.stringify({ query: USAGE_QUERY, variables: { a: env.CF_ACCOUNT_ID, d: since.slice(0, 10), s: since, u: until } }), ...(signal ? { signal } : {}) })
   // 応答の本文はエラーのときも記録に残さない（アカウントの情報を含むことがあるため）。種類だけを返す
   if (!res.ok) { try { await res.body?.cancel() } catch { } throw new Error(`GraphQL Analytics API が HTTP ${res.status} を返しました`) }
   const j = await res.json() as any

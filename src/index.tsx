@@ -126,7 +126,7 @@ app.get('/api/health', async (c) => {
 // 本番の workers.dev の URL では、ログイン（/api/auth/*）とログインなしの送信（/api/public/*）を受け付けない（#10001。WAF の回数制限を
 // すり抜けられないように）。D1 には触れずに 403 で返す。条件と対象から外すものは src/lib/host-redirect.ts の appHostOnlyBlock
 app.use('/api/*', async (c, next) => {
-  const to = appHostOnlyBlock(c.req.method, c.req.url, c.env as { APP_BASE_URL?: string })
+  const to = appHostOnlyBlock(c.req.method, c.req.url, c.env as { APP_BASE_URL?: string }, c.req.path)
   if (!to) return next()
   return c.json({ error: `このアドレスからは受け付けていません。${to} を開いて、もう一度お試しください`, code: 'use_app_host', url: to }, 403)
 })
@@ -483,8 +483,11 @@ app.get('/login', async (c) => {
         msg.className = 'text-sm text-success-700 bg-success-50 rounded-lg px-3 py-2'
       } catch (e2) {
         // 通信できなかったときは送れていないので、そのことを伝える（受け付けた場合の応答は、アカウントの有無によらず同じ文言）
-        msg.textContent = !e2.response ? OFFLINE_MSG : '登録されているメールアドレスの場合は、パスワード再設定メールを送信しました。数分たっても届かない場合は、所属の会社の担当者にお問い合わせください。'
-        msg.className = !e2.response ? 'text-sm text-danger-600 bg-danger-50 rounded-lg px-3 py-2' : 'text-sm text-success-700 bg-success-50 rounded-lg px-3 py-2'
+        // 混雑で止めた（write_budget）・別のアドレスから送った（use_app_host）ときも送れていない。どちらもアカウントの有無と関係なく返る（#10001）
+        const d = e2.response && e2.response.data
+        const notSent = !e2.response || !!(d && (d.code === 'write_budget' || d.code === 'use_app_host') && d.error)
+        msg.textContent = !e2.response ? OFFLINE_MSG : notSent ? d.error : '登録されているメールアドレスの場合は、パスワード再設定メールを送信しました。数分たっても届かない場合は、所属の会社の担当者にお問い合わせください。'
+        msg.className = notSent ? 'text-sm text-danger-600 bg-danger-50 rounded-lg px-3 py-2' : 'text-sm text-success-700 bg-success-50 rounded-lg px-3 py-2'
       }
       btn.disabled = false; btn.textContent = '送信する'
     })

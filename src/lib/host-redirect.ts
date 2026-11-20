@@ -51,12 +51,16 @@ export function hostRedirectTarget(method: string, requestUrl: string, env: { AP
 //   検証環境（mbsaas-stg）は APP_BASE_URL が自分の workers.dev なので断らない。ローカル（localhost・127.0.0.1）・テストでも断らない
 export const APP_HOST_ONLY_PREFIXES = ['/api/auth/', '/api/public/']
 export const APP_HOST_ONLY_ALLOW = new Set(['/api/auth/logout'])
-/** 断るなら、案内に出す本来の URL（APP_BASE_URL の origin）。断らないなら null */
-export function appHostOnlyBlock(method: string, requestUrl: string, env: { APP_BASE_URL?: string } | null | undefined): string | null {
+/**
+ * 断るなら、案内に出す本来の URL（APP_BASE_URL の origin）。断らないなら null。
+ * routePath は Hono が振り分けに使うパス（c.req.path。%61 などをほどいたもの）。URL のままのパスで比べると /api/%61uth/login がすり抜けるため
+ */
+export function appHostOnlyBlock(method: string, requestUrl: string, env: { APP_BASE_URL?: string } | null | undefined, routePath?: string): string | null {
   if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') return null
   const hit = otherWorkersDev(requestUrl, env)
   if (!hit) return null
-  const path = hit.req.pathname
+  let path = routePath ?? hit.req.pathname
+  if (routePath === undefined) { try { path = decodeURI(path) } catch { /* ほどけないパスはそのまま比べる */ } }
   if (APP_HOST_ONLY_ALLOW.has(path) || !APP_HOST_ONLY_PREFIXES.some(p => path.startsWith(p))) return null
   return hit.to.origin
 }
