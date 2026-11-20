@@ -6337,9 +6337,6 @@ function seiyakuFieldKey(fieldsJson: unknown): string | null {
   const nums = parseReportFields(fieldsJson).filter(f => f.type === 'number')
   return (nums.find(f => f.key === 'seiyaku') || nums.find(f => f.label.includes('成約')))?.key ?? null
 }
-// 月の「成約」の合計。by が project なら案件ごと、staff ならスタッフごと（Map に無い = 該当の案件が無いので「—」）。
-// 該当の案件 = テンプレートに「成約」の項目がある自社の案件。スタッフは、その月にその案件の日報か確定・代打のシフトがあれば 0 以上を返す。
-// 値は json_each で項目のキーと照らして合計する（キーを SQL に埋め込まない。数値以外は 0。実績分析と同じ）
 // 成約の項目のキー（{ 案件の ID: キー }。自社の案件で、テンプレートに「成約」の項目があるものだけ）
 async function seiyakuKeys(db: D1Database, companyId: number): Promise<Record<string, string>> {
   const [projects, templates] = await db.batch([
@@ -6355,6 +6352,9 @@ async function seiyakuKeys(db: D1Database, companyId: number): Promise<Record<st
   }
   return keys
 }
+// 月の「成約」の合計。by が project なら案件ごと、staff ならスタッフごと（Map に無い = 該当の案件が無いので「—」）。
+// 該当の案件 = テンプレートに「成約」の項目がある自社の案件。スタッフは、その月にその案件の日報か確定・代打のシフトがあれば 0 以上を返す。
+// 値は json_each で項目のキーと照らして合計する（キーを SQL に埋め込まない。数値以外は 0。実績分析と同じ）
 async function seiyakuSums(db: D1Database, companyId: number, mFrom: string, mTo: string, by: 'project' | 'staff', known?: Record<string, string>): Promise<Map<number, number>> {
   const keys = known || await seiyakuKeys(db, companyId)
   const out = new Map<number, number>()
