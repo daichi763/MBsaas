@@ -26,6 +26,8 @@ import { createHash } from 'node:crypto'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const rawFetch = globalThis.fetch
+// 書き込みの上限（auth_write_counters）と使った量の問い合わせは、サーバーが UTC の日付で数える。ここだけは日本時間の「今日」ではなく UTC の日付を使う（#9641 の例外）
+const utcDayNow = (now = Date.now()) => new Date(now).toISOString().slice(0, 10)
 globalThis.fetch = async (...args) => { try { return await rawFetch(...args) } catch (e) { if (e?.cause?.code !== 'ECONNRESET') throw e; return rawFetch(...args) } }
 const BASE = process.env.BASE || 'http://127.0.0.1:9021'
 const PERSIST = process.env.PERSIST || ''
@@ -264,7 +266,7 @@ if (!PERSIST) {
   // ---------- (3) 1日の目安（9回）に届いたら、その日は1分1回まで ----------
   {
     await freshMinute(40)
-    const day = new Date().toISOString().slice(0, 10)
+    const day = utcDayNow()
     await q1(`DELETE FROM auth_write_counters; INSERT INTO auth_write_counters (scope, minute, minute_count, day, day_count) VALUES ('login', '2000-01-01T00:00', 0, '${day}', 8);`)
     const nBefore = await count(`(SELECT COUNT(*) FROM user_notifications WHERE kind = 'error_alert' AND title LIKE 'ログインの失敗が今日の目安%')`)
     await freshMinute(40)
@@ -345,8 +347,8 @@ if (!PERSIST) {
       const last = (await q1(`SELECT status, result_json FROM cron_runs WHERE job = 'usage_watch' ORDER BY run_id DESC LIMIT 1`))[0]
       const res = JSON.parse(last?.result_json || '{}')
       ok('使った量: 定期処理 usage_watch が問い合わせ（Bearer のトークン・アカウント ID・今日の UTC の 0 時から）、合計を記録に残す',
-        got.length >= 1 && got[0].auth === 'Bearer w33-test-token' && /"a":"w33acct"/.test(got[0].body) && new RegExp(`"s":"${new Date().toISOString().slice(0, 10)}T00:00:00Z"`).test(got[0].body)
-          && new RegExp(`"d":"${new Date().toISOString().slice(0, 10)}"`).test(got[0].body) && /date_geq: \$d/.test(got[0].body)
+        got.length >= 1 && got[0].auth === 'Bearer w33-test-token' && /"a":"w33acct"/.test(got[0].body) && new RegExp(`"s":"${utcDayNow()}T00:00:00Z"`).test(got[0].body)
+          && new RegExp(`"d":"${utcDayNow()}"`).test(got[0].body) && /date_geq: \$d/.test(got[0].body)
           && last?.status === 'ok' && res.d1_rows_written === 60000 && res.d1_rows_read === 1000000 && res.workers_requests === 10000, { got: got[0], last })
       const hqUsers = await count(`(SELECT COUNT(*) FROM users WHERE role = 'system_admin' AND COALESCE(status, 'active') = 'active')`)
       ok('使った量: D1 の書き込みが 50% を超えたら本部の管理者全員に知らせる（読み取りは 20% なので知らせない）', w50b - w50a === hqUsers && r50 === 0, { w50a, w50b, r50, hqUsers })
