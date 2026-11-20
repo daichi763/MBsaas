@@ -31,7 +31,7 @@ npm run docs:check    # 作り直さずに、今のコードと合っている�
 ## 1. 全体の要約
 
 <!-- BEGIN GENERATED: db-summary -->
-- マイグレーション: 116 本（0001_initial_schema.sql 〜 0116_share_detect.sql）
+- マイグレーション: 117 本（0001_initial_schema.sql 〜 0117_board_prefectures.sql）
 - 表: 141・索引: 317・トリガー: 21・ビュー: 0
 - REFERENCES（外部キー）で宣言した関係: 92・宣言のない `*_id` の列で、ほかの表の主キーと同じ名前のもの: 146
 - 主キーが INTEGER の1列（ROWID。AUTOINCREMENT を含む）の表: 104・それ以外の主キーの表: 37
@@ -3772,6 +3772,7 @@ UNIQUE 制約: (token)
 | `updated_by` | INTEGER | 可 |  |  |  |  |
 | `created_at` | DATETIME | 可 | CURRENT_TIMESTAMP |  |  |  |
 | `updated_at` | DATETIME | 可 | CURRENT_TIMESTAMP |  |  |  |
+| `prefectures` | TEXT | 可 |  |  | 0117 | 案件掲示板: 掲載の都道府県を複数選べるようにする（#9992） prefectures は ',東京都,神奈川県,' のように前後にカンマを付けた形。場所を問わない掲載は ',全国,' prefecture 列は残し、先頭の1つ（全国なら '全国'）を入れる（今それを読んでいる所が壊れないように） |
 
 索引:
 
@@ -5070,9 +5071,9 @@ END
 | `NOT_SHARED_SCOPE` | [roster.ts:229](../src/roster.ts#L229) |
 | `ROSTER_OWNER_ONLY_FIELDS` | [roster.ts:234](../src/roster.ts#L234) |
 | `ROSTER_SHARED_HOST_FIELDS` | [roster.ts:81](../src/roster.ts#L81) |
-| `PUBLIC_COLS` | [board.ts:60](../src/board.ts#L60) |
-| `buildSnapshot` | [board.ts:569](../src/board.ts#L569) |
-| `shapeProposal` | [board.ts:604](../src/board.ts#L604) |
+| `PUBLIC_COLS` | [board.ts:99](../src/board.ts#L99) |
+| `buildSnapshot` | [board.ts:619](../src/board.ts#L619) |
+| `shapeProposal` | [board.ts:654](../src/board.ts#L654) |
 | `runRetentionCleanup` | [services/retention.ts:998](../src/services/retention.ts#L998) |
 | `CRON_JOBS` | [index.tsx:883](../src/index.tsx#L883) |
 | `RETENTION_SETTING_DEFS` | [services/retention.ts:130](../src/services/retention.ts#L130) |

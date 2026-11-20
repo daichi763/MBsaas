@@ -2937,7 +2937,8 @@ window.showAddProject = async function () {
       <div><label class="text-sm text-neutral-600 block mb-1">必要スキル</label><input id="np-skills" class="inp" maxlength="500" placeholder="カンマ・読点区切り（例: MNP、光回線、クロージング）">
         <p class="text-2xs text-neutral-400 mt-1">シフトボードの候補一覧で、スタッフのスキルと照らし合わせて『スキル n/m』を出します</p></div>
       <div><label class="text-sm text-neutral-600 block mb-1">求められる内容</label><textarea id="np-req" rows="2" class="inp" maxlength="2000"></textarea></div>
-      <div><label class="text-sm text-neutral-600 block mb-1">案件マニュアル・注意事項</label><textarea id="np-manual" rows="3" class="inp" maxlength="5000" placeholder="集合場所・服装・持ち物・現場のルールなど"></textarea></div>
+      <div><label class="text-sm text-neutral-600 block mb-1">案件マニュアル・注意事項</label><textarea id="np-manual" rows="3" class="inp" maxlength="5000" placeholder="集合場所・服装・持ち物・現場のルールなど"></textarea>
+        <p class="text-2xs text-neutral-400 mt-1">スタッフアプリの「資料・マニュアル」に出ます（その案件のシフトに入っているスタッフが見られます）</p></div>
       <div><label class="text-sm text-neutral-600 block mb-1">備考（管理画面のみ）</label><textarea id="np-remarks" rows="2" class="inp" maxlength="2000"></textarea></div>
       <div class="flex gap-2">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="addProject">登録する</button></div>
     </div>`)
@@ -3115,8 +3116,8 @@ async function renderProjectDetail(pid) {
 }
 // 案件詳細でその場で編集する文の項目（9202）。[項目, 見出し, 文字数の上限, 説明]
 const PROJECT_TEXT_FIELDS = [
-  ['requirements', '求められる内容', 2000, 'スタッフアプリの「研修・マニュアル」にも出ます'],
-  ['manual_text', '案件マニュアル・注意事項', 5000, 'スタッフアプリの「研修・マニュアル」にも出ます（集合場所・服装・持ち物・現場のルールなど）'],
+  ['requirements', '求められる内容', 2000, 'スタッフアプリの「資料・マニュアル」に出ます'],
+  ['manual_text', '案件マニュアル・注意事項', 5000, 'スタッフアプリの「資料・マニュアル」に出ます（集合場所・服装・持ち物・現場のルールなど）'],
   ['remarks', '備考', 2000, '管理画面だけに出します（スタッフには出しません）'],
 ]
 delegate('editProjectText', el => {
@@ -3249,7 +3250,8 @@ delegate('editProject', el => withSubmitLock(el, async () => {
         <p class="text-2xs text-neutral-400 mt-1">テンプレートを変えても、今までの日報の項目は元の表示名のまま日報の一覧・実績・CSV に出ます</p></div>
       <div><label class="text-sm text-neutral-600 block mb-1">必要スキル</label><input id="ep-skills" class="inp" maxlength="500" value="${esc(p.required_skills || '')}" placeholder="カンマ・読点区切り（例: MNP、光回線、クロージング）"></div>
       <div><label class="text-sm text-neutral-600 block mb-1">求められる内容</label><textarea id="ep-req" rows="2" class="inp" maxlength="2000">${esc(p.requirements || '')}</textarea></div>
-      <div><label class="text-sm text-neutral-600 block mb-1">案件マニュアル・注意事項</label><textarea id="ep-manual" rows="4" class="inp" maxlength="5000">${esc(p.manual_text || '')}</textarea></div>
+      <div><label class="text-sm text-neutral-600 block mb-1">案件マニュアル・注意事項</label><textarea id="ep-manual" rows="4" class="inp" maxlength="5000">${esc(p.manual_text || '')}</textarea>
+        <p class="text-2xs text-neutral-400 mt-1">スタッフアプリの「資料・マニュアル」に出ます（その案件のシフトに入っているスタッフが見られます）</p></div>
       <div><label class="text-sm text-neutral-600 block mb-1">備考（管理画面のみ）</label><textarea id="ep-remarks" rows="2" class="inp" maxlength="2000">${esc(p.remarks || '')}</textarea></div>
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div><label class="text-sm text-neutral-600 block mb-1">現場責任者の名前（任意）</label><input id="ep-sc-name" class="inp" maxlength="40" value="${esc(p.site_contact_name || '')}"></div>

@@ -14,13 +14,23 @@
   const PREFS = ['北海道', '青森県', '岩手県', '宮城県', '秋田県', '山形県', '福島県', '茨城県', '栃木県', '群馬県', '埼玉県', '千葉県', '東京都', '神奈川県',
     '新潟県', '富山県', '石川県', '福井県', '山梨県', '長野県', '岐阜県', '静岡県', '愛知県', '三重県', '滋賀県', '京都府', '大阪府', '兵庫県', '奈良県', '和歌山県',
     '鳥取県', '島根県', '岡山県', '広島県', '山口県', '徳島県', '香川県', '愛媛県', '高知県', '福岡県', '佐賀県', '長崎県', '熊本県', '大分県', '宮崎県', '鹿児島県', '沖縄県']
+  // 掲載の都道府県は複数選べ、場所を問わない案件は「全国」にする（#9992）。選ぶ画面は地方ごとにまとめる
+  const PREF_ALL = '全国'
+  const PREF_REGIONS = [['北海道・東北', 0, 7], ['関東', 7, 14], ['中部', 14, 23], ['近畿', 23, 30], ['中国', 30, 35], ['四国', 35, 39], ['九州・沖縄', 39, 47]]
+    .map(([name, a, b]) => [name, PREFS.slice(a, b)])
   // シフトボード（shift-board.js）の window.__boardState と衝突しないよう別名にする
   const S = window.__jobBoardState = window.__jobBoardState || { eng: 'regular', scope: 'open', filters: {} }
   if (!S.filters) S.filters = {}
   let projectsCache = null
 
   const priceText = (p) => `${UNIT[p.price_unit] || ''} ${Number(p.price_amount || 0).toLocaleString()}円`
-  const placeText = (p) => [p.prefecture, p.area].filter(Boolean).join(' ') + (p.nearest_station ? `（${p.nearest_station}）` : '')
+  const prefList = (p) => Array.isArray(p.prefecture_list) ? p.prefecture_list : (p.prefecture ? [p.prefecture] : [])
+  // 都道府県の表示。max を付けると、それより多いときは「ほか N」にまとめる（一覧のカード）
+  const prefText = (p, max) => {
+    const l = prefList(p)
+    return max && l.length > max ? `${l.slice(0, max).join('・')} ほか${l.length - max}` : l.join('・')
+  }
+  const placeText = (p, max) => [prefText(p, max), p.area].filter(Boolean).join(' ') + (p.nearest_station ? `（${p.nearest_station}）` : '')
   const scheduleText = (p) => {
     const d = p.engagement_type === 'spot'
       ? (p.date_to && p.date_to !== p.date_from ? `${fmtD(p.date_from)}〜${fmtD(p.date_to)}` : fmtD(p.date_from))
@@ -45,6 +55,8 @@
   }
 
   // ---------- 一覧 ----------
+  // 絞り込みの欄の見出し（スマホでも何の欄か分かるように。#9994）
+  const FL = 'block text-2xs font-bold text-neutral-600 mb-0.5'
   async function renderList() {
     loading()
     $app.innerHTML = `
@@ -63,12 +75,17 @@
         <a class="btn btn-outline text-xs" href="#board/proposals" id="board-proposals-link"><i class="fas fa-id-badge"></i>提案一覧</a>
       </div>
       <section class="card p-3 mb-3" id="board-filters">
-        <div class="grid md:grid-cols-6 gap-2 text-xs">
-          <select id="bf-pref" class="inp text-xs"><option value="">都道府県（すべて）</option>${PREFS.map(p => `<option ${S.filters.prefecture === p ? 'selected' : ''}>${p}</option>`).join('')}</select>
-          <input id="bf-area" class="inp text-xs" placeholder="エリア・駅" value="${esc(S.filters.area || '')}">
-          <input id="bf-date" type="date" class="inp text-xs" title="稼働日（この日を含む案件）" value="${esc(S.filters.date || '')}">
-          <input id="bf-skill" class="inp text-xs" placeholder="スキル（例: MNP）" value="${esc(S.filters.skill || '')}">
-          <input id="bf-q" class="inp text-xs" placeholder="キーワード（案件名・企業名）" value="${esc(S.filters.q || '')}">
+        <div class="grid md:grid-cols-6 gap-2 text-xs items-end">
+          <label class="block"><span class="${FL}">都道府県</span>
+            <select id="bf-pref" class="inp text-xs" title="選んだ都道府県を含む掲載と、全国の掲載が出ます"><option value="">すべて</option>${PREFS.map(p => `<option ${S.filters.prefecture === p ? 'selected' : ''}>${p}</option>`).join('')}</select></label>
+          <label class="block"><span class="${FL}">エリア・駅</span>
+            <input id="bf-area" class="inp text-xs" name="bf-search-place" autocomplete="off" placeholder="例: 新宿" value="${esc(S.filters.area || '')}"></label>
+          <label class="block"><span class="${FL}">稼働日 <span class="text-neutral-400 font-normal">（この日に稼働）</span></span>
+            <input id="bf-date" type="date" class="inp text-xs" title="稼働日（この日を含む期間の案件）" aria-label="稼働日（この日を含む期間の案件）" value="${esc(S.filters.date || '')}"></label>
+          <label class="block"><span class="${FL}">スキル <span class="text-neutral-400 font-normal">（一部でも可）</span></span>
+            <input id="bf-skill" class="inp text-xs" placeholder="例: MNP 光" title="一部が合えば出ます。空白で区切った語は、すべてを含む掲載が出ます" value="${esc(S.filters.skill || '')}"></label>
+          <label class="block"><span class="${FL}">キーワード</span>
+            <input id="bf-q" class="inp text-xs" placeholder="案件名・企業名など" value="${esc(S.filters.q || '')}"></label>
           <div class="flex gap-1">
             <button class="btn btn-primary text-xs flex-1" onclick="__boardSearch()"><i class="fas fa-magnifying-glass"></i>検索</button>
             <button class="btn btn-outline text-xs" title="条件をクリア" onclick="__boardClear()"><i class="fas fa-xmark"></i></button>
@@ -200,7 +217,7 @@
         <h3 class="font-bold text-neutral-900 leading-snug">${esc(p.title)}</h3>
         <p class="text-xs text-neutral-500 mt-0.5"><i class="fas fa-building mr-1 text-neutral-400"></i>${esc(p.company_name)}</p>
         <div class="mt-2 grid grid-cols-1 gap-0.5 text-xs text-neutral-700">
-          <p><i class="fas fa-location-dot w-4 text-neutral-400"></i>${esc(placeText(p) || '-')}</p>
+          <p><i class="fas fa-location-dot w-4 text-neutral-400"></i>${esc(placeText(p, 3) || '-')}</p>
           <p><i class="fas fa-calendar w-4 text-neutral-400"></i>${esc(scheduleText(p) || '-')}${p.schedule_note ? ` <span class="text-neutral-500">／${esc(p.schedule_note)}</span>` : ''}</p>
           <p><i class="fas fa-yen-sign w-4 text-neutral-400"></i><span class="font-bold text-neutral-900">${esc(priceText(p))}</span>${p.price_note ? ` <span class="text-warning-700">（${esc(p.price_note)}）</span>` : ''}
             <span class="ml-2 text-neutral-500"><i class="fas fa-user-group mr-0.5"></i>${p.is_mine && p.adopted_count != null ? `採用 <span class="board-adopted ${p.adopted_count >= p.headcount ? 'text-success-700 font-bold' : ''}">${Number(p.adopted_count)}/${Number(p.headcount)}名</span>` : `${Number(p.headcount)}名`}</span></p>
@@ -818,9 +835,10 @@
             <div class="flex gap-2" id="bp-eng">${['regular', 'spot'].map(k => `<label class="btn ${p.engagement_type === k ? 'btn-primary' : 'btn-outline'} text-sm cursor-pointer">
               <input type="radio" name="bp-eng" value="${k}" class="hidden" ${p.engagement_type === k ? 'checked' : ''} onchange="__boardEngChanged()">${ENG[k]}</label>`).join('')}</div></div>
           <div class="md:col-span-2">${lab('案件名', true)}<input id="bp-title" class="inp" maxlength="100" value="${v('title')}" placeholder="例: 家電量販店での光回線獲得スタッフ"></div>
-          <div>${lab('都道府県', true)}<select id="bp-pref" class="inp"><option value="">選択</option>${PREFS.map(x => `<option ${p.prefecture === x ? 'selected' : ''}>${x}</option>`).join('')}</select></div>
-          <div>${lab('エリア（市区町村など）')}<input id="bp-area" class="inp" maxlength="100" value="${v('area')}" placeholder="例: 新宿区・渋谷区"></div>
-          <div>${lab('最寄駅')}<input id="bp-station" class="inp" maxlength="100" value="${v('nearest_station')}" placeholder="例: 新宿駅"></div>
+          <div>${lab('都道府県（複数選べます）', true)}
+            <div class="flex flex-wrap items-center gap-1.5" id="bp-pref"></div></div>
+          <div>${lab('エリア（市区町村など）')}<input id="bp-area" class="inp" maxlength="100" name="bp-search-place" autocomplete="off" value="${v('area')}" placeholder="例: 新宿区・渋谷区"></div>
+          <div>${lab('最寄駅')}<input id="bp-station" class="inp" maxlength="100" name="bp-search-station" autocomplete="off" value="${v('nearest_station')}" placeholder="例: 新宿駅"></div>
           <div>${lab('募集人数', true)}<input id="bp-headcount" type="number" min="1" max="999" class="inp" value="${v('headcount')}"></div>
           <div><span id="bp-date-from-label">${lab(p.engagement_type === 'spot' ? '実施日（開始）' : '開始日', true)}</span><input id="bp-date-from" type="date" class="inp" value="${v('date_from')}"></div>
           <div><span id="bp-date-to-label">${lab(p.engagement_type === 'spot' ? '実施日（終了・複数日の場合）' : '終了予定日（空欄＝長期）')}</span><input id="bp-date-to" type="date" class="inp" value="${v('date_to')}"></div>
@@ -844,9 +862,73 @@
           ${formButtonsHtml(id, p.status)}
         </div>
       </section>`
+    formPrefs = prefList(p).filter(x => x === PREF_ALL || PREFS.includes(x))
+    renderPrefChips()
     const copySrc = document.getElementById('bp-copy-src')
     if (copySrc) { copySrc.dataset.prev = ''; copySrc.addEventListener('change', () => window.__boardCopyProject()) }
   }
+
+  // ---------- 掲載の都道府県（複数・全国。#9992）。選んだものはチップで出し、✕で外せる ----------
+  let formPrefs = []
+  function renderPrefChips() {
+    const box = document.getElementById('bp-pref'); if (!box) return
+    box.innerHTML = (formPrefs.length
+      ? formPrefs.map(x => `<span class="badge ${x === PREF_ALL ? 'badge-purple' : 'badge-blue'} bp-pref-chip" data-pref="${esc(x)}">${esc(x === PREF_ALL ? '全国（場所を問わない）' : x)}<button type="button" class="ml-0.5 opacity-70 hover:opacity-100" data-action="boardPrefRemove" data-pref="${esc(x)}" aria-label="${esc(x)}を外す"><i class="fas fa-xmark"></i></button></span>`).join('')
+      : '<span class="text-xs text-neutral-400">未選択</span>')
+      + `<button type="button" class="btn btn-outline text-xs" data-action="boardPrefOpen" id="bp-pref-open"><i class="fas fa-location-dot"></i>${formPrefs.length ? '選び直す' : '都道府県を選ぶ'}</button>`
+  }
+  delegate('boardPrefRemove', (el) => { formPrefs = formPrefs.filter(x => x !== el.dataset.pref); renderPrefChips() })
+  delegate('boardPrefOpen', () => {
+    const on = new Set(formPrefs), all = on.has(PREF_ALL)
+    const cb = (x) => `<label class="flex items-center gap-1.5 text-sm py-1 px-1 rounded hover:bg-neutral-50 cursor-pointer"><input type="checkbox" class="bp-pref-cb" value="${esc(x)}" ${on.has(x) && !all ? 'checked' : ''} ${all ? 'disabled' : ''}>${esc(x)}</label>`
+    modal(`
+      <h3 class="font-bold text-lg mb-1">都道府県を選ぶ</h3>
+      <p class="text-xs text-neutral-500 mb-3">複数選べます。場所を問わない案件は「全国」を選んでください（全国を選ぶと、都道府県は選べなくなります）</p>
+      <div id="bp-pref-modal">
+        <label class="flex items-center gap-2 text-sm font-bold p-2 rounded-lg border border-neutral-200 mb-3 cursor-pointer"><input type="checkbox" id="bp-pref-all" ${all ? 'checked' : ''}>全国（場所を問わない）</label>
+        ${PREF_REGIONS.map(([name, list], i) => `<div class="mb-2 bp-pref-region">
+          <div class="flex items-center justify-between border-b border-neutral-100 pb-0.5 mb-1"><span class="text-xs font-bold text-neutral-600">${esc(name)}</span>
+            <button type="button" class="text-2xs text-primary-600 underline disabled:opacity-40" data-action="boardPrefRegion" data-region="${i}" ${all ? 'disabled' : ''}>まとめて選ぶ</button></div>
+          <div class="grid grid-cols-3 sm:grid-cols-4 gap-x-1">${list.map(cb).join('')}</div></div>`).join('')}
+      </div>
+      <p class="text-xs text-neutral-500 mt-2" id="bp-pref-count"></p>
+      <div class="flex gap-2 mt-3 sticky -bottom-5 -mb-5 bg-surface pt-2 pb-5">
+        ${MODAL_CANCEL_BTN}
+        <button type="button" class="btn btn-primary flex-1" data-action="boardPrefApply" id="bp-pref-apply">決定</button>
+      </div>`)
+    const box = document.getElementById('bp-pref-modal')
+    box.addEventListener('change', (ev) => { if (ev.target && ev.target.id === 'bp-pref-all') syncPrefAll(); updatePrefCount() })
+    updatePrefCount()
+  })
+  // 全国を選んだら、都道府県のチェックを外して選べなくする
+  function syncPrefAll() {
+    const all = !!(document.getElementById('bp-pref-all') || {}).checked
+    document.querySelectorAll('#bp-pref-modal .bp-pref-cb').forEach(el => { if (all) el.checked = false; el.disabled = all })
+    document.querySelectorAll('#bp-pref-modal [data-action=boardPrefRegion]').forEach(el => { el.disabled = all })
+  }
+  function updatePrefCount() {
+    const el = document.getElementById('bp-pref-count'); if (!el) return
+    const all = !!(document.getElementById('bp-pref-all') || {}).checked
+    const n = document.querySelectorAll('#bp-pref-modal .bp-pref-cb:checked').length
+    el.textContent = all ? '全国（場所を問わない）を選んでいます' : n ? `${n}件の都道府県を選んでいます` : 'まだ選んでいません'
+    document.querySelectorAll('#bp-pref-modal [data-action=boardPrefRegion]').forEach(b => {
+      const cbs = [...b.closest('.bp-pref-region').querySelectorAll('.bp-pref-cb')]
+      b.textContent = cbs.length && cbs.every(x => x.checked) ? 'まとめて外す' : 'まとめて選ぶ'
+    })
+  }
+  delegate('boardPrefRegion', (el) => {
+    const cbs = [...el.closest('.bp-pref-region').querySelectorAll('.bp-pref-cb')]
+    const next = !cbs.every(x => x.checked)
+    cbs.forEach(x => { x.checked = next })
+    updatePrefCount()
+  })
+  delegate('boardPrefApply', () => {
+    const all = !!(document.getElementById('bp-pref-all') || {}).checked
+    const picked = new Set([...document.querySelectorAll('#bp-pref-modal .bp-pref-cb:checked')].map(x => x.value))
+    formPrefs = all ? [PREF_ALL] : PREFS.filter(x => picked.has(x))
+    closeModal()
+    renderPrefChips()
+  })
   // 保存ボタン。締切・充足の掲載は今の状態のまま保存するのを基本にし、再掲載は確認してから行う（#125）
   function formButtonsHtml(id, status) {
     const b = (cls, mode, icon, label, extra = '') => `<button class="btn ${cls}" data-action="boardSave" data-id="${id || ''}" data-mode="${mode}" ${extra}><i class="fas ${icon}"></i>${label}</button>`
@@ -902,7 +984,7 @@
     const g = (k) => document.getElementById(k).value
     const body = {
       engagement_type: (document.querySelector('input[name=bp-eng]:checked') || {}).value,
-      title: g('bp-title'), prefecture: g('bp-pref'), area: g('bp-area'), nearest_station: g('bp-station'),
+      title: g('bp-title'), prefectures: formPrefs.slice(), area: g('bp-area'), nearest_station: g('bp-station'),
       headcount: Number(g('bp-headcount') || 0), date_from: g('bp-date-from'), date_to: g('bp-date-to'),
       time_from: g('bp-time-from'), time_to: g('bp-time-to'), schedule_note: g('bp-schedule-note'),
       price_unit: g('bp-price-unit'), price_amount: g('bp-price') === '' ? null : Number(g('bp-price')), price_note: g('bp-price-note'),

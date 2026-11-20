@@ -1491,7 +1491,7 @@
   // =========================================================
   const DND = { handled: false, endAt: 0 }
   const DND_OPTS = { animation: 120, sort: false, forceFallback: true, fallbackOnBody: true, fallbackTolerance: 4, delay: 180, delayOnTouchOnly: true,
-    draggable: '.dnd-item', filter: '.no-drag', preventOnFilter: false, emptyInsertThreshold: 24, onStart: dndStart, onEnd: dndEnd }
+    draggable: '.dnd-item', filter: '.no-drag', preventOnFilter: false, emptyInsertThreshold: 24, onChoose: dndLock, onUnchoose: dndUnlock, onStart: dndStart, onEnd: dndEnd }
   // 同じ要素に二重に付けない（右の欄・「外す」の場所は描き直さないことがあるため）
   const sortableOn = (el, opts) => { if (el && !Sortable.get(el)) Sortable.create(el, { ...DND_OPTS, ...opts }) }
   function enableDnD() {
@@ -1522,12 +1522,24 @@
     evt.item.remove()
     setTimeout(() => fn(src), 0)
   }
+  // ドラッグ中は、通り道にある画面の文字が選択（青く反転）されないようにする（#9991）。
+  //   押した時（onChoose。タッチは長押しの後）に body へ is-dragging を付け、離した・取り消した時（onUnchoose・onEnd）に必ず外す。
+  //   文字を選べなくするのは src/input.css の .is-dragging。iPhone の Safari 向けに selectstart も止める。ドラッグしていない時の入力欄の文字選択は今のまま
+  function clearSelection() { try { const s = window.getSelection && window.getSelection(); if (s && s.rangeCount) s.removeAllRanges() } catch { } }
+  function dndLock() { document.body.classList.add('is-dragging'); clearSelection() }
+  function dndUnlock() { document.body.classList.remove('is-dragging') }
+  document.addEventListener('selectstart', (ev) => { if (document.body.classList.contains('is-dragging')) ev.preventDefault() })
+  // Sortable が後片付けをしないまま終わった時（画面の外で離した・別のアプリへ移ったなど）も、文字を選べないままにしない
+  for (const t of ['mouseup', 'pointerup', 'pointercancel', 'touchend', 'touchcancel']) document.addEventListener(t, () => setTimeout(dndUnlock, 0), true)
+  window.addEventListener('blur', dndUnlock)
   function dndStart() {
     DND.handled = false
+    dndLock()
     const t = document.getElementById('board-trash'); if (t) t.style.display = 'flex'
   }
   function dndEnd(evt) {
     DND.endAt = Date.now()
+    dndUnlock()
     const t = document.getElementById('board-trash'); if (t) t.style.display = 'none'
     // 表の人・下書きを表の外（右の欄・保存の帯を除く）に落としたときは外す（右の欄の候補は何もしない）
     if (!DND.handled && evt && evt.item && evt.from && evt.from.id !== 'cand-list' && dropOutside(evt.originalEvent)) { const src = dragSource(evt.item); setTimeout(() => dropRemove(src), 0) }
