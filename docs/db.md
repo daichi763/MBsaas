@@ -31,10 +31,10 @@ npm run docs:check    # 作り直さずに、今のコードと合っている�
 ## 1. 全体の要約
 
 <!-- BEGIN GENERATED: db-summary -->
-- マイグレーション: 117 本（0001_initial_schema.sql 〜 0117_board_prefectures.sql）
-- 表: 141・索引: 317・トリガー: 21・ビュー: 0
+- マイグレーション: 119 本（0001_initial_schema.sql 〜 0119_perf_indexes.sql）
+- 表: 142・索引: 322・トリガー: 21・ビュー: 0
 - REFERENCES（外部キー）で宣言した関係: 92・宣言のない `*_id` の列で、ほかの表の主キーと同じ名前のもの: 146
-- 主キーが INTEGER の1列（ROWID。AUTOINCREMENT を含む）の表: 104・それ以外の主キーの表: 37
+- 主キーが INTEGER の1列（ROWID。AUTOINCREMENT を含む）の表: 104・それ以外の主キーの表: 38
 - company_id の列がある表: 111
 <!-- END GENERATED: db-summary -->
 
@@ -481,6 +481,9 @@ erDiagram
   audit_logs {
     INTEGER audit_id PK
   }
+  auth_write_counters {
+    TEXT scope PK
+  }
   db_size_logs {
     INTEGER log_id PK
   }
@@ -781,6 +784,7 @@ company_id の列がある表は、すべてどちらかに入っています。
 | [`alert_cooldowns`](#alert_cooldowns) |  | 同じ通知を続けて送らないための記録（打刻・日報の失敗は60分に1回までなど）。 pending は前回の通知の後に起きて、まだ知らせていない件数。last_pending は最後に通知したときに一緒に知らせた件数。 claim_token… | 0109 |  |
 | [`alert_destination_status`](#alert_destination_status) |  | 障害の通知の送り先（秘密の値 ALERT_DESTINATIONS）ごとの最後の送信の結果。 dest_key は種類と URL・トークンから作った短いハッシュ。URL・トークン・宛先そのものは持たない | 0109 |  |
 | [`audit_logs`](#audit_logs) | 操作の記録 | 操作の記録（Sprint 31 w31-audit: #9988。利用者の要望 11/17「CSV出力や諸々の操作履歴もわかるようにして欲しい」） CSV・ファイルの書き出しと、管理の操作（スタッフ・従業員の情報、管理者・ログイン、設定、… | 0115 | 解約時: 書き出して削除 |
+| [`auth_write_counters`](#auth_write_counters) |  | 2. ログインしていない人の書き込みの、全体の回数（1分ごと・1日ごと）。会社・利用者の情報は持たない（退職・解約の削除の対象外） scope: login（ログイン・二段階認証の失敗）/ public（パスワードの再設定の依頼・募集ペー… | 0118 |  |
 | [`counterparty_assignees`](#counterparty_assignees) | クライアント・協力会社の社内担当者 | 1. 社内担当者（#9910。利用者の決定: 主担当1人＋副担当（複数））。 target_type: 'client'（clients.client_id）/ 'partner'（staff_affiliations.affiliati… | 0100 | 解約時: 書き出して削除 |
 | [`db_size_logs`](#db_size_logs) |  | D1 の DB の大きさの記録（毎日1回。src/services/monitor.ts の runMonitorDaily）。 day は日本時間の日付（1日1行）。stage は上限（vars の DB_SIZE_LIMIT_MB）に… | 0109 | 作成から730日で削除（[services/retention.ts:481](../src/services/retention.ts#L481)） |
 | [`error_alerts`](#error_alerts) |  | 直近のエラーが閾値を超えたときに、本部の管理者へ送った通知の記録。 同じ通知を繰り返さないための判定（最後の通知から一定時間は送らない）に使う。created_at から90日で消す | 0093 | 作成から90日で削除（[services/retention.ts:458](../src/services/retention.ts#L458)） |
@@ -907,9 +911,12 @@ UNIQUE 制約: (company_code)
 | `city` | TEXT | 可 |  |  | 0116 | 1. ログインの履歴に、接続元のおおよその場所（Cloudflare の request.cf）と、ログインの時点で別の端末で使っていたかを足す。 country: 国（ISO 3166-1 の2文字。例 JP）。region_code: 都道府県のコード（ISO 3166-2 の後ろ。例 13 = 東京都）。 re… |
 | `concurrent_device` | TEXT | 可 |  |  | 0116 | 1. ログインの履歴に、接続元のおおよその場所（Cloudflare の request.cf）と、ログインの時点で別の端末で使っていたかを足す。 country: 国（ISO 3166-1 の2文字。例 JP）。region_code: 都道府県のコード（ISO 3166-2 の後ろ。例 13 = 東京都）。 re… |
 | `concurrent_minutes` | INTEGER | 可 |  |  | 0116 | 1. ログインの履歴に、接続元のおおよその場所（Cloudflare の request.cf）と、ログインの時点で別の端末で使っていたかを足す。 country: 国（ISO 3166-1 の2文字。例 JP）。region_code: 都道府県のコード（ISO 3166-2 の後ろ。例 13 = 東京都）。 re… |
+| `repeat_count` | INTEGER |  | 1 |  | 0118 | 1. ログインの履歴の件数と、まとめる行の鍵 repeat_count: この行にまとめた回数（成功・パスワードの再設定などは常に 1。以前の行も 1） bucket_key: まとめる行の鍵（接続元\|種類\|結果\|会社\|利用者\|UTC の分。例 203.0.113.5\|login\|bad_password\|1\|12\|… |
+| `bucket_key` | TEXT | 可 |  |  | 0118 | 1. ログインの履歴の件数と、まとめる行の鍵 repeat_count: この行にまとめた回数（成功・パスワードの再設定などは常に 1。以前の行も 1） bucket_key: まとめる行の鍵（接続元\|種類\|結果\|会社\|利用者\|UTC の分。例 203.0.113.5\|login\|bad_password\|1\|12\|… |
 
 索引:
 
+- `idx_login_events_bucket`（UNIQUE）: (bucket_key) WHERE `bucket_key IS NOT NULL`
 - `idx_login_events_time`: (created_at)
 - `idx_login_events_user`: (user_id, created_at)
 - `idx_login_events_company`: (company_id, created_at)
@@ -1808,6 +1815,7 @@ UNIQUE 制約: (user_id)
 
 索引:
 
+- `idx_staff_profiles_no_person`: (company_id) WHERE `person_id IS NULL`
 - `idx_staff_profiles_retention_hold`: (retention_hold_at) WHERE `retention_hold_at IS NOT NULL`
 - `idx_staff_profiles_link_key`（UNIQUE）: (link_key) WHERE `link_key IS NOT NULL`
 - `idx_staff_profiles_retention_flagged`: (retention_flagged_at)
@@ -2713,6 +2721,7 @@ UNIQUE 制約: (shift_id, report_type)
 
 索引:
 
+- `idx_attendance_late_at`: (company_id, reported_at) WHERE `status = 'late'`
 - `idx_attendance_photo_key_nn`: (photo_key) WHERE `photo_key IS NOT NULL`
 - `idx_attendance_late`: (company_id, report_type) WHERE `status = 'late'`
 - `idx_attendance_location_photo`: (reported_at) WHERE `latitude IS NOT NULL OR longitude IS NOT NULL OR address IS NOT NULL OR device_info IS NOT NULL OR device_id IS NOT NULL OR photo_key IS NOT NULL`
@@ -2826,6 +2835,7 @@ UNIQUE 制約: (shift_id, report_type)
 
 索引:
 
+- `idx_daily_reports_csv_order`: (company_id, work_date, submitted_at) WHERE `company_id > 0`
 - `idx_daily_reports_project_flagged`: (project_id, work_date) WHERE `incident_flag = 1 OR complaint_flag = 1`
 - `idx_daily_reports_flagged`: (company_id, work_date) WHERE `incident_flag = 1 OR complaint_flag = 1`
 - `idx_daily_reports_staff_date`: (staff_id, work_date)
@@ -4353,6 +4363,22 @@ UNIQUE 制約: (token_hash)
 - `idx_audit_logs_category`: (company_id, category, created_at)
 - `idx_audit_logs_company`: (company_id, created_at)
 
+<a id="auth_write_counters"></a>
+#### auth_write_counters
+
+> 2. ログインしていない人の書き込みの、全体の回数（1分ごと・1日ごと）。会社・利用者の情報は持たない（退職・解約の削除の対象外） scope: login（ログイン・二段階認証の失敗）/ public（パスワードの再設定の依頼・募集ページの応募） minute: 数えている分（UTC の 'YYYY-MM-DDTHH:MM'）。day: 数えている日（UTC の 'YYYY-MM-DD'。D1 の無料枠が戻る区切り = 日本時間 9:00） 表は scope ごとに1行だけ（分・日が変わったら数え直す）
+
+作成: [migrations/0118_login_event_counts.sql:1](../migrations/0118_login_event_counts.sql#L1)
+
+| 列 | 型 | NULL | 既定値 | キー・参照 | 追加 | 説明（マイグレーションのコメント） |
+|---|---|---|---|---|---|---|
+| `scope` | TEXT |  |  | PK |  |  |
+| `minute` | TEXT |  |  |  |  |  |
+| `minute_count` | INTEGER |  | 0 |  |  |  |
+| `day` | TEXT |  |  |  |  |  |
+| `day_count` | INTEGER |  | 0 |  |  |  |
+| `updated_at` | TEXT | 可 |  |  |  |  |
+
 <a id="counterparty_assignees"></a>
 #### counterparty_assignees — クライアント・協力会社の社内担当者
 
@@ -5053,7 +5079,7 @@ END
 | `hqViewAdminGuard` | [hq-support.ts:202](../src/hq-support.ts#L202) |
 | `AFFILIATION_TYPES` | [roster.ts:27](../src/roster.ts#L27) |
 | `NO_LOGIN_ROLES` | [lib/auth.ts:18](../src/lib/auth.ts#L18) |
-| `nowJST` | [api.ts:88](../src/api.ts#L88) |
+| `nowJST` | [api.ts:90](../src/api.ts#L90) |
 | `loadSessionUser` | [lib/auth.ts:129](../src/lib/auth.ts#L129) |
 | `hashPassword` | [lib/auth.ts:45](../src/lib/auth.ts#L45) |
 | `hashToken` | [lib/auth.ts:37](../src/lib/auth.ts#L37) |
@@ -5075,7 +5101,7 @@ END
 | `buildSnapshot` | [board.ts:619](../src/board.ts#L619) |
 | `shapeProposal` | [board.ts:654](../src/board.ts#L654) |
 | `runRetentionCleanup` | [services/retention.ts:998](../src/services/retention.ts#L998) |
-| `CRON_JOBS` | [index.tsx:883](../src/index.tsx#L883) |
+| `CRON_JOBS` | [index.tsx:897](../src/index.tsx#L897) |
 | `RETENTION_SETTING_DEFS` | [services/retention.ts:130](../src/services/retention.ts#L130) |
 | `purgeExpiredTokens` | [services/retention.ts:1145](../src/services/retention.ts#L1145) |
 | `OFFBOARDING_GRACE_DAYS` | [services/retention.ts:1187](../src/services/retention.ts#L1187) |

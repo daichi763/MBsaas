@@ -9,7 +9,7 @@
 //   残り月数は、直近3か月（記録が7日分以上あるとき）の増え方から計算する。
 // - 記録は毎日1回（15分おきの定期処理の、日本時間 8:00 以降の最初の起動。db_size_logs に1日1行）。
 //   同じ起動で、送り先（ALERT_DESTINATIONS）のうち毎朝のまとめを受け取るものへ、前日からの障害の件数などを送る。
-import { notifyHq, sendAlert, loadDestinations, receives, type AlertEnv } from './alerts'
+import { notifyHq, sendAlert, loadDestinations, receives, claimAlert, type AlertEnv } from './alerts'
 import { nowJST, todayJST, addDays, dayDiff } from '../lib/time'
 
 export type MonitorEnv = AlertEnv & { DB_SIZE_LIMIT_MB?: string }
@@ -209,4 +209,75 @@ export async function countTableRows(env: MonitorEnv): Promise<{ tables: { table
       table_counts_rows_read = excluded.table_counts_rows_read, updated_at = excluded.updated_at`)
     .bind(today, m.bytes, limitMb, m.method, 'ok', JSON.stringify(tables), now, rowsRead, now, now).run()
   return { tables, rows_read: rowsRead, at: now }
+}
+
+// ============ 無料プランの1日の使った量の見張り（Sprint 33 #10001 セキュリティの点検 H2 の (4)。docs/monitoring.md の 12 章） ============
+// Cloudflare の GraphQL Analytics API から、今日（UTC の 0 時 = 日本時間 9:00 から）の D1 の読み取り・書き込みの行数と Workers の要求の数を取り、
+// 無料プランの1日の上限の 50%・80% を超えたら、本部の管理者にアプリ内の通知（error_alert と同じ）と送り先に知らせる。同じ日に同じ線は1回だけ。
+// 数はアカウント全体（同じアカウントのすべての D1・Worker の合計。無料枠もアカウントごと）。
+// 秘密の値 CF_ANALYTICS_TOKEN（Account Analytics の読み取りだけの API トークン）と CF_ACCOUNT_ID が無い環境では何もしない。
+// 15分おきの定期処理から呼び、毎時 0〜14 分の起動だけで問い合わせる（1日24回。ほかの起動は何もしない）
+export type UsageEnv = MonitorEnv & { CF_ANALYTICS_TOKEN?: string; CF_ACCOUNT_ID?: string; CF_ANALYTICS_ENDPOINT?: string }
+export const FREE_DAILY_LIMITS = { d1_rows_written: 100_000, d1_rows_read: 5_000_000, workers_requests: 100_000 } as const
+export type UsageMetric = keyof typeof FREE_DAILY_LIMITS
+export const USAGE_LABEL: Record<UsageMetric, string> = { d1_rows_written: 'D1 の書き込み（行）', d1_rows_read: 'D1 の読み取り（行）', workers_requests: 'Workers の要求' }
+export const USAGE_LINES = [80, 50] as const
+const GRAPHQL_URL = 'https://api.cloudflare.com/client/v4/graphql'
+// D1 の集計（d1AnalyticsAdaptiveGroups）は日付（date_geq・date_leq。Date 型）で絞る（Cloudflare の D1 の資料の例。datetime の絞り込みは載っていない）。
+// Workers は日時（datetime_geq・datetime_leq）で絞る。どちらも今日（UTC）の 0 時から今まで
+const USAGE_QUERY = `query($a: string!, $d: Date!, $s: Time!, $u: Time!) { viewer { accounts(filter: {accountTag: $a}) {
+  d1: d1AnalyticsAdaptiveGroups(limit: 10000, filter: {date_geq: $d, date_leq: $d}) { sum { rowsRead rowsWritten } dimensions { databaseId } }
+  w: workersInvocationsAdaptive(limit: 10000, filter: {datetime_geq: $s, datetime_leq: $u}) { sum { requests } dimensions { scriptName } }
+} } }`
+
+/** 今日（UTC）の使った量。取れなければ例外 */
+export async function fetchUsageToday(env: UsageEnv, now = Date.now()): Promise<Record<UsageMetric, number>> {
+  const since = new Date(now).toISOString().slice(0, 10) + 'T00:00:00Z'
+  const until = new Date(now).toISOString().slice(0, 19) + 'Z'
+  // テスト（TEST_HOOKS='true'）だけ、問い合わせ先を手元の受け口に差し替えられる
+  const url = env.TEST_HOOKS === 'true' && env.CF_ANALYTICS_ENDPOINT ? env.CF_ANALYTICS_ENDPOINT : GRAPHQL_URL
+  const signal = typeof AbortSignal !== 'undefined' && (AbortSignal as any).timeout ? (AbortSignal as any).timeout(10000) : undefined
+  const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${env.CF_ANALYTICS_TOKEN}` },
+    body: JSON.stringify({ query: USAGE_QUERY, variables: { a: env.CF_ACCOUNT_ID, d: since.slice(0, 10), s: since, u: until } }), ...(signal ? { signal } : {}) })
+  // 応答の本文はエラーのときも記録に残さない（アカウントの情報を含むことがあるため）。種類だけを返す
+  if (!res.ok) { try { await res.body?.cancel() } catch { } throw new Error(`GraphQL Analytics API が HTTP ${res.status} を返しました`) }
+  const j = await res.json() as any
+  if (Array.isArray(j?.errors) && j.errors.length) throw new Error('GraphQL Analytics API がエラーを返しました（トークンの権限・アカウント ID を確かめてください）')
+  const acc = j?.data?.viewer?.accounts?.[0]
+  if (!acc) throw new Error('GraphQL Analytics API の応答にアカウントがありません（CF_ACCOUNT_ID を確かめてください）')
+  const sum = (rows: any[], k: string) => (rows || []).reduce((a, r) => a + (Number(r?.sum?.[k]) || 0), 0)
+  return { d1_rows_written: sum(acc.d1, 'rowsWritten'), d1_rows_read: sum(acc.d1, 'rowsRead'), workers_requests: sum(acc.w, 'requests') }
+}
+
+/** 上限に対する割合と、超えた一番上の線（50・80。どちらも超えていなければ null） */
+export function usageLevels(u: Record<UsageMetric, number>): { metric: UsageMetric; value: number; limit: number; pct: number; line: number | null }[] {
+  return (Object.keys(FREE_DAILY_LIMITS) as UsageMetric[]).map(metric => {
+    const limit = FREE_DAILY_LIMITS[metric], value = Number(u[metric]) || 0
+    const exact = value / limit * 100, pct = Math.round(value / limit * 1000) / 10
+    return { metric, value, limit, pct, line: USAGE_LINES.find(l => exact >= l) ?? null }
+  })
+}
+
+export async function runUsageWatch(env: UsageEnv, now = Date.now()): Promise<Record<string, unknown>> {
+  if (!env.CF_ANALYTICS_TOKEN || !env.CF_ACCOUNT_ID) return { idle: true, skipped: 'no_token' }
+  if (new Date(now).getUTCMinutes() >= 15 && env.TEST_HOOKS !== 'true') return { idle: true, skipped: 'not_this_quarter' }
+  const usage = await fetchUsageToday(env, now)
+  const day = new Date(now).toISOString().slice(0, 10)
+  const levels = usageLevels(usage)
+  const notified: string[] = []
+  for (const l of levels) {
+    if (l.line == null) continue
+    // 同じ日に同じ線は1回だけ（鍵に UTC の日付を入れ、1日のあいだは知らせ直さない）
+    const claim = await claimAlert(env.DB, `usage:${l.metric}:${l.line}:${day}`, 1440)
+    if (!claim.claimed) continue
+    const label = USAGE_LABEL[l.metric]
+    const title = `無料プランの${label}が1日の上限の${l.line}%を超えました（${l.pct}%）`
+    const lines = [`今日（UTC の ${day}。日本時間 9:00 から）の${label}: ${l.value.toLocaleString('en-US')}／1日の上限 ${l.limit.toLocaleString('en-US')}（アカウント全体）。`,
+      l.line >= 80 ? '上限に届くと、次の日本時間 9:00 まで D1 の書き込み・読み取り（または Worker の要求）ができなくなり、打刻・日報が保存できなくなります。すぐに原因を確かめてください。'
+        : '上限の半分を超えました。ログインの失敗の急増・重い操作が続いていないか確かめてください。',
+      'Cloudflare のダッシュボード（D1 の Metrics・Workers の Metrics・Security → Events）と、本部画面「障害」「セキュリティ」で確かめられます。']
+    const r = await notifyHq(env, { event: 'usage', severity: l.line >= 80 ? 'critical' : 'normal', title, lines }, lines.join(''))
+    notified.push(`${l.metric}:${l.line}${r.notified ? '' : '(no_hq)'}`)
+  }
+  return { ...usage, pct: Object.fromEntries(levels.map(l => [l.metric, l.pct])), notified }
 }

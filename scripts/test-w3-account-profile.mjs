@@ -177,7 +177,7 @@ let EMP_SID = null
   ok('#207 ログインのないスタッフにはログイン用メールを設定できない', noLogin.status === 400, noLogin)
   const badFmt = await admin.put(`/api/admin/staff/${S1.staff_id}`, { login_email: 'not-an-email' })
   ok('#207 形式の誤ったメールは 400', badFmt.status === 400, badFmt)
-  const dupMail = await admin.put(`/api/admin/staff/${S1.staff_id}`, { login_email: 'ADMIN@sample-mobile.jp' })
+  const dupMail = await admin.put(`/api/admin/staff/${S1.staff_id}`, { login_email: 'ADMIN@sample-mobile.example.jp' })
   ok('#207 自社の別の人が使っているメールは 409', dupMail.status === 409, dupMail)
   const r = await admin.put(`/api/admin/staff/${S1.staff_id}`, { login_email: mail })
   const d = await admin.get(`/api/admin/staff/${S1.staff_id}`)

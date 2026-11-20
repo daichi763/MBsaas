@@ -21,7 +21,7 @@
 
   window.renderAttendanceHistory = async function () {
     loading()
-    if (!projects) { try { projects = (await axios.get('/api/admin/projects')).data.projects || [] } catch { projects = [] } }
+    if (!projects) { try { projects = (await axios.get('/api/admin/projects', { params: { counts: 0 } })).data.projects || [] } catch { projects = [] } }
     const isEv = S.tab === 'events'
     let rows, total = 0, csvLimit = 10000
     try {

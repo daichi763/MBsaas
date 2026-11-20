@@ -813,7 +813,7 @@
         p = { ...src, post_id: null, status: 'draft', deadline: '', title: src.title + '（コピー）' }
       }
     } catch (e) { toast(errMsg(e)); location.hash = '#board'; return } finally { S.duplicateFrom = null }
-    if (!projectsCache) { try { projectsCache = (await axios.get('/api/admin/projects')).data.projects || [] } catch { projectsCache = [] } }
+    if (!projectsCache) { try { projectsCache = (await axios.get('/api/admin/projects', { params: { counts: 0 } })).data.projects || [] } catch { projectsCache = [] } }
     const v = (k) => esc(p[k] == null ? '' : p[k])
     const lab = (t, req) => `<label class="text-xs text-neutral-600 block mb-1">${t}${req ? ' <span class="text-danger-500">*</span>' : ''}</label>`
     $app.innerHTML = `

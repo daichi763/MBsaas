@@ -109,8 +109,9 @@ const attIndexes = async () => (await sql(`SELECT name FROM sqlite_master WHERE 
   ok('0112: DROP INDEX IF EXISTS の2文だけ（表・列は消さない）', JSON.stringify(stmts) === JSON.stringify(DROPPED.map(n => `DROP INDEX IF EXISTS ${n}`)), stmts)
   const idx = await attIndexes()
   ok('0112: 2つの索引が無い', DROPPED.every(n => !idx.includes(n)), idx)
-  ok('0112: 残る索引は、一意制約（shift_id, report_type）・スタッフ・位置情報と写真・遅刻・写真のキーの5つ',
-    JSON.stringify(idx) === JSON.stringify(['idx_attendance_late', 'idx_attendance_location_photo', 'idx_attendance_photo_key_nn', 'idx_attendance_staff', 'sqlite_autoindex_attendance_reports_1']), idx)
+  // 遅刻の報告の日時の部分索引（idx_attendance_late_at）は 0119 で足した（Sprint 33 #9996。遅刻の行だけなので、ふだんの打刻では書かない）
+  ok('0112: 残る索引は、一意制約（shift_id, report_type）・スタッフ・位置情報と写真・遅刻・写真のキーの5つ（と 0119 の遅刻の日時）',
+    JSON.stringify(idx) === JSON.stringify(['idx_attendance_late', 'idx_attendance_late_at', 'idx_attendance_location_photo', 'idx_attendance_photo_key_nn', 'idx_attendance_staff', 'sqlite_autoindex_attendance_reports_1']), idx)
 }
 
 // ---------- (3) で調べる文（src の文と同じ形。? は値に置き換え。at は src のファイルとその行に含まれる文字列） ----------
@@ -200,11 +201,12 @@ const Q = [
   { name: '定期削除: 退職者1人の打刻の削除', at: ['src/services/retention.ts', 'DELETE FROM attendance_reports WHERE staff_id = ? OR ${ofShifts}'],
     sql: `DELETE FROM attendance_reports WHERE staff_id = 1 OR shift_id IN (SELECT shift_id FROM shifts WHERE staff_id = 1)` },
   // 管理画面
-  { name: 'ダッシュボード: 遅刻（api.ts）', at: ['src/api.ts', 'SELECT s.staff_id, us.name, COUNT(DISTINCT a.shift_id) AS n FROM attendance_reports a'],
-    sql: `SELECT s.staff_id, us.name, COUNT(DISTINCT a.shift_id) AS n FROM attendance_reports a JOIN shifts s ON s.shift_id = a.shift_id
-      JOIN staff_profiles sp ON s.staff_id = sp.staff_id JOIN users us ON sp.user_id = us.user_id
-      WHERE a.company_id = 1 AND a.report_type IN ('check_in', 'work_start') AND a.status = 'late' AND s.work_date >= '2026-11-01' AND s.work_date < '2026-12-01' AND s.status IN ('confirmed','substitute')
-      GROUP BY s.staff_id HAVING n >= 2`, mustUse: 'idx_attendance_late' },
+  // 0119（Sprint 33 #9996）から、遅刻の報告の日時の部分索引で今月の分だけを読み、名前は数えた後に引く
+  { name: 'ダッシュボード: 遅刻（api.ts）', at: ['src/api.ts', 'SELECT s.staff_id, COUNT(DISTINCT a.shift_id) AS n FROM attendance_reports a'],
+    sql: `SELECT g.staff_id, us.name, g.n FROM (SELECT s.staff_id, COUNT(DISTINCT a.shift_id) AS n FROM attendance_reports a JOIN shifts s ON s.shift_id = a.shift_id
+      WHERE a.company_id = 1 AND a.status = 'late' AND a.reported_at >= '2026-10-31' AND +a.report_type IN ('check_in', 'work_start')
+        AND s.work_date >= '2026-11-01' AND s.work_date < '2026-12-01' AND s.status IN ('confirmed','substitute')
+      GROUP BY s.staff_id HAVING n >= 2) g JOIN staff_profiles sp ON g.staff_id = sp.staff_id JOIN users us ON sp.user_id = us.user_id ORDER BY g.staff_id`, mustUse: 'idx_attendance_late_at' },
   { name: 'ダッシュボード: 昨日・今日の報告（api.ts）', at: ['src/api.ts', 'FROM attendance_reports WHERE shift_id IN (SELECT r.shift_id FROM shifts r WHERE r.company_id = ?'],
     sql: `SELECT shift_id, report_type, reported_at, status FROM attendance_reports WHERE shift_id IN (SELECT r.shift_id FROM shifts r WHERE r.company_id = 1 AND r.work_date IN ('2026-11-13', '2026-11-14') AND r.status IN ('confirmed','substitute','absent'))` },
   { name: 'スタッフ一覧: 本日の入店（api.ts）', at: ['src/api.ts', 'FROM shifts s2 JOIN attendance_reports a ON a.shift_id = s2.shift_id'],

@@ -253,12 +253,13 @@
         <i class="fas fa-arrow-right text-neutral-400"></i>
         <div class="flex-1 p-2 rounded-lg bg-primary-50"><p class="text-2xs text-neutral-500">統合先</p><p class="font-bold">${esc(d.target.name)}</p><p class="text-2xs">${esc(d.target.type_label)}${d.target.owner_company_name && d.target.type === 'linked_external' ? '・' + esc(d.target.owner_company_name) : ''}</p></div>
       </div>
-      <ul class="text-xs space-y-1 mb-3 list-disc pl-4">${d.effects.map(x => `<li>${esc(x)}</li>`).join('')}</ul>
-      ${d.warnings.length ? `<div class="text-xs bg-warning-50 text-warning-800 rounded p-2 mb-3" id="merge-warnings"><p class="font-bold mb-1"><i class="fas fa-triangle-exclamation mr-1"></i>確認してください</p>${d.warnings.map(x => `<p>・${esc(x)}</p>`).join('')}</div>` : ''}
-      <label class="block text-xs text-neutral-600 mb-3">メモ（任意）<input id="mg-note" class="inp text-sm" maxlength="300" placeholder="例: 募集から応募した山田さんは〇〇社の連携スタッフと同一人物"></label>
+      ${d.blocked ? '' : `<ul class="text-xs space-y-1 mb-3 list-disc pl-4">${d.effects.map(x => `<li>${esc(x)}</li>`).join('')}</ul>`}
+      ${d.blocked ? `<div class="text-xs bg-danger-50 text-danger-700 rounded p-2 mb-3" id="merge-blocked"><p class="font-bold mb-1"><i class="fas fa-ban mr-1"></i>この組み合わせでは統合できません</p><p>${esc(d.blocked.error)}</p></div>`
+        : d.warnings.length ? `<div class="text-xs bg-warning-50 text-warning-800 rounded p-2 mb-3" id="merge-warnings"><p class="font-bold mb-1"><i class="fas fa-triangle-exclamation mr-1"></i>確認してください</p>${d.warnings.map(x => `<p>・${esc(x)}</p>`).join('')}</div>` : ''}
+      ${d.blocked ? '' : '<label class="block text-xs text-neutral-600 mb-3">メモ（任意）<input id="mg-note" class="inp text-sm" maxlength="300" placeholder="例: 募集から応募した山田さんは〇〇社の連携スタッフと同一人物"></label>'}
       <div class="flex gap-2">
         <button class="btn btn-outline flex-1" data-action="openMerge" data-id="${Number(sid)}">戻る</button>
-        <button class="btn btn-danger flex-1" data-action="runMerge" data-id="${Number(sid)}" data-target="${Number(targetId)}" data-force="${d.warnings.length ? '1' : ''}">${d.warnings.length ? '確認のうえ統合する' : '統合する'}</button>
+        ${d.blocked ? '' : `<button class="btn btn-danger flex-1" data-action="runMerge" data-id="${Number(sid)}" data-target="${Number(targetId)}" data-force="${d.warnings.length ? '1' : ''}">${d.warnings.length ? '確認のうえ統合する' : '統合する'}</button>`}
       </div>`)
   }
   // 統合の実行（二度押しで2回送らないように送信ロックをかける）

@@ -102,9 +102,9 @@ d1(`UPDATE users SET email = '${BOUNCE}' WHERE user_id = ${ST3.user_id}`)
   const bad = await admin.put('/api/admin/settings/mail-contact', { reply_to: 'not-an-email', phone: '' })
   const badPhone = await admin.put('/api/admin/settings/mail-contact', { reply_to: '', phone: 'abc' })
   const byMgr = await mgr.put('/api/admin/settings/mail-contact', { reply_to: 'x@example.com' })
-  const save = await admin.put('/api/admin/settings/mail-contact', { reply_to: 'support@sample-mobile.jp', phone: '03-1234-5678' })
+  const save = await admin.put('/api/admin/settings/mail-contact', { reply_to: 'support@sample-mobile.example.jp', phone: '03-1234-5678' })
   const got = (await mgr.get('/api/admin/settings/mail-contact')).data
-  ok('#367 問い合わせ先の設定: 形式の確認・会社管理者のみ変更・保存した値を返す', bad.status === 400 && badPhone.status === 400 && byMgr.status === 403 && save.status === 200 && got.reply_to === 'support@sample-mobile.jp' && got.phone === '03-1234-5678' && got.can_edit === false && got.company_name,
+  ok('#367 問い合わせ先の設定: 形式の確認・会社管理者のみ変更・保存した値を返す', bad.status === 400 && badPhone.status === 400 && byMgr.status === 403 && save.status === 200 && got.reply_to === 'support@sample-mobile.example.jp' && got.phone === '03-1234-5678' && got.can_edit === false && got.company_name,
     [bad.status, badPhone.status, byMgr.status, save.status, got])
   const [[s]] = d1(`SELECT settings_json FROM companies WHERE company_id = 1`)
   ok('#367 ほかの企業設定を消さない', /ranking_visible/.test(s.settings_json) && /mail_reply_to/.test(s.settings_json), s.settings_json)

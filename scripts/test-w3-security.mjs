@@ -145,7 +145,7 @@ CREATE TRIGGER w3_boom_i BEFORE INSERT ON employee_records WHEN NEW.staff_id = 1
 } else skip('#230 予期しないエラーの 500 と参照番号')
 {
   const r = await call(await login('sample', 'admin'), 'PUT', '/api/admin/employees/1', undefined, {}, '{not json')
-  ok('#9967 壊れた JSON は 400（予期しないエラーにしない）', r.status === 400 && r.data?.code === 'bad_json', r.text.slice(0, 200))
+  ok('#9967 壊れた JSON は 400（予期しないエラーにしない。Sprint 33 #10000 から入口で invalid_body）', r.status === 400 && ['bad_json', 'invalid_body'].includes(r.data?.code), r.text.slice(0, 200))
 }
 
 // ---------- #202 CSP・SRI ----------
