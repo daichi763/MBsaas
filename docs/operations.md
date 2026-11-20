@@ -63,7 +63,7 @@ npx wrangler dev --local --port 8787            # http://localhost:8787/login
 | 現場管理者 / 営業管理者 | `sample` | `mgr01` / `sales01` | `/admin` |
 | 本部 | （空欄） | `hq` | `/hq` |
 
-`seed.sql` は本番には入れません。本番のログイン画面にデモの案内が出ないことは `DEMO_MODE`（本番は `false`）で決まります（`src/index.tsx:327`）。
+`seed.sql` は本番には入れません。本番のログイン画面にデモの案内が出ないことは `DEMO_MODE`（本番は `false`）で決まります（`src/index.tsx:338`）。
 
 ### 1.5 型チェックとビルド
 
@@ -441,12 +441,12 @@ node scripts/restore-drill.mjs "<保存先>" --json drill.json      # 保存先�
 
 | 探すもの | 検索する文字 | 出す所 |
 |---|---|---|
-| 予期しないエラー（利用者に参照番号を出したもの） | `unhandled_error`、または参照番号（8文字） | `src/index.tsx:89`〜`95` |
+| 予期しないエラー（利用者に参照番号を出したもの） | `unhandled_error`、または参照番号（8文字） | `src/index.tsx:90`〜`96` |
 | 定期処理の結果 | `cron <処理名>:`（例 `cron retention:`） | `src/services/cron.ts:76` |
 | 定期処理の記録の失敗 | `cron_runs insert failed` | `src/services/cron.ts:92` |
-| プッシュ通知の送信の失敗 | `push flush failed` | `src/index.tsx:147` |
-| Turnstile の問い合わせの失敗 | `turnstile siteverify failed` | `src/recruit.ts:286` |
-| 応募の回数制限の塩がない | `RATE_LIMIT_SALT が未設定` | `src/recruit.ts:378` |
+| プッシュ通知の送信の失敗 | `push flush failed` | `src/index.tsx:158` |
+| Turnstile の問い合わせの失敗 | `turnstile siteverify failed` | `src/recruit.ts:287` |
+| 応募の回数制限の塩がない | `RATE_LIMIT_SALT が未設定` | `src/recruit.ts:385` |
 | メールの送信元がテスト用 | `mail warning` | `src/services/email.ts:127` |
 
 予期しないエラーの1行は JSON で、`ref`（参照番号）・`method`・`path`・`company_id`・`user_id`・`role`・`message`・`stack`（6行まで）を持ちます（[architecture.md](architecture.md) の 4.3）。利用者から「参照番号: xxxx」と聞いたら、その文字で検索します。
@@ -542,7 +542,7 @@ Cloudflare の API トークンなど、自動バックアップ・通知の仕�
 - 消したデータは戻せません（Time Travel の期間内なら DB 全体を戻すことはできます。4.2）。
 
 ### 8.2 解約した企業のデータ
-本部画面「解約・データ」で、次の順に行います（`src/api.ts:8770`〜`8776`）。
+本部画面「解約・データ」で、次の順に行います（`src/api.ts:8788`〜`8794`）。
 1. 企業を停止にする（利用状態を「停止」。ログインと API が止まる）。
 2. 「契約終了」を登録する。登録すると猶予期間（既定90日。登録のときに30〜365日で変えられる。`src/services/retention.ts` の `OFFBOARDING_GRACE_DAYS`）に入る。登録は取り消せる。
 3. 猶予のあいだに、データ（CSV・写真・書類のファイル）を書き出して企業に渡す。
@@ -595,7 +595,7 @@ Cloudflare の API トークンなど、自動バックアップ・通知の仕�
 
 ### 10.2 `DEMO_MODE=false` の確認
 - Cloudflare のダッシュボードの Workers Builds で、ローンチの日のデプロイのビルドのログに、`scripts/ci-wrangler-config.mjs:42` の1行（`wrangler.json を本番の設定で作成しました（APP_BASE_URL=…, DEMO_MODE=false）`）が出ていることを確かめます（3.2 の 6）。
-- `/login` を開いて、デモアカウントの案内が出ないことを確かめます（`src/index.tsx:327`）。
+- `/login` を開いて、デモアカウントの案内が出ないことを確かめます（`src/index.tsx:338`）。
 
 ### 10.3 メールの送信を始めるとき（任意）
 メールの送信は保留しています（D-31）。ローンチで始めるときだけ行います。始めないときは、パスワードを忘れた人には今までどおり管理者が仮パスワードを再発行します。
