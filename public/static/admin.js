@@ -2881,20 +2881,24 @@ delegate('saveLatenessSetting', el => withSubmitLock(el, async () => {
 delegate('showSiteContactSetting', async () => {
   let s
   try { s = (await axios.get('/api/admin/settings/site-contact')).data } catch (e) { showApiError(e, '設定を読み込めませんでした'); return }
+  // 変えられるのは勤怠の設定の権限がある人（会社管理者・現場管理者）だけ。ほかの人には見るだけにする
+  const ro = s.can_edit === false ? 'disabled' : ''
   modal(`
     <h3 class="font-bold text-lg mb-2"><i class="fas fa-phone text-primary-600 mr-1"></i>緊急連絡先・入店の位置</h3>
     <p class="text-xs text-neutral-500 mb-3">緊急連絡先は、スタッフアプリの「その他」と報告用URLに、タップで電話をかけられるボタンとして表示します。当日の欠勤・遅刻・体調不良・現場のトラブルの連絡先です。</p>
     <div class="space-y-3">
       <div><label class="text-sm text-neutral-600 block mb-1">緊急連絡先の電話番号</label>
-        <input id="sc-phone" type="tel" class="inp" maxlength="20" placeholder="例: 03-1234-5678" value="${esc(s.emergency_phone || '')}">
+        <input id="sc-phone" type="tel" class="inp" maxlength="20" placeholder="例: 03-1234-5678" value="${esc(s.emergency_phone || '')}" ${ro}>
         <p class="text-2xs text-neutral-400 mt-1">空欄にすると表示しません</p></div>
       <div><label class="text-sm text-neutral-600 block mb-1">受付時間などの補足</label>
-        <input id="sc-note" class="inp" maxlength="100" placeholder="例: 7:00〜22:00（時間外は相談・連絡へ）" value="${esc(s.emergency_note || '')}"></div>
+        <input id="sc-note" class="inp" maxlength="100" placeholder="例: 7:00〜22:00（時間外は相談・連絡へ）" value="${esc(s.emergency_note || '')}" ${ro}></div>
       <div><label class="text-sm text-neutral-600 block mb-1">入店の位置が現場から離れているとみなす距離（m）</label>
-        <input id="sc-far" type="number" min="0" max="${Number(s.max_threshold_m) || 0}" step="50" class="inp" value="${Number(s.far_threshold_m) || 0}">
+        <input id="sc-far" type="number" min="0" max="${Number(s.max_threshold_m) || 0}" step="50" class="inp" value="${Number(s.far_threshold_m) || 0}" ${ro}>
         <p class="text-2xs text-neutral-400 mt-1">0（判定しない）か ${Number(s.min_threshold_m) || 0}〜${Number(s.max_threshold_m) || 0}m。入店の位置と開催場所の位置（案件の詳細の「開催場所」で登録）を比べ、超えたらシフト操作の画面に「位置ずれ」と出します。スマホの位置は数十〜数百m ずれることがあります</p></div>
     </div>
-    <div class="flex gap-2 mt-4">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="saveSiteContactSetting">保存する</button></div>`)
+    ${ro ? `<p class="text-xs text-warning-700 bg-warning-50 rounded-lg p-2 mt-4" id="sc-readonly">${esc(ATTENDANCE_SETTING_DENIED_TEXT)}</p>
+    <div class="flex gap-2 mt-3"><button type="button" class="btn btn-outline flex-1" onclick="closeModal()">閉じる</button></div>`
+      : `<div class="flex gap-2 mt-4">${MODAL_CANCEL_BTN}<button class="btn btn-primary flex-1" data-action="saveSiteContactSetting">保存する</button></div>`}`)
 })
 delegate('saveSiteContactSetting', el => withSubmitLock(el, async () => {
   const far = document.getElementById('sc-far').value.trim()
@@ -7051,7 +7055,7 @@ async function renderAccount() {
     </section>
     <section class="card p-3 mb-6 flex items-center gap-3 flex-wrap">
       <i class="fas fa-phone text-primary-500"></i>
-      <span class="text-sm flex-1">スタッフ向けの緊急連絡先（アプリと報告用URLに出す電話番号）と、入店の位置が現場から離れているとみなす距離を設定します。</span>
+      <span class="text-sm flex-1">スタッフ向けの緊急連絡先（アプリと報告用URLに出す電話番号）と、入店の位置が現場から離れているとみなす距離を設定します。${hasPerm('attendance_settings.edit') ? '' : '<span class="block text-2xs text-warning-700">変更は会社管理者・現場管理者が行います（見るだけ）</span>'}</span>
       <button class="btn btn-outline text-sm" data-action="showSiteContactSetting">緊急連絡先・入店の位置</button>
     </section>
     <section class="card p-3 mb-6 flex items-center gap-3 flex-wrap" id="account-photo-setting">

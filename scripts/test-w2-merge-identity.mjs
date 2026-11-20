@@ -219,22 +219,23 @@ const merge = (src, tgt, extra = {}) => admin.post(`/api/admin/staff/${src}/merg
   const cos = must(await st.get('/api/staff/me/companies'), 'companies')
   ok('#103 本登録でログインを発行すると、仮登録中に連携した会社も切り替え先に出る', cos.companies.some(x => x.company_name === `${PFX}連携先B株式会社`), cos)
 
-  // #248: 仮登録を B に連携 → 既存のスタッフに統合 → B の連携は統合先に引き継がれる
+  // #248: 仮登録を B に連携 → 別の人（人物IDが違う既存のスタッフ）に統合しようとすると、Sprint 33（M1）からは止める。
+  // 同じ人物どうしで連携を引き継ぐ場合は scripts/test-w33-merge-links.mjs で確かめる
   const p2 = await quick(`${PFX} 連携 六郎`)
   const p2Code = must(await admin.get(`/api/admin/roster/${p2}/share-code`), 'share-code2').global_staff_code
   const bRow = await linkTo(B, p2Code)
   const tgt = await staffWithLogin(`${PFX}T6`, `${PFX} 連携先 六郎`)
   const dry = must(await merge(p2, tgt, { dry_run: true }), 'dry 248')
-  ok('#248 dry_run: 他社の連携を統合先に引き継ぐことを出す', dry.counts.linked_rows === 1 && dry.effects.some(e => e.includes('他社 1社 の連携を統合先に引き継ぎます')), dry)
-  must(await merge(p2, tgt, { force: true }), 'merge 248')
+  ok('#248 M1 dry_run: 他社に連携中の統合元を別人に統合できない理由（連携先 1社）を返し、引き継ぐとは出さない',
+    dry.blocked?.code === 'linked_other_company' && dry.blocked.link_companies === 1 && /他社に連携されているため統合できません/.test(dry.blocked.error)
+    && dry.counts.linked_rows === 0 && !dry.effects.some(e => e.includes('の連携を統合先に引き継ぎます')), dry)
+  const mr = await merge(p2, tgt, { force: true })
+  ok('#248 M1 確認（force）を付けても 409', mr.status === 409 && mr.data?.code === 'linked_other_company', mr)
   const links = must(await admin.get(`/api/admin/roster/${tgt}/links`), 'links')
-  ok('#248 統合先の「連携状況」に B が出る', (links.links || []).some(l => l.linked_staff_id === bRow), links)
-  const chat = await admin.get(`/api/admin/roster-chat/${tgt}?host_staff_id=${bRow}`)
-  ok('#248 統合先から B との企業間チャットを開ける', chat.status === 200, chat)
-  // 統合先はログインあり（staff）なので、B の行もアプリで使える
+  ok('#248 M1 統合先の「連携状況」に B は出ない（付け替えていない）', !(links.links || []).some(l => l.linked_staff_id === bRow), links)
   const st6 = client(await login('sample', `${PFX}T6`))
   const cos6 = must(await st6.get('/api/staff/me/companies'), 'companies6')
-  ok('#103 #248 統合先のログインから、B が切り替え先に出る', cos6.companies.some(x => x.company_name === `${PFX}連携先B株式会社`), cos6)
+  ok('#248 M1 統合先のログインから、B は切り替え先に出ない', !cos6.companies.some(x => x.company_name === `${PFX}連携先B株式会社`), cos6)
 }
 
 // ---------- #38 統合で未確認のメールを統合先のログイン用にコピーしない ----------

@@ -134,14 +134,15 @@ else {
   must(await client(re.cookie).post('/api/auth/change-password', { current_password: 'newpassword1', new_password: 'pass1234' }), 'change password back')
 }
 
-// ---------- #9941 スタッフの統合で、統合元の人が他社に切り替えたセッションも消す ----------
+// ---------- #9941 スタッフの統合と、統合元の人が他社に切り替えたセッション ----------
+// Sprint 33（M1）から、他社（B）に連携中の統合元は別人（Z）に統合できない。統合しないので、Y の B でのセッションも消えない
 {
   const zSess = client(await login('sample', `${PFX}Z`))
   const yInBSess = await switchedToB(`${PFX}Y`)
   ok('（前提）Y は B に切り替えて使える', (await yInBSess.get('/api/staff/me/companies')).status === 200)
   const m = await admin.post(`/api/admin/staff/${Y.staff_id}/merge`, { target_staff_id: Z.staff_id, force: true })
-  ok('（前提）Y を Z に統合できる', m.status === 200, m)
-  ok('#9941 統合の後、統合元 Y が B に切り替えていたセッションは使えない', (await yInBSess.get('/api/staff/me/companies')).status === 401)
+  ok('#9941 M1 B に連携中の Y は別人の Z に統合できない（409 linked_other_company）', m.status === 409 && m.data?.code === 'linked_other_company', m)
+  ok('#9941 M1 統合しないので、Y が B に切り替えていたセッションはそのまま使える', (await yInBSess.get('/api/staff/me/companies')).status === 200)
   ok('#9941 統合先 Z のセッションは残る', (await zSess.get('/api/staff/me/companies')).status === 200)
 }
 

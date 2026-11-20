@@ -7,7 +7,8 @@
 // 適用日（今日）以降の未報告・未確定のシフトは、統合先の区分で単価・支払先を置き換える（手動変更の金額は支払先のみ）。
 // 確定済み・報告済みのシフトは金額を変えず、スタッフだけを付け替える。
 // 打刻修正申請と案件 × スタッフの報告設定も移す（報告設定は統合先に行がない案件 × 種類だけ。#10）。
-// 統合元を連携元にした他社の連携行は、統合先を連携元に付け替える（#248 #103）。
+// 統合元を連携元にした他社の連携行は、統合先を連携元に付け替える（#248 #103）。付け替えるのは同じ人物（人物IDが同じ）どうしのときだけで、
+// 別人の統合先なら、連携中の行があれば統合を止める（409 linked_other_company。セキュリティの点検 M1）。
 // メールアドレスは統合先のログイン・再設定用にコピーせず、統合先の「未確認のメール」として残す（#38）。
 // =========================================================
 import { Hono } from 'hono'
@@ -165,8 +166,19 @@ staffMergeApi.post('/staff/:id/merge', async (c) => {
   else if (srcEr && !tgtIsOwnEmployee) warnings.push(`統合先は${TYPE_LABEL[tType] || tType}のため、統合元の従業員管理のデータ（給与・口座など）は統合先へ移さず、雇用終了（${endedAt}）として従業員管理の「雇用終了」の欄に残します`)
 
   // 他社の連携行: 統合元を連携元（source / root）にしている行を、統合先に付け替える（#248）
-  const links = ((await db.prepare(`SELECT sp.staff_id, sp.company_id, sp.user_id, sp.source_staff_id FROM staff_profiles sp
+  const linkRows = ((await db.prepare(`SELECT sp.staff_id, sp.company_id, sp.user_id, sp.source_staff_id, sp.link_revoked_at FROM staff_profiles sp
     WHERE sp.affiliation_type = 'linked_external' AND (sp.source_staff_id = ? OR sp.root_staff_id = ?)`).bind(sid, sid).all()).results as any[])
+  // 付け替えるのは、統合元と統合先が同じ人物（人物IDが同じ）のときだけ（M1）。別人に付け替えると、他社にある統合元の人の
+  // シフト・打刻・日報などが統合先の人のものになり、統合元の人は他社でのログインを失うため。
+  // 連携中の行があれば統合を止め（下の linkBlock）、連携が終了した行は付け替えずに統合元のまま残す（再開されたときに別人の記録にならないように）
+  const samePerson = !!src.person_id && src.person_id === tgt.person_id
+  const activeLinkCompanies = new Set(linkRows.filter(l => !l.link_revoked_at).map(l => l.company_id)).size
+  const linkBlock = activeLinkCompanies && !samePerson ? {
+    error: `他社に連携されているため統合できません。先に連携先に連携の終了を依頼してください（連携先 ${activeLinkCompanies}社）`,
+    code: 'linked_other_company', link_companies: activeLinkCompanies,
+  } : null
+  const links = samePerson ? linkRows : []
+  const keptLinkCompanies = samePerson ? 0 : new Set(linkRows.map(l => l.company_id)).size
   counts.linked_rows = links.length
   // 統合先が他社連携なら、連携の雇用元は統合先の雇用元（多段連携）
   const newRoot = tType === 'linked_external' ? (tgt.root_staff_id || tgt.source_staff_id || T) : T
@@ -198,6 +210,7 @@ staffMergeApi.post('/staff/:id/merge', async (c) => {
     ...(dropRules.length ? [`統合先と範囲が重なるスタッフ別の単価ルール ${dropRules.length}件は、統合先のルールを残して削除します`] : []),
     ...(counts.recruit_applications ? [`募集の応募 ${counts.recruit_applications}件を統合先に付け替えます`] : []),
     ...(links.length ? [`他社 ${linkCompanies}社 の連携を統合先に引き継ぎます（連携先の基本情報・企業間チャットは統合先のものになります）`] : []),
+    ...(keptLinkCompanies && !linkBlock ? [`連携が終了している他社 ${keptLinkCompanies}社 の連携は統合先に引き継がず、統合元のまま残します`] : []),
     future.length ? `今日以降の予定シフト ${future.length}件の単価・支払先を、統合先の区分（${TYPE_LABEL[tType] || tType}）で置き換えます${future.some(s => s.price_locked) ? `（手動で金額を変えた${future.filter(s => s.price_locked).length}件は支払先のみ）` : ''}` : '置き換える予定シフトはありません',
     ...(shifts.length - future.length ? [`過去・報告済み・確定済みのシフト ${shifts.length - future.length}件は金額を変えず、スタッフだけを付け替えます${settled ? `（確定済み ${settled}件を含む）` : ''}`] : []),
     ...(moveEr ? ['統合元の従業員管理のデータを統合先へ移します'] : []),
@@ -212,7 +225,11 @@ staffMergeApi.post('/staff/:id/merge', async (c) => {
     source: { staff_id: sid, name: src.name, type: srcType, type_label: TYPE_LABEL[srcType] || srcType, is_provisional: !!src.is_provisional },
     target: { staff_id: tgt.staff_id, name: tgt.name, type: tType, type_label: TYPE_LABEL[tType] || tType, owner_company_name: tgt.owner_company_name },
     counts, future_shifts: future.length, effects, warnings,
+    // 統合できない理由（画面は統合のボタンを出さずにこの文言を出す）。統合できるときは null
+    blocked: linkBlock,
   })
+  // 他社に連携中の統合元は、確認（force）をしても別人には統合しない（M1）
+  if (linkBlock) return c.json(linkBlock, 409)
   if (warnings.length && !b.force) return c.json({ error: '確認が必要な点があります', warnings, need_force: true }, 409)
 
   // ---- 実行 ----

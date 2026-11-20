@@ -3499,10 +3499,11 @@ api.get('/admin/settings/site-contact', async (c) => {
   const u = c.get('user')
   const row = await c.env.DB.prepare('SELECT emergency_phone, emergency_note, settings_json FROM companies WHERE company_id = ?').bind(u.company_id).first() as any
   return c.json({ emergency_phone: row?.emergency_phone || '', emergency_note: row?.emergency_note || '', far_threshold_m: farThresholdMeters(row?.settings_json),
-    min_threshold_m: CHECK_IN_FAR_MIN_METERS, max_threshold_m: CHECK_IN_FAR_MAX_METERS })
+    min_threshold_m: CHECK_IN_FAR_MIN_METERS, max_threshold_m: CHECK_IN_FAR_MAX_METERS, can_edit: canEditAttendanceSettings(u) })
 })
 api.put('/admin/settings/site-contact', async (c) => {
   const u = c.get('user')
+  if (!canEditAttendanceSettings(u)) return c.json({ error: ATTENDANCE_SETTING_DENIED, code: 'role_forbidden' }, 403)
   const body = await c.req.json().catch(() => ({} as any))
   const phone = emergencyPhone(body.emergency_phone), note = emergencyNote(body.emergency_note)
   if (phone && typeof phone === 'object') return c.json({ error: phone.error }, 400)
