@@ -84,16 +84,18 @@ const errTotal = async () => Number((await errLogs())?.totals?.last_24h) || 0
     ['POST', '/api/admin/slot-patterns'], ['POST', '/api/admin/sites'], ['PUT', '/api/admin/sites/1'], ['POST', '/api/admin/rate-rules'],
     ['PUT', '/api/admin/rate-rules/1'], ['PUT', '/api/admin/projects/1/pricing'],
   ]
+  // 壊れた JSON・オブジェクトでない本文は、Sprint 33（#10000）から /api の入口（src/lib/json-body.ts）が invalid_body で断る。空の本文は今までどおりハンドラの bad_json
+  const JSON_400 = ['bad_json', 'invalid_body']
   const bad = []
   for (const [m, p] of targets) {
     const r = await admin.raw(m, p, '{"staff_id": 1,')
-    if (!(r.status === 400 && r.data?.code === 'bad_json' && /読み取れませんでした/.test(r.data?.error || ''))) bad.push([m, p, r.status, r.text.slice(0, 120)])
+    if (!(r.status === 400 && JSON_400.includes(r.data?.code) && /読み取れませんでした|送信の内容が正しくありません/.test(r.data?.error || ''))) bad.push([m, p, r.status, r.text.slice(0, 120)])
   }
   ok(`#9967 壊れた JSON を ${targets.length} 個の POST/PUT に送ると、どれも 400「送られた内容を読み取れませんでした」`, !bad.length, bad)
   const arr = await admin.raw('POST', '/api/admin/shifts', '[1,2]')
   const nul = await admin.raw('POST', '/api/admin/sites', 'null')
   const empty = await admin.raw('POST', '/api/admin/rate-rules', '')
-  ok('#9967 配列・null・空の本文も 400（bad_json）', [arr, nul, empty].every(r => r.status === 400 && r.data?.code === 'bad_json'), [arr.status, nul.status, empty.status])
+  ok('#9967 配列・null・空の本文も 400（空は bad_json、配列・null は入口の invalid_body）', [arr, nul].every(r => r.status === 400 && r.data?.code === 'invalid_body') && empty.status === 400 && empty.data?.code === 'bad_json', [arr.status, arr.data?.code, nul.status, nul.data?.code, empty.status, empty.data?.code])
   const okBody = await admin.post('/api/admin/sites', {})
   ok('#9967 読める JSON は今までどおり入力の確認に進む（開催場所名がなければ 400 の別の文）', okBody.status === 400 && okBody.data?.code !== 'bad_json' && /開催場所名/.test(okBody.data?.error || ''), okBody)
   const att = await staff.raw('POST', '/api/staff/attendance', '{broken')

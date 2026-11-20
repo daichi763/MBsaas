@@ -16,13 +16,14 @@ import { notifySavedSearchMatches } from './board'
 import { recordError, newErrorRef, maskPath, sanitizeErrorText, errorAlertSettings, setErrorAlertSender, type ErrorAlertEnv } from './lib/error-log'
 import { apiNotFound } from './lib/http'
 import { csrfGuard } from './lib/csrf'
-import { hostRedirectTarget, HOST_REDIRECT_MAX_AGE } from './lib/host-redirect'
+import { jsonBodyGuard } from './lib/json-body'
+import { hostRedirectTarget, HOST_REDIRECT_MAX_AGE, appHostOnlyBlock } from './lib/host-redirect'
 import { nowJST } from './lib/time'
 import { CRITICAL_PLACES, notifyCriticalFailure, notifyCronFailure, sendErrorThresholdAlert, type AlertEnv } from './services/alerts'
-import { runMonitorDaily, type MonitorEnv } from './services/monitor'
+import { runMonitorDaily, runUsageWatch, type UsageEnv } from './services/monitor'
 import { runShareDetectJob } from './lib/share-detect'
 
-type Bindings = { DB: D1Database; PHOTOS: R2Bucket; DOCUMENTS: R2Bucket; RETENTION_ENABLED?: string; DEMO_MODE?: string } & Omit<ErrorAlertEnv, 'DB'> & Omit<MonitorEnv, 'DB'>
+type Bindings = { DB: D1Database; PHOTOS: R2Bucket; DOCUMENTS: R2Bucket; RETENTION_ENABLED?: string; DEMO_MODE?: string } & Omit<ErrorAlertEnv, 'DB'> & Omit<UsageEnv, 'DB'>
 
 // 版の短い ID（ビルドのときに vite.config.ts が git のコミットから入れる。/api/health で返す）
 declare const __APP_VERSION__: string | undefined
@@ -122,8 +123,18 @@ app.get('/api/health', async (c) => {
   }
 })
 
+// 本番の workers.dev の URL では、ログイン（/api/auth/*）とログインなしの送信（/api/public/*）を受け付けない（#10001。WAF の回数制限を
+// すり抜けられないように）。D1 には触れずに 403 で返す。条件と対象から外すものは src/lib/host-redirect.ts の appHostOnlyBlock
+app.use('/api/*', async (c, next) => {
+  const to = appHostOnlyBlock(c.req.method, c.req.url, c.env as { APP_BASE_URL?: string }, c.req.path)
+  if (!to) return next()
+  return c.json({ error: `このアドレスからは受け付けていません。${to} を開いて、もう一度お試しください`, code: 'use_app_host', url: to }, 403)
+})
+
 // CSRF の対策（#9943）: 別のサイトからの /api/* の書き込みを 403 で止める（プッシュの送信より前に止める）。対象から外すものは src/lib/csrf.ts に書く
 app.use('/api/*', csrfGuard)
+// 本文が null・数値・文字列・配列・壊れた JSON の書き込みは、ハンドラの前に 400（invalid_body）で断る（#10000。500 と障害の記録・警報にしない）。src/lib/json-body.ts
+app.use('/api/*', jsonBodyGuard)
 
 // ============ 打刻・日報の送信の失敗を1件目から知らせる（#9974） ============
 // POST /api/staff/attendance・attendance-photo・daily-report が 5xx（予期しないエラーの 500・混雑の 503）になったら、
@@ -472,8 +483,11 @@ app.get('/login', async (c) => {
         msg.className = 'text-sm text-success-700 bg-success-50 rounded-lg px-3 py-2'
       } catch (e2) {
         // 通信できなかったときは送れていないので、そのことを伝える（受け付けた場合の応答は、アカウントの有無によらず同じ文言）
-        msg.textContent = !e2.response ? OFFLINE_MSG : '登録されているメールアドレスの場合は、パスワード再設定メールを送信しました。数分たっても届かない場合は、所属の会社の担当者にお問い合わせください。'
-        msg.className = !e2.response ? 'text-sm text-danger-600 bg-danger-50 rounded-lg px-3 py-2' : 'text-sm text-success-700 bg-success-50 rounded-lg px-3 py-2'
+        // 混雑で止めた（write_budget）・別のアドレスから送った（use_app_host）ときも送れていない。どちらもアカウントの有無と関係なく返る（#10001）
+        const d = e2.response && e2.response.data
+        const notSent = !e2.response || !!(d && (d.code === 'write_budget' || d.code === 'use_app_host') && d.error)
+        msg.textContent = !e2.response ? OFFLINE_MSG : notSent ? d.error : '登録されているメールアドレスの場合は、パスワード再設定メールを送信しました。数分たっても届かない場合は、所属の会社の担当者にお問い合わせください。'
+        msg.className = notSent ? 'text-sm text-danger-600 bg-danger-50 rounded-lg px-3 py-2' : 'text-sm text-success-700 bg-success-50 rounded-lg px-3 py-2'
       }
       btn.disabled = false; btn.textContent = '送信する'
     })
@@ -939,6 +953,9 @@ const CRON_JOBS = defineCronJobs<Bindings>([
   { name: 'doc_expiry_notice', label: '書類の有効期限の知らせ', cron: CRON_REMINDERS, run: env => notifyExpiringDocuments(env as any) },
   // D1 の DB の大きさの記録と段階の通知・送り先への毎朝のまとめ（#9971 #9974。毎朝8時以降の最初の起動で1回。済んだ後は問い合わせ1回で終わる）
   { name: 'monitor_daily', label: 'DB の大きさの記録・障害の通知の毎朝のまとめ', cron: CRON_REMINDERS, run: env => runMonitorDaily(env) },
+  // 無料プランの1日の使った量（D1 の読み書きの行数・Workers の要求）が上限の 50%・80% を超えたら本部に知らせる（#10001。毎時 0〜14 分の起動で1回。
+  // 秘密の値 CF_ANALYTICS_TOKEN・CF_ACCOUNT_ID が無ければ問い合わせもしない。docs/monitoring.md の 12 章）
+  { name: 'usage_watch', label: '無料プランの1日の使った量の見張り', cron: CRON_REMINDERS, run: env => runUsageWatch(env) },
   // 3:00 の起動で問い合わせの予算に収まらなかった所属区分の変更の予約を、4:00 以降の15分おきの起動で少しずつ適用する（#9968）。
   // 3:00 の起動と同時に動かないよう、また退職の切り替え（3:00）より前に新しい日の予約を適用しないよう、0:00〜3:59 は何もしない。
   // 15分おきの起動の最後に置き、予約がなければ問い合わせ1回で終わる

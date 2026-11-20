@@ -146,7 +146,7 @@ export async function loadAuditItems(db: D1Database, companyId: number, f: Audit
     if (f.actor) { where.push('(e.user_id = ? OR e.actor_user_id = ?)'); binds.push(f.actor, f.actor) }
     periodConds('l', 'e.created_at', f, where, binds)
     const cc = cursorCond('l', 'e.created_at', 'e.event_id', f, binds); if (cc) where.push(cc)
-    stmts.push(db.prepare(`SELECT e.event_id AS id, e.created_at AS at_utc, e.event_type, e.result, e.method, e.ip, e.user_agent, e.user_code,
+    stmts.push(db.prepare(`SELECT e.event_id AS id, e.created_at AS at_utc, e.event_type, e.result, e.method, e.ip, e.user_agent, e.user_code, e.repeat_count,
         us.name AS user_name, us.role AS user_role, ac.name AS actor_name
       FROM login_events e LEFT JOIN users us ON us.user_id = e.user_id LEFT JOIN users ac ON ac.user_id = e.actor_user_id
       WHERE ${where.join(' AND ')} ORDER BY e.created_at DESC, e.event_id DESC LIMIT ?`).bind(...binds, limit + 1))
@@ -215,6 +215,8 @@ export async function loadAuditItems(db: D1Database, companyId: number, f: Audit
     }
     const failed = r.result !== 'success'
     const lines = [`ID: ${r.user_code || '-'}`]
+    // 失敗は1分ごとに1行にまとめて記録する（#10001。migrations/0118）
+    if (Number(r.repeat_count) > 1) lines.push(`回数: ${Number(r.repeat_count)}回（同じ接続元から1分の間に）`)
     if (r.event_type === 'login' && r.method && !failed) lines.push(`方法: ${LOGIN_METHOD_LABEL[r.method] || r.method}`)
     if (r.user_agent) lines.push(`端末: ${deviceLabel(r.user_agent)}`)
     if (r.actor_name) lines.push(`操作した人: ${r.actor_name}`)
