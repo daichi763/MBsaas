@@ -332,7 +332,7 @@ export async function generateFiscalYearReportsForAllCompanies(db: D1Database):
   const pending = `FROM companies c
     LEFT JOIN notice_read_reports cr ON cr.company_id = c.company_id AND cr.fiscal_year = ?
     LEFT JOIN notice_read_reports pr ON pr.company_id = c.company_id AND pr.fiscal_year = ?
-    WHERE cr.calculated_at IS NULL OR cr.calculated_at < ?`
+    WHERE (cr.calculated_at IS NULL OR cr.calculated_at < ?) AND COALESCE(c.active_status, 'active') != 'inactive'`
   const today = todayJST()
   const companies = (await db.prepare(`SELECT c.company_id, pr.finalized_at AS prev_finalized_at ${pending}
     ORDER BY cr.calculated_at IS NOT NULL, cr.calculated_at, c.company_id LIMIT ?`)
@@ -7270,8 +7270,9 @@ export async function publishDueNotices(env: Bindings, companyId?: number) {
   const binds: any[] = [nowJST()]
   if (companyId != null) binds.push(companyId)
   binds.push(NOTICE_PUBLISH_BATCH)
+  // 定期処理（companyId なし）では、本部で停止にした企業の予約は配信しない（#13。再開した後の定期処理か、その会社でお知らせを開いたときに配信する）
   const rows = (await db.prepare(`SELECT notice_id, company_id FROM notices WHERE status = 'scheduled' AND published_at <= ?
-    ${companyId != null ? 'AND company_id = ?' : ''} ORDER BY published_at LIMIT ?`).bind(...binds).all()).results as { notice_id: number; company_id: number }[]
+    ${companyId != null ? 'AND company_id = ?' : "AND company_id NOT IN (SELECT company_id FROM companies WHERE active_status = 'inactive')"} ORDER BY published_at LIMIT ?`).bind(...binds).all()).results as { notice_id: number; company_id: number }[]
   let published = 0, mailed = 0, failed = 0
   const errors: string[] = []
   for (const r of rows) {

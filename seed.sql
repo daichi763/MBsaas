@@ -6,9 +6,9 @@ INSERT OR IGNORE INTO companies (company_id, company_code, company_name, plan, u
  (3, 'demo3', '合同会社ネクストコネクト', 'basic', 15, 'active', 2, '', '{}');
 
 INSERT OR IGNORE INTO users (user_id, company_id, user_code, name, role, password_hash, email, phone, status) VALUES
-(1, 1, 'admin', '出井 代表', 'company_admin', 'pbkdf2$100000$ZmllbGRvcy1kZW1vLXNhbA==$DaRODZ5mU1+t3Cm3L2TDn2X2iwrOieSs31Yy+bKMMVY=', 'admin@sample-mobile.jp', '03-0000-0001', 'active'),
-(2, 1, 'mgr01', '藤田 現場長', 'field_manager', 'pbkdf2$100000$ZmllbGRvcy1kZW1vLXNhbA==$DaRODZ5mU1+t3Cm3L2TDn2X2iwrOieSs31Yy+bKMMVY=', 'fujita@sample-mobile.jp', '090-0000-0002', 'active'),
-(3, 1, 'sales01', '岡本 営業', 'sales_manager', 'pbkdf2$100000$ZmllbGRvcy1kZW1vLXNhbA==$DaRODZ5mU1+t3Cm3L2TDn2X2iwrOieSs31Yy+bKMMVY=', 'okamoto@sample-mobile.jp', '090-0000-0003', 'active'),
+(1, 1, 'admin', '出井 代表', 'company_admin', 'pbkdf2$100000$ZmllbGRvcy1kZW1vLXNhbA==$DaRODZ5mU1+t3Cm3L2TDn2X2iwrOieSs31Yy+bKMMVY=', 'admin@sample-mobile.example.jp', '03-0000-0001', 'active'),
+(2, 1, 'mgr01', '藤田 現場長', 'field_manager', 'pbkdf2$100000$ZmllbGRvcy1kZW1vLXNhbA==$DaRODZ5mU1+t3Cm3L2TDn2X2iwrOieSs31Yy+bKMMVY=', 'fujita@sample-mobile.example.jp', '090-0000-0002', 'active'),
+(3, 1, 'sales01', '岡本 営業', 'sales_manager', 'pbkdf2$100000$ZmllbGRvcy1kZW1vLXNhbA==$DaRODZ5mU1+t3Cm3L2TDn2X2iwrOieSs31Yy+bKMMVY=', 'okamoto@sample-mobile.example.jp', '090-0000-0003', 'active'),
 (4, 1, 'st001', '佐藤 健太', 'staff', 'pbkdf2$100000$ZmllbGRvcy1kZW1vLXNhbA==$DaRODZ5mU1+t3Cm3L2TDn2X2iwrOieSs31Yy+bKMMVY=', 'staff1@example.com', '090-1111-1000', 'active'),
 (5, 1, 'st002', '鈴木 美咲', 'staff', 'pbkdf2$100000$ZmllbGRvcy1kZW1vLXNhbA==$DaRODZ5mU1+t3Cm3L2TDn2X2iwrOieSs31Yy+bKMMVY=', 'staff2@example.com', '090-1111-1001', 'active'),
 (6, 1, 'st003', '高橋 大輔', 'staff', 'pbkdf2$100000$ZmllbGRvcy1kZW1vLXNhbA==$DaRODZ5mU1+t3Cm3L2TDn2X2iwrOieSs31Yy+bKMMVY=', 'staff3@example.com', '090-1111-1002', 'active'),
@@ -29,7 +29,7 @@ INSERT OR IGNORE INTO users (user_id, company_id, user_code, name, role, passwor
 (21, 1, 'st018', '林 美月', 'staff', 'pbkdf2$100000$ZmllbGRvcy1kZW1vLXNhbA==$DaRODZ5mU1+t3Cm3L2TDn2X2iwrOieSs31Yy+bKMMVY=', 'staff18@example.com', '090-1111-1017', 'active'),
 (22, 1, 'st019', '斎藤 大和', 'staff', 'pbkdf2$100000$ZmllbGRvcy1kZW1vLXNhbA==$DaRODZ5mU1+t3Cm3L2TDn2X2iwrOieSs31Yy+bKMMVY=', 'staff19@example.com', '090-1111-1018', 'active'),
 (23, 1, 'st020', '清水 陽菜', 'staff', 'pbkdf2$100000$ZmllbGRvcy1kZW1vLXNhbA==$DaRODZ5mU1+t3Cm3L2TDn2X2iwrOieSs31Yy+bKMMVY=', 'staff20@example.com', '090-1111-1019', 'active'),
-(100, 1, 'hq', 'ディセクテラ本部', 'system_admin', 'pbkdf2$100000$ZmllbGRvcy1kZW1vLXNhbA==$DaRODZ5mU1+t3Cm3L2TDn2X2iwrOieSs31Yy+bKMMVY=', 'hq@dissectra.co.jp', NULL, 'active');
+(100, 1, 'hq', 'ディセクテラ本部', 'system_admin', 'pbkdf2$100000$ZmllbGRvcy1kZW1vLXNhbA==$DaRODZ5mU1+t3Cm3L2TDn2X2iwrOieSs31Yy+bKMMVY=', 'hq@hq.example.jp', NULL, 'active');
 -- 本部ユーザーは本部専用の企業行（0033 で作成。active_status = 'internal'）に置く。0033 より前に seed を入れた場合は 0033 が移す
 UPDATE OR IGNORE users SET company_id = (SELECT company_id FROM companies WHERE active_status = 'internal' ORDER BY company_id LIMIT 1)
 WHERE role = 'system_admin' AND EXISTS (SELECT 1 FROM companies WHERE active_status = 'internal');
