@@ -29,11 +29,12 @@
   let BOARD = null, MASTER = null, MASTER_AT = 0
 
   // 案件・クライアント・開催場所・スタッフの選択肢。登録・変更の後（下の axios の処理）と、一定時間ごとに取り直す（#529）
+  // 案件は月の数を数えない一覧（counts=0。ボードは稼働人数・シフト数などを使わない。#9996）
   const MASTER_TTL_MS = 5 * 60 * 1000
   async function loadMaster() {
     if (MASTER && Date.now() - MASTER_AT < MASTER_TTL_MS) return MASTER
     const [{ data: pj }, { data: cl }, { data: si }, { data: st }] = await Promise.all([
-      axios.get('/api/admin/projects'), axios.get('/api/admin/clients'), axios.get('/api/admin/sites?counts=0'), axios.get('/api/admin/staff/options')])
+      axios.get('/api/admin/projects', { params: { counts: 0 } }), axios.get('/api/admin/clients'), axios.get('/api/admin/sites?counts=0'), axios.get('/api/admin/staff/options')])
     // 割り当てられる人だけを出す（退職・停止・統合・スキルシートのみ・取引終了・所属元で退職は assignable=0）。スタッフは選択肢用の軽いAPI（#463）
     MASTER = { projects: pj.projects, clients: cl.clients, sites: si.sites, staff: st.staff.filter(s => s.affiliation_type !== 'skillsheet_only' && !s.merged_into_staff_id && s.assignable !== 0) }
     MASTER_AT = Date.now()

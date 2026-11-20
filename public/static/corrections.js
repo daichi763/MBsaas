@@ -73,7 +73,7 @@
     // #corrections/punches は打刻データの一覧（#175）
     if (id === 'punches') return renderPunches()
     loading()
-    if (!projects) { try { projects = (await axios.get('/api/admin/projects')).data.projects || [] } catch { projects = [] } }
+    if (!projects) { try { projects = (await axios.get('/api/admin/projects', { params: { counts: 0 } })).data.projects || [] } catch { projects = [] } }
     if (!ME) { try { ME = (await axios.get('/api/auth/me')).data } catch { ME = {} } }
     const params = Object.fromEntries(Object.entries(S).filter(([, v]) => v !== '' && v != null))
     let data
@@ -560,7 +560,7 @@
   }
   async function renderPunches() {
     loading()
-    if (!projects) { try { projects = (await axios.get('/api/admin/projects')).data.projects || [] } catch { projects = [] } }
+    if (!projects) { try { projects = (await axios.get('/api/admin/projects', { params: { counts: 0 } })).data.projects || [] } catch { projects = [] } }
     if (!punchClients) { try { punchClients = (await axios.get('/api/admin/clients')).data.clients || [] } catch { punchClients = [] } }
     const params = Object.fromEntries(Object.entries(P).filter(([, v]) => v !== '' && v != null))
     let data
