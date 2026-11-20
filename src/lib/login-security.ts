@@ -44,6 +44,12 @@ export async function recordLoginEvent(db: D1Database, c: Context, ev: LoginEven
   const m = requestMeta(c)
   const g = requestGeo(c)
   try {
+    // 成功したら、その人のまとめている途中の失敗の行（今の1分の分）を閉じる。成功の後の失敗は新しい行にし、
+    // 「最後に成功してから」の失敗の回数（会社管理者への知らせ）を数え直せるようにする。当てはまる行が無ければ書き込みは起きない
+    if (ev.result === 'success' && ev.user_id) {
+      await db.prepare('UPDATE login_events SET bucket_key = NULL WHERE user_id = ? AND bucket_key IS NOT NULL AND created_at >= ?')
+        .bind(ev.user_id, new Date(Date.now() - 120000).toISOString()).run()
+    }
     await db.prepare(`INSERT INTO login_events (company_id, user_id, company_code, user_code, event_type, result, method, ip, user_agent, actor_user_id, created_at,
         country, region_code, region, city, concurrent_device, concurrent_minutes, repeat_count, bucket_key)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
@@ -63,11 +69,12 @@ export async function recordLoginEvent(db: D1Database, c: Context, ev: LoginEven
 // 止めるときは D1 に何も書かずに 429 を返す（ログインはパスワードを確かめる前に断る。数えずに確かめると総当たりができるため）。
 // 書き込みの見積もり（索引の分を含む）: ログインの失敗1回 約8〜12行（login_attempts 2行と索引・login_events 1行か件数の更新・この表の更新）、
 //   再設定の依頼1回 約4行、応募1回 約10〜20行。上限いっぱいで1日中続けられても、login と public を合わせて1日約7万行に収まる（docs/monitoring.md の 12 章）
+// 1日の書き込みの量を決めるのは day と degraded で、minute は急な増え方の歯止め（ふつうの人の打ち間違い・募集の案内を流した直後の応募が重なっても止めない大きさ）
 export type WriteBudgetScope = 'login' | 'public'
 export type WriteBudget = { minute: number; day: number; degraded: number }
 export const WRITE_BUDGETS: Record<WriteBudgetScope, WriteBudget> = {
-  login: { minute: 20, day: 1500, degraded: 1 },
-  public: { minute: 20, day: 1000, degraded: 1 },
+  login: { minute: 60, day: 1500, degraded: 1 },
+  public: { minute: 60, day: 1000, degraded: 1 },
 }
 export const WRITE_BUDGET_BUSY_MESSAGE = 'ただいま混み合っているため、受け付けを一時的に止めています。1〜2分ほど待ってから、もう一度お試しください'
 type BudgetEnv = { TEST_HOOKS?: string; LOGIN_WRITE_BUDGET?: string; PUBLIC_WRITE_BUDGET?: string } | null | undefined

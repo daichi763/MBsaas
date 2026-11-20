@@ -110,8 +110,9 @@ const fakeDb = () => {
   const appLogin = await call('GET', `${APP}/login`)
   ok('本番のホスト: app.mobital.jp のログイン画面は 200（タイトルは Mobital）', appLogin.status === 200 && /<title>ログイン \| Mobital<\/title>/.test(await appLogin.text()), appLogin.status)
 
-  // CSRF の送り元の確認: 403（csrf_origin）にならなければ、ログインの処理まで進んでいる（D1 が空なので 401 などになる）
-  const post = (host, origin) => call('POST', `${host}/api/auth/login`, { 'Content-Type': 'application/json', Origin: origin }, JSON.stringify({ company_code: 'x', user_code: 'y', password: 'z' }))
+  // CSRF の送り元の確認: 403（csrf_origin）にならなければ、API の処理まで進んでいる（D1 が空なので 401 などになる）。
+  // Sprint 33（#10001）から workers.dev のログインは入口で 403（use_app_host）にするので、CSRF はログインした人の書き込み（打刻）で確かめる
+  const post = (host, origin) => call('POST', `${host}/api/staff/attendance`, { 'Content-Type': 'application/json', Origin: origin }, JSON.stringify({ shift_id: 1, report_type: 'wake_up' }))
   const isCsrf = async (r) => r.status === 403 && (await r.clone().json().catch(() => ({}))).code === 'csrf_origin'
   const cases = {
     'app.mobital.jp の画面 → app.mobital.jp': [APP, APP, false],

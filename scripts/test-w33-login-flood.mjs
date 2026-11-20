@@ -84,7 +84,7 @@ async function session(company_code, user_code) {
   const wr = read('wrangler.jsonc')
   ok('wrangler.jsonc の triggers は変えていない（3つの式のまま）', (wr.match(/"crons": \["0 18 \* \* \*", "30 18 \* \* \*", "\*\/15 \* \* \* \*"\]/g) || []).length === 2)
   const ls = read('src/lib/login-security.ts')
-  ok('本番の上限の値はコードで決める（テストの vars は TEST_HOOKS のときだけ）', /login: \{ minute: 20, day: 1500, degraded: 1 \}/.test(ls) && /public: \{ minute: 20, day: 1000, degraded: 1 \}/.test(ls) && /env\?\.TEST_HOOKS === 'true'/.test(ls))
+  ok('本番の上限の値はコードで決める（テストの vars は TEST_HOOKS のときだけ）', /login: \{ minute: 60, day: 1500, degraded: 1 \}/.test(ls) && /public: \{ minute: 60, day: 1000, degraded: 1 \}/.test(ls) && /env\?\.TEST_HOOKS === 'true'/.test(ls))
   const api = read('src/api.ts')
   const loginSrc = api.slice(api.indexOf("api.post('/auth/login', async"), api.indexOf("api.post('/auth/forgot-password'"))
   ok('締め出しの応答（lockedResponse）・二段階認証の締め出しは何も書かない', /const lockedResponse = \(\) => c\.json\(/.test(loginSrc) && !/logEvent\('locked'|logFailure\('locked'/.test(loginSrc))
@@ -297,6 +297,14 @@ if (!PERSIST) {
     ok('#10001 成功のログインは1件1行（同じ1分・同じ接続元でもまとめない。repeat_count 1・bucket_key なし）', rows.length === 2 && rows.every(r => r.result === 'success' && r.repeat_count === 1 && r.bucket_key === null), rows)
     const audit = await call('GET', '/api/admin/audit-logs?kind=login', { cookie: admin })
     ok('#10001 操作の記録にログインの成功が今までどおり出る（回数の行は付けない）', (audit.data?.items || []).filter(x => x.ip === IP && !x.failed && !x.lines.some(l => /^回数/.test(l))).length === 2, audit.data?.items?.slice(0, 3))
+    // 失敗 → 成功 → 失敗（同じ1分・同じ接続元）: 成功の後の失敗は新しい行（「最後に成功してから」の回数を数え直せる）
+    await freshMinute(20)
+    const IP2 = '198.51.100.42'
+    await login('sample', 'st008', 'wrong-a', IP2)
+    await login('sample', 'st008', 'pass1234', IP2)
+    await login('sample', 'st008', 'wrong-b', IP2)
+    const seq = await q1(`SELECT result, repeat_count FROM login_events WHERE ip = '${IP2}' ORDER BY event_id`)
+    ok('#10001 成功を挟んだ失敗はまとめない（失敗・成功・失敗の3行）', seq.length === 3 && seq.map(r => r.result).join(',') === 'bad_password,success,bad_password' && seq.every(r => r.repeat_count === 1), seq)
     const run = await call('POST', '/api/hq/share-detect/run', { cookie: hq, body: {} })
     ok('#10001 使い回しの疑いの集計（成功のログインの行を読む）はそのまま動く', run.status === 200, run)
   }
