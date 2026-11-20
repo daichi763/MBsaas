@@ -524,6 +524,7 @@ npx wrangler secret delete <名前> --env production        # 消す
 | `RESEND_WEBHOOK_SECRET` | Resend の Webhook の署名の秘密を作り直す → すぐ `secret put`。その間に届いた Webhook は署名が合わず 401 になる（Resend が送り直す） |
 | `TURNSTILE_SECRET_KEY` / `TURNSTILE_SITE_KEY` | Cloudflare の Turnstile の画面で作り直す → 2つとも `secret put`。`RATE_LIMIT_SALT` がないときは、応募の回数の数え方（IP のハッシュ）が変わり、直近1時間の回数がいったん0に戻る |
 | `RATE_LIMIT_SALT` | 長いランダムな文字列にする。入れ替えると、直近1時間の応募の回数がいったん0に戻る |
+| `CF_ANALYTICS_TOKEN` / `CF_ACCOUNT_ID` | 無料プランの使った量の見張り（Account Analytics の読み取りだけ）。作り方は [monitoring.md](monitoring.md) の 12.3。新しいトークンを作る → `secret put` → 次の毎時の確認（本部画面「データ保持・定期処理」の `usage_watch`）が通るのを見てから、古いトークンをダッシュボードで消す |
 | `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | 入れ替えると、今までの端末の購読は使えなくなる。スタッフがアプリの通知の設定で「受け取る」を押し直すと、新しい鍵で購読し直す（`public/static/staff.js:3105`〜`3107`）。未設定のときは D1 の `push_vapid_keys` に鍵が保存されるので、D1 のバックアップの扱いに注意する |
 
 Cloudflare の API トークンなど、自動バックアップ・通知の仕組みで使う鍵は [backup.md](backup.md)・[monitoring.md](monitoring.md) にあります。
@@ -644,13 +645,14 @@ Cloudflare の API トークンなど、自動バックアップ・通知の仕�
 | 転送しないもの | `/api/*`（`/api/health` を含む）・`/webhooks/*`・`/sw.js`・`/static/*`・`/manifest.webmanifest`・拡張子の付いたファイル・GET と HEAD 以外。古いタブ・ホーム画面のアプリ・workers.dev の Service Worker・Resend の Webhook（宛先を変えるまで workers.dev に届く）がそのまま動く | 同上 |
 | 転送する条件 | 要求のホストが `*.workers.dev` で、`APP_BASE_URL`（https）のホストと違うときだけ。ローカル（localhost・127.0.0.1）・テストでは転送しない | 同上 |
 | CSRF の送り元の確認 | 送り元（Origin）が「要求のホスト」か「`APP_BASE_URL` のホスト」なら通す。app.mobital.jp の画面からの操作も、workers.dev の古いタブからの操作も通る | `src/lib/csrf.ts` |
+| workers.dev でのログイン（Sprint 33 #10001） | WAF の回数制限は app.mobital.jp にしか効かないため、workers.dev の `/api/auth/*` の書き込み（ログアウトを除く）と `/api/public/*` の書き込みは 403（`code: use_app_host`）で断る。ログイン済みの古いタブの操作・`/webhooks/*` は通す | `src/lib/host-redirect.ts` の `appHostOnlyBlock` |
 | ログインの Cookie | `Domain` を付けない（そのホストだけ）・`SameSite=Lax`・https では `Secure`・`HttpOnly`。**ホストごとに別のログイン**なので、app.mobital.jp では全員がログインし直す。workers.dev のログインは期限まで残るが、画面を開くと app.mobital.jp に移る | `src/lib/auth.ts` の `sessionCookieOptions` |
 | CSP | 画面の CSP は `'self'` と jsDelivr・Turnstile だけで、ホスト名を書いていない。どちらのホストでもそのまま動く | `src/index.tsx` |
 | CORS | 付けていない（同じオリジンからだけ呼ぶ）。変更なし | — |
 | プッシュ通知 | 購読はオリジン（ホスト）ごと。workers.dev の購読は、端末のブラウザに残っている間は届き、タップすると app.mobital.jp に移る（ログインし直し）。app.mobital.jp で通知をオンにし直してもらう。**app.mobital.jp（`APP_BASE_URL` のホスト）で通知をオンにすると、その人の workers.dev で登録した購読（ホストの記録がない 0113 より前の購読を含む）をサーバーが消す**（同じ端末に古い Service Worker の購読が残ると、同じ通知が2回届くため。端末の Service Worker の更新には頼らない）。消した購読の端末にはもう送らない。別の端末で workers.dev のままの人も、その端末で app.mobital.jp からオンにし直せば届く。ホストは `push_subscriptions.subscribed_host`（0113）に残す。`APP_BASE_URL` が workers.dev のとき（ステージング・戻したとき）は、ホストの記録がない購読を消さない。VAPID の鍵はホストに関係しない（`VAPID_SUBJECT` は `mailto:support@mobital.jp` を登録済み） | `src/lib/web-push.ts` の `pushHostCleanup`・`src/notifications.ts` の `/push/subscribe` |
 | 内部の識別子 | 名前を変えても、通知の `tag`（`fieldos`・`fieldos-admin`・`fieldos-hq` など）・プッシュの `Topic`（`fieldos-notice`）・ログイン画面の記憶の localStorage のキー（`fieldos.login`）・カレンダーの予定の `UID`（`shift-<番号>@field-os`）・障害の通知の Webhook の `source`（`fieldos`）・Service Worker のメッセージ（`fos-open`）は変えない。変えると、端末の記憶が消える・購読したカレンダーに同じ予定が2つ出る・受け側の設定が合わなくなるため | `src/index.tsx`・`src/staff-schedule.ts`・`src/services/alerts.ts` |
 | ホーム画面のアプリ（PWA） | オリジンごと。workers.dev で追加したアイコンは、開くと app.mobital.jp に移り、ブラウザの表示になる。app.mobital.jp で追加し直してもらう。名前は「Mobital」 | `public/manifest.webmanifest` |
-| 報告用URL・募集ページ・QR | トークンは変わらない。workers.dev の URL（配った案内文・印刷した QR）を開くと app.mobital.jp の同じ URL に移る。報告・応募の送信（`/api/public/*`）はどちらのホストでも動く。新しく作る URL・QR は、画面を開いているホスト（移した後は app.mobital.jp）で作る | `public/static/staff-lifecycle.js`・`public/static/recruit.js` |
+| 報告用URL・募集ページ・QR | トークンは変わらない。workers.dev の URL（配った案内文・印刷した QR）を開くと app.mobital.jp の同じ URL に移る。報告・応募の送信（`/api/public/*`）は、Sprint 33 から app.mobital.jp だけで受け付ける（workers.dev では 403 `use_app_host`。画面は開くと app.mobital.jp に移るので、ふだんは当たらない。[monitoring.md](monitoring.md) の 12.1）。新しく作る URL・QR は、画面を開いているホスト（移した後は app.mobital.jp）で作る | `public/static/staff-lifecycle.js`・`public/static/recruit.js` |
 | ログイン画面の記憶 | 会社コード・ID の記憶（ブラウザの localStorage）はオリジンごとなので、app.mobital.jp では1回入力し直す | `src/index.tsx` |
 | Turnstile | 今は未設定（キーが無ければ使わない）。設定するときはホスト名に `app.mobital.jp` と `mbsaas.saas-2a2.workers.dev` の両方を入れる | `src/recruit.ts` |
 

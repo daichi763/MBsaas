@@ -19,7 +19,8 @@ import { assertAssignable, conflictLabel } from './lib/staff-eligibility'
 import { shiftWindow } from './lib/shift-time'
 import { isCompanyActive } from './lib/auth'
 import { notifyRecruitApplied } from './notifications'
-import { notifyRecruitResult, notifyRecruitResults } from './notifications'
+import { notifyRecruitResult, notifyRecruitResults, flushPushQueue } from './notifications'
+import { writeBudgetBusy, spendWriteBudgetFor } from './lib/login-security'
 import { opLog, logShifts, finishLog } from './lib/operation-log'
 import { mailMode } from './services/email'
 import { isHHMM, isISODate, toInt, clipText } from './lib/validate'
@@ -297,6 +298,9 @@ recruitPublicApi.post('/:token/apply', async (c) => {
   // 機械的な送信の対策: 入力欄に見えない項目（website）に値がある / 表示から送信までが短すぎる → 受け付けたように見せて保存しない
   const issued = Number(b.issued_at || 0)
   if (str(b.website, 200) || !issued || Date.now() - issued < MIN_FILL_MS) return c.json({ ok: true })
+  // 全体の上限（#10001）: ログインしていない人の送信（応募・再設定の依頼）が1分・1日の上限に達していれば、D1 に書かずに断る
+  const busy = await writeBudgetBusy(c, 'public')
+  if (busy) return busy
   const ip = c.req.header('cf-connecting-ip') || c.req.header('x-forwarded-for')?.split(',')[0]?.trim() || ''
   // 確認サービス（siteverify）に接続できなかったとき（障害・タイムアウト）は、応募を止めずに「要確認」の印を付けて受け付ける（#501。利用者の判断）。
   // 判定に落ちた（success=false）応募はこれまでどおり受け付けない。IP ごと・電話番号ごとの回数の制限は、印の有無にかかわらず効かせる
@@ -323,6 +327,8 @@ recruitPublicApi.post('/:token/apply', async (c) => {
 
   // 送信回数の制限（IPはそのまま保存せず、ハッシュのみ）。止めた件数はページごとに数えて管理画面に出す（#225）
   const blocked = async (error: string) => {
+    // 止めた件数の記録も書き込みなので、全体の上限に数える（#10001）
+    await spendWriteBudgetFor(c, 'public', flushPushQueue)
     await db.prepare('UPDATE recruit_pages SET blocked_count = COALESCE(blocked_count, 0) + 1, blocked_last_at = ? WHERE page_id = ?').bind(nowJST(), page.page_id).run().catch(() => null)
     return c.json({ error }, 429)
   }
@@ -361,6 +367,7 @@ recruitPublicApi.post('/:token/apply', async (c) => {
     qa.answers.length ? JSON.stringify(qa.answers) : null, turnstileUnverified ? 1 : null).run()
   const appId = app.meta.last_row_id
   await db.batch(targets.map(r => db.prepare('INSERT OR IGNORE INTO recruit_application_items (application_id, slot_role_id) VALUES (?, ?)').bind(appId, r.slot_role_id)))
+  await spendWriteBudgetFor(c, 'public', flushPushQueue)
   // 管理者に新しい応募を知らせる（#150。失敗しても応募は受け付ける）
   await notifyRecruitApplied(c, { company_id: page.company_id, page_id: page.page_id, applicant: name, count: targets.length, source: 'public' })
   return c.json({ ok: true, count: targets.length, full_count: targets.filter(r => r.remaining <= 0).length, accepted: receipt(targets), already_applied: already, applied_at: appliedAt })

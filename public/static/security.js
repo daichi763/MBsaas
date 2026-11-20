@@ -174,7 +174,7 @@
     const rows = d.events.map(e => `
       <tr class="border-b ${BORDER}">
         <td class="py-2 pr-2 whitespace-nowrap text-xs">${utcTime(e.created_at)}</td>
-        <td class="py-2 pr-2">${resultBadge(e.result)}</td>
+        <td class="py-2 pr-2">${resultBadge(e.result)}${Number(e.repeat_count) > 1 ? `<br><span class="${MUTED} text-xs">${Number(e.repeat_count)}回（1分の間）</span>` : ''}</td>
         <td class="py-2 pr-2 text-xs">${esc(EVENT_LABEL[e.event_type] || e.event_type)}${e.method && e.event_type === 'login' ? `<br><span class="${MUTED}">${esc(METHOD_LABEL[e.method] || e.method)}</span>` : ''}${e.actor_name ? `<br><span class="${MUTED}">操作: ${esc(e.actor_name)}</span>` : ''}</td>
         ${IS_HQ ? `<td class="py-2 pr-2 text-xs">${esc(e.company_name || (e.company_code ? '不明（' + e.company_code + '）' : '本部・会社コードなし'))}</td>` : ''}
         <td class="py-2 pr-2 text-xs">${esc(e.user_code || '-')}${e.user_name ? `<br><span class="${MUTED}">${esc(e.user_name)}</span>` : e.result === 'bad_password' ? `<br><span class="${MUTED}">該当する ID なし</span>` : ''}</td>

@@ -54,7 +54,9 @@ import {
 import {
   type LoginEvent, recordLoginEvent, requestMeta, deviceLabel, canUseMfa, ipDenied, mfaSetupPending, securitySettings, saveSecuritySettingsStmt,
   normalizeIpList, ipInList, newTotpSecret, totpUri, verifyTotp, newRecoveryCodes, recoveryCodesLeft, consumeRecoveryCode, personSessions, revokePersonSessions,
+  writeBudgetBusy, spendWriteBudgetFor,
 } from './lib/login-security'
+import { flushPushQueue } from './notifications'
 import rosterApi, { staffSelfApi, personStaffRows, ensureRosterIdentity, loadRoster, partnerNameConflict, propagateNameToLinked, propagateRetirementStmts, hostNoteStmts, ROSTER_BASE_FIELDS, ROSTER_BUSINESS_FIELDS, normalizeCareerRows, careerSummary, getRequiredFields, missingRequired, normalizeRosterValues, linkedStaffEmails, findSamePersonCandidates, nextStaffCode } from './roster'
 import { batchWithNewPerson, insertPersonStmt, isUniqueError, STAFF_USER_ID } from './roster'
 import { ageEntryUpdate, estimatedAge } from './roster'
@@ -470,17 +472,21 @@ api.post('/auth/login', async (c) => {
   if (!user_code || !password) return c.json({ error: '入力内容が不足しています' }, 400)
   const db = c.env.DB
   const ip = c.req.header('CF-Connecting-IP')
-  // ログインの履歴（#552）。入力された会社コード・ID と、分かれば会社・利用者を残す
-  const logEvent = (result: LoginEvent['result'], companyId?: number | null, userId?: number | null) =>
-    recordLoginEvent(db, c, { company_id: companyId ?? null, user_id: userId ?? null, company_code: rawCompanyCode, user_code: rawUserCode, result })
-  const lockedResponse = async (companyId?: number | null) => {
-    await logEvent('locked', companyId)
-    return c.json({ error: `ログインの失敗が続いたため、一時的にログインを止めています。${LOGIN_WINDOW_MINUTES}分ほど待ってからお試しください。${LOGIN_HELP}` }, 429)
+  // 全体の上限（#10001）: ログインの失敗の記録が1分・1日の上限に達していれば、パスワードを確かめる前に、D1 に書かずに断る
+  const busy = await writeBudgetBusy(c, 'login')
+  if (busy) return busy
+  // ログインの履歴（#552）。入力された会社コード・ID と、分かれば会社・利用者を残す。
+  // 失敗は1分ごとにまとめて数え（src/lib/login-security.ts）、全体の上限の回数にも数える（#10001）
+  const logFailure = async (result: LoginEvent['result'], companyId?: number | null, userId?: number | null) => {
+    await recordLoginEvent(db, c, { company_id: companyId ?? null, user_id: userId ?? null, company_code: rawCompanyCode, user_code: rawUserCode, result })
+    await spendWriteBudgetFor(c, 'login', flushPushQueue)
   }
+  // 締め出し中は何も書かない（判定は読むだけ。#10001）
+  const lockedResponse = () => c.json({ error: `ログインの失敗が続いたため、一時的にログインを止めています。${LOGIN_WINDOW_MINUTES}分ほど待ってからお試しください。${LOGIN_HELP}` }, 429)
 
   let keys = await loginAttemptKeys(company_code, user_code, ip)
   let company = company_code ? await findCompanyByCode(db, company_code, rawCompanyCode) : null
-  if (await isLoginLocked(db, keys)) return lockedResponse(company?.company_id)
+  if (await isLoginLocked(db, keys)) return lockedResponse()
 
   let user = company ? await findUserByCode(db, company.company_id, user_code, rawUserCode) : null
   // 本部ユーザー（本部専用の企業行に所属）は会社コードなしでログインする。以前の案内どおり会社コードを入れても、
@@ -491,7 +497,7 @@ api.post('/auth/login', async (c) => {
     if (hq) {
       if (company_code) {
         keys = await loginAttemptKeys('', user_code, ip)
-        if (await isLoginLocked(db, keys)) return lockedResponse(hq.company_id)
+        if (await isLoginLocked(db, keys)) return lockedResponse()
       }
       user = hq
       company = await db.prepare('SELECT * FROM companies WHERE company_id = ?').bind(hq.company_id).first() as any
@@ -503,22 +509,22 @@ api.post('/auth/login', async (c) => {
   else await dummyVerify(password)
   if (!passwordOk) {
     await recordLoginFailure(db, keys)
-    await logEvent('bad_password', user?.company_id ?? company?.company_id, user && canLogin(user.role) ? user.user_id : null)
+    await logFailure('bad_password', user?.company_id ?? company?.company_id, user && canLogin(user.role) ? user.user_id : null)
     if (user && canLogin(user.role)) await notifyLoginFailures(c, user)
     return c.json({ error: LOGIN_FAILED_MESSAGE }, 401)
   }
   // パスワードが合ったときだけ、利用できない理由を伝える（アカウントの有無は漏れない）
   if (user.status !== 'active') {
-    await logEvent('inactive', user.company_id, user.user_id)
+    await logFailure('inactive', user.company_id, user.user_id)
     return c.json({ error: `このアカウントは現在利用できません。${LOGIN_HELP}` }, 403)
   }
   if (user.role !== 'system_admin' && !isCompanyActive(company.active_status)) {
-    await logEvent('company_inactive', user.company_id, user.user_id)
+    await logFailure('company_inactive', user.company_id, user.user_id)
     return c.json({ error: `ご契約が停止中のため、現在ご利用いただけません。${LOGIN_HELP}` }, 403)
   }
   // 接続元の制限（#544。会社の設定。本部ユーザーは本部の設定）
   if (ipDenied(user.role, company.settings_json, ip)) {
-    await logEvent('ip_denied', user.company_id, user.user_id)
+    await logFailure('ip_denied', user.company_id, user.user_id)
     return c.json({ error: IP_DENIED_MESSAGE, code: 'ip_denied' }, 403)
   }
   // 旧形式（ソルトなし SHA-256）のパスワードは、ここで PBKDF2 に作り直す
@@ -569,14 +575,20 @@ api.post('/auth/login/mfa', async (c) => {
     await db.prepare('DELETE FROM mfa_challenges WHERE token_hash = ?').bind(tokenHash).run()
     return expired()
   }
-  const logEvent = (result: LoginEvent['result']) => recordLoginEvent(db, c, { company_id: user.company_id, user_id: user.user_id,
-    company_code: user.role === 'system_admin' ? '' : company.company_code, user_code: user.user_code, result })
+  // 失敗は1分ごとにまとめて数え、全体の上限の回数にも数える（#10001）
+  const logFailure = async (result: LoginEvent['result']) => {
+    await recordLoginEvent(db, c, { company_id: user.company_id, user_id: user.user_id,
+      company_code: user.role === 'system_admin' ? '' : company.company_code, user_code: user.user_code, result })
+    await spendWriteBudgetFor(c, 'login', flushPushQueue)
+  }
+  // 締め出し中・全体の上限に達しているときは、何も書かずに断る（#10001）
+  const busy = await writeBudgetBusy(c, 'login')
+  if (busy) return busy
   if (await isLoginLocked(db, keys)) {
-    await logEvent('locked')
     return c.json({ error: `失敗が続いたため、一時的にログインを止めています。${LOGIN_WINDOW_MINUTES}分ほど待ってからお試しください。${LOGIN_HELP}` }, 429)
   }
   if (ipDenied(user.role, company.settings_json, ip)) {
-    await logEvent('ip_denied')
+    await logFailure('ip_denied')
     return c.json({ error: IP_DENIED_MESSAGE, code: 'ip_denied' }, 403)
   }
   // 6桁なら認証アプリのコード、それ以外は予備コードとして確かめる。同じコードを2回使えないよう、条件付きの更新で記録する
@@ -595,7 +607,7 @@ api.post('/auth/login/mfa', async (c) => {
   if (!method) {
     await db.prepare('UPDATE mfa_challenges SET attempts = attempts + 1 WHERE token_hash = ?').bind(tokenHash).run()
     await recordLoginFailure(db, keys)
-    await logEvent('mfa_failed')
+    await logFailure('mfa_failed')
     await notifyLoginFailures(c, user)
     const left = MFA_MAX_ATTEMPTS - ch.attempts - 1
     if (left <= 0) return expired()
@@ -614,6 +626,9 @@ api.post('/auth/forgot-password', async (c) => {
   // メールアドレスは前後の空白を除き、小文字にそろえて照合する（登録時の表記ゆれで届かないのを防ぐ）
   const email = normalizeEmail(body.email)
   if (!email) return c.json(genericResponse)
+  // 全体の上限（#10001）: ログインしていない人の送信（再設定の依頼・応募）が1分・1日の上限に達していれば、D1 に書かずに断る
+  const busy = await writeBudgetBusy(c, 'public')
+  if (busy) return busy
 
   // 接続元ごとの回数制限（#382）: 1時間に RESET_IP_MAX 件まで受け付ける。超えても同じ応答を返す（制限に達したことも、アカウントの有無も伝えない）。
   // 記録は login_attempts（scope='reset_ip'。IP はハッシュで保存し、1日たつと定期処理で消える）
@@ -627,6 +642,7 @@ api.post('/auth/forgot-password', async (c) => {
       await c.env.DB.prepare(`INSERT INTO login_attempts (scope, key_hash, attempted_at) VALUES ('reset_ip', ?, ?)`).bind(key, new Date().toISOString()).run()
     } catch (e) { console.log(`reset_ip limit failed: ${e}`) }
   }
+  await spendWriteBudgetFor(c, 'public', flushPushQueue)
 
   // 簡易レート制限: 同一メールアドレスへの直近1時間のリクエストが5件を超えたら新規発行しない
   const recent = await c.env.DB.prepare(
@@ -934,7 +950,7 @@ function sessionView(s: any, currentHash?: string) {
 function eventView(e: any) {
   return { event_id: e.event_id, created_at: e.created_at, event_type: e.event_type, result: e.result, method: e.method, company_code: e.company_code, user_code: e.user_code,
     user_id: e.user_id, user_name: e.user_name ?? null, company_id: e.company_id, company_name: e.company_name ?? null, ip: e.ip, device: e.user_agent ? deviceLabel(e.user_agent) : '-',
-    actor_name: e.actor_name ?? null }
+    actor_name: e.actor_name ?? null, repeat_count: Number(e.repeat_count) || 1 }
 }
 /** ログインの履歴の絞り込み（result: failed=失敗だけ / 結果の値。user_id。q: ID・接続元の部分一致）と、ページ送り */
 function loginHistoryFilter(c: any, where: string[], binds: any[]) {
@@ -961,11 +977,11 @@ async function loadLoginHistory(c: any, where: string[], binds: any[]) {
 /** 直近24時間に失敗が続いている ID（会社で絞るときは companyId） */
 async function loginFailureAlerts(db: D1Database, companyId: number | null) {
   const since = new Date(Date.now() - 24 * 3600 * 1000).toISOString()
-  return (await db.prepare(`SELECT e.company_id, MAX(co.company_name) AS company_name, e.user_code, MAX(us.name) AS user_name, COUNT(*) AS failures, MAX(e.created_at) AS last_at,
+  return (await db.prepare(`SELECT e.company_id, MAX(co.company_name) AS company_name, e.user_code, MAX(us.name) AS user_name, SUM(e.repeat_count) AS failures, MAX(e.created_at) AS last_at,
       COUNT(DISTINCT e.ip) AS ip_count
     FROM login_events e LEFT JOIN users us ON us.user_id = e.user_id LEFT JOIN companies co ON co.company_id = e.company_id
     WHERE e.created_at > ? AND e.result IN ('bad_password', 'mfa_failed', 'locked') ${companyId != null ? 'AND e.company_id = ?' : ''}
-    GROUP BY e.company_id, LOWER(e.user_code) HAVING COUNT(*) >= ? ORDER BY failures DESC LIMIT 20`)
+    GROUP BY e.company_id, LOWER(e.user_code) HAVING SUM(e.repeat_count) >= ? ORDER BY failures DESC LIMIT 20`)
     .bind(since, ...(companyId != null ? [companyId] : []), LOGIN_FAILURE_ALERT).all()).results
 }
 /**
@@ -983,7 +999,7 @@ async function notifyLoginFailures(c: any, user: any) {
     const since = new Date(Date.now() - 24 * 3600 * 1000).toISOString() // login_events.created_at は UTC
     const quiet = nowJST(-LOGIN_FAILURE_NOTIFY_QUIET_MINUTES * 60000) // 通知は JST
     const r = await db.prepare(`SELECT
-        (SELECT COUNT(*) FROM login_events e WHERE e.user_id = ?1 AND e.created_at > ?2 AND e.event_type = 'login' AND e.result IN ('bad_password', 'mfa_failed', 'locked')
+        (SELECT COALESCE(SUM(e.repeat_count), 0) FROM login_events e WHERE e.user_id = ?1 AND e.created_at > ?2 AND e.event_type = 'login' AND e.result IN ('bad_password', 'mfa_failed', 'locked')
           AND e.event_id > COALESCE((SELECT MAX(s.event_id) FROM login_events s WHERE s.user_id = ?1 AND s.event_type = 'login' AND s.result = 'success'), 0)) AS failures,
         EXISTS (SELECT 1 FROM user_notifications n WHERE n.kind = ?3 AND n.related_id = ?1 AND n.company_id = ?4 AND n.created_at > ?5) AS recent`)
       .bind(user.user_id, since, LOGIN_FAILURE_NOTIFY_KIND, user.company_id, quiet).first() as any

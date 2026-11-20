@@ -170,6 +170,7 @@ Worker が返すすべての応答に `X-Content-Type-Options: nosniff` を、HT
 | `*/15 * * * *` | 15分おき | `notice_scheduled_publish` | 予約したお知らせのメール配信 | `src/api.ts:7179` |
 | `*/15 * * * *` | 15分おき | `doc_expiry_notice` | 書類の有効期限（30日以内・期限切れ）を管理者に知らせる | `src/notifications.ts` の `notifyExpiringDocuments` |
 | `*/15 * * * *` | 15分おき | `monitor_daily` | D1 の DB の大きさを記録し（1日1行の `db_size_logs`）、上限（`DB_SIZE_LIMIT_MB`）に対する段階を本部の管理者と送り先に知らせる。送り先への障害の通知の毎朝のまとめも送る（毎朝8時以降の最初の起動で1回。済んだ後は問い合わせ1回。[monitoring.md](monitoring.md) の 9・10 章） | `src/services/monitor.ts` の `runMonitorDaily` |
+| `*/15 * * * *` | 15分おき | `usage_watch` | 無料プランの1日の使った量（今日（UTC）の D1 の読み取り・書き込みの行数と Workers の要求の数。アカウント全体）を Cloudflare の GraphQL Analytics API から取り、1日の上限の 50%・80% を超えたら本部の管理者と送り先に知らせる（同じ日に同じ線は1回。毎時 0〜14 分の起動だけで問い合わせる。秘密の値 `CF_ANALYTICS_TOKEN`・`CF_ACCOUNT_ID` が無ければ何もしない。#10001。[monitoring.md](monitoring.md) の 12 章） | `src/services/monitor.ts` の `runUsageWatch` |
 | `*/15 * * * *` | 15分おき | `affiliation_schedules_rest` | 3:00 の起動で予算に収まらなかった所属区分の変更の予約を、4:00 以降に少しずつ適用する（0:00〜3:59 は何もしない。予約がなければ問い合わせ1回） | `src/staff-lifecycle.ts` の `applyDueAffiliationSchedules` |
 
 - 処理を足すときは `CRON_JOBS` に1行足し、この表と README の表にも足します（`src/index.tsx:974`）。新しい式を使うなら `wrangler.jsonc` の `triggers.crons` にも足します（トップレベルと `env.production` の両方）。
@@ -390,6 +391,8 @@ docs/                     この資料と機能ごとの仕様
 | `VAPID_SUBJECT` | Web Push の連絡先（`https://` か `mailto:`。`src/lib/web-push.ts:58`） | `APP_BASE_URL` が https ならそれ、なければ仮のアドレス |
 | `ALERT_DESTINATIONS` | 障害の通知の送り先（Slack・Discord・Google Chat・Teams・LINE・Webhook・メール。JSON の配列か、それを base64 にしたもの。`src/services/alerts.ts` の `loadDestinations`。書き方は [monitoring.md](monitoring.md) の 9 章） | 送り先へは送らない（アプリ内の通知とプッシュ通知だけ）。エラーにはしない |
 | `ALERT_WEBHOOK_URL` | 以前の決定の Webhook の URL（1つ）。あれば `type: webhook` の送り先として足す（`src/services/alerts.ts`） | 足さない |
+| `CF_ANALYTICS_TOKEN` | 無料プランの1日の使った量の見張り（Cloudflare の GraphQL Analytics API。Account Analytics の読み取りだけの API トークン。`src/services/monitor.ts` の `runUsageWatch`。作り方は [monitoring.md](monitoring.md) の 12 章。#10001） | 使った量を見ない（定期処理 `usage_watch` は何もしない）。エラーにはしない |
+| `CF_ACCOUNT_ID` | 同上（見張るアカウントの ID。ダッシュボードの右側に出る 32 文字） | 同上 |
 
 どのシークレットが本番に登録されているかは `npx wrangler secret list --env production` で確かめます（値は表示されません）。
 

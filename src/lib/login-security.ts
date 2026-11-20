@@ -1,5 +1,6 @@
 // ログインの安全対策の共通部品（作業単位 w4-auth-features: #552 #453 #544）
-// - ログインの履歴（login_events）の記録
+// - ログインの履歴（login_events）の記録（失敗は1分ごとにまとめる。#10001）
+// - ログインしていない人の書き込みの全体の上限（auth_write_counters。#10001）
 // - 二段階認証（認証アプリの TOTP。RFC 6238: HMAC-SHA1・30秒・6桁）と予備コード
 // - 会社ごとの設定（二段階認証を必須にするか・接続元 IP の制限）。companies.settings_json に持つ
 // - 同じ人（person_id が同じ他社の行）のセッションをまとめて扱う条件
@@ -7,6 +8,7 @@ import type { Context } from 'hono'
 import { sha256Hex } from './auth'
 import { ADMIN_ROLES } from './permissions'
 import { requestGeo } from './share-detect'
+import { claimAlert, notifyHq, type AlertEnv } from '../services/alerts'
 
 /** 二段階認証を使える（接続元の制限の対象になる）ロール。スタッフは対象外 */
 export const MFA_ROLES: readonly string[] = ['system_admin', ...ADMIN_ROLES]
@@ -27,21 +29,133 @@ export type LoginEvent = {
 export function requestMeta(c: Context): { ip: string | null; ua: string | null } {
   return { ip: c.req.header('CF-Connecting-IP') || null, ua: (c.req.header('User-Agent') || '').slice(0, 300) || null }
 }
+/** まとめる行の鍵（失敗だけ。成功・パスワードの再設定などは1件1行のまま）。#10001 */
+export function loginEventBucket(ip: string | null, ev: LoginEvent, now = Date.now()): string | null {
+  if (ev.result === 'success' || (ev.event_type || 'login') !== 'login') return null
+  return [ip || '', 'login', ev.result, ev.company_id ?? '', ev.user_id ?? '', new Date(now).toISOString().slice(0, 16)].join('|')
+}
 /**
- * 履歴を1行残す。記録に失敗してもログインなどの処理は止めない。
- * 接続元のおおよその場所（Cloudflare の request.cf の国・都道府県・市）も残す（使い回しの疑いの手がかり。#9989。migrations/0116）
+ * 履歴を残す。記録に失敗してもログインなどの処理は止めない。
+ * 接続元のおおよその場所（Cloudflare の request.cf の国・都道府県・市）も残す（使い回しの疑いの手がかり。#9989。migrations/0116）。
+ * 失敗（成功以外のログイン）は、同じ接続元 × 同じ結果 × 同じ会社・利用者 × 同じ1分（UTC）を1行にまとめ、repeat_count を増やす（#10001。migrations/0118）。
+ * まとめた行の日時・端末・入力された会社コードと ID は、その分の最初の1回のもの
  */
 export async function recordLoginEvent(db: D1Database, c: Context, ev: LoginEvent): Promise<void> {
   const m = requestMeta(c)
   const g = requestGeo(c)
   try {
     await db.prepare(`INSERT INTO login_events (company_id, user_id, company_code, user_code, event_type, result, method, ip, user_agent, actor_user_id, created_at,
-        country, region_code, region, city, concurrent_device, concurrent_minutes)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(ev.company_id ?? null, ev.user_id ?? null,
+        country, region_code, region, city, concurrent_device, concurrent_minutes, repeat_count, bucket_key)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+      ON CONFLICT(bucket_key) WHERE bucket_key IS NOT NULL DO UPDATE SET repeat_count = login_events.repeat_count + 1`).bind(ev.company_id ?? null, ev.user_id ?? null,
       ev.company_code ? String(ev.company_code).slice(0, 40) : null, ev.user_code ? String(ev.user_code).slice(0, 40) : null,
       ev.event_type || 'login', ev.result, ev.method ?? null, m.ip, m.ua, ev.actor_user_id ?? null, nowIso(),
-      g.country, g.region_code, g.region, g.city, ev.concurrent ? ev.concurrent.device.slice(0, 60) : null, ev.concurrent ? ev.concurrent.minutes : null).run()
+      g.country, g.region_code, g.region, g.city, ev.concurrent ? ev.concurrent.device.slice(0, 60) : null, ev.concurrent ? ev.concurrent.minutes : null,
+      loginEventBucket(m.ip, ev)).run()
   } catch (e) { console.log(`login_events record failed: ${e}`) }
+}
+
+// ---------- ログインしていない人の書き込みの全体の上限（#10001 セキュリティの点検 H2） ----------
+// 無料プランの D1 の書き込みは1日10万行（UTC の 0 時 = 日本時間 9:00 に戻る）。接続元ごとの制限（login_attempts・WAF）は IP を変えればすり抜けるので、
+// ログインの失敗の記録と、ログインなしで書き込みを起こせる所（再設定の依頼・応募）の回数を、全体で1分ごと・1日ごとに数えて止める。
+//   minute   … 1分に受け付ける回数（ふだん）
+//   day      … 1日（UTC）にこの回数に届いたら、その日の残りは1分に degraded 回までにする（攻撃が続いても、その日の書き込みを一定の量に収める）
+// 止めるときは D1 に何も書かずに 429 を返す（ログインはパスワードを確かめる前に断る。数えずに確かめると総当たりができるため）。
+// 書き込みの見積もり（索引の分を含む）: ログインの失敗1回 約8〜12行（login_attempts 2行と索引・login_events 1行か件数の更新・この表の更新）、
+//   再設定の依頼1回 約4行、応募1回 約10〜20行。上限いっぱいで1日中続けられても、login と public を合わせて1日約7万行に収まる（docs/monitoring.md の 12 章）
+export type WriteBudgetScope = 'login' | 'public'
+export type WriteBudget = { minute: number; day: number; degraded: number }
+export const WRITE_BUDGETS: Record<WriteBudgetScope, WriteBudget> = {
+  login: { minute: 20, day: 1500, degraded: 1 },
+  public: { minute: 20, day: 1000, degraded: 1 },
+}
+export const WRITE_BUDGET_BUSY_MESSAGE = 'ただいま混み合っているため、受け付けを一時的に止めています。1〜2分ほど待ってから、もう一度お試しください'
+type BudgetEnv = { TEST_HOOKS?: string; LOGIN_WRITE_BUDGET?: string; PUBLIC_WRITE_BUDGET?: string } | null | undefined
+/** 上限の値。テスト（TEST_HOOKS='true'）だけ、vars の LOGIN_WRITE_BUDGET・PUBLIC_WRITE_BUDGET（「分/日/日の後の分」。例 5/8/1）で変えられる */
+export function writeBudgetOf(env: BudgetEnv, scope: WriteBudgetScope): WriteBudget {
+  const raw = env?.TEST_HOOKS === 'true' ? (scope === 'login' ? env.LOGIN_WRITE_BUDGET : env.PUBLIC_WRITE_BUDGET) : undefined
+  const m = /^(\d{1,6})\/(\d{1,7})\/(\d{1,6})$/.exec(String(raw || ''))
+  return m ? { minute: Number(m[1]), day: Number(m[2]), degraded: Number(m[3]) } : WRITE_BUDGETS[scope]
+}
+const utcMinute = (now: number) => new Date(now).toISOString().slice(0, 16)
+const utcDay = (now: number) => new Date(now).toISOString().slice(0, 10)
+export type BudgetState = { minute_count: number; day_count: number; limit: number; full: boolean }
+/** 今の回数と、上限に達しているか（読むだけ。表が無いなど DB の失敗では止めない） */
+export async function writeBudgetState(db: D1Database, env: BudgetEnv, scope: WriteBudgetScope, now = Date.now()): Promise<BudgetState> {
+  const b = writeBudgetOf(env, scope)
+  let minuteCount = 0, dayCount = 0
+  try {
+    const r = await db.prepare('SELECT minute, minute_count, day, day_count FROM auth_write_counters WHERE scope = ?').bind(scope).first() as any
+    if (r && r.minute === utcMinute(now)) minuteCount = Number(r.minute_count) || 0
+    if (r && r.day === utcDay(now)) dayCount = Number(r.day_count) || 0
+  } catch (e) { console.log(`auth_write_counters check failed: ${e}`) }
+  const limit = dayCount >= b.day ? b.degraded : b.minute
+  return { minute_count: minuteCount, day_count: dayCount, limit, full: minuteCount >= limit }
+}
+export type BudgetSpent = { minute_count: number; day_count: number; reached: 'minute' | 'day' | null }
+/**
+ * 1回分を数える（書き込みが起きる操作のあとに呼ぶ）。数えたあとの回数と、この1回で上限に届いたか（届いたときだけ本部に知らせる）。
+ * 失敗しても処理は止めない（null）
+ */
+export async function spendWriteBudget(db: D1Database, env: BudgetEnv, scope: WriteBudgetScope, now = Date.now()): Promise<BudgetSpent | null> {
+  const b = writeBudgetOf(env, scope)
+  try {
+    // SET の右辺は更新前の行の値で計算される（minute・day の比較は前の値と）
+    const r = await db.prepare(`INSERT INTO auth_write_counters (scope, minute, minute_count, day, day_count, updated_at) VALUES (?, ?, 1, ?, 1, ?)
+      ON CONFLICT(scope) DO UPDATE SET
+        minute_count = CASE WHEN auth_write_counters.minute = excluded.minute THEN auth_write_counters.minute_count + 1 ELSE 1 END,
+        day_count = CASE WHEN auth_write_counters.day = excluded.day THEN auth_write_counters.day_count + 1 ELSE 1 END,
+        minute = excluded.minute, day = excluded.day, updated_at = excluded.updated_at
+      RETURNING minute_count, day_count`).bind(scope, utcMinute(now), utcDay(now), nowIso()).first() as any
+    const mc = Number(r?.minute_count) || 0, dc = Number(r?.day_count) || 0
+    const limit = dc > b.day ? b.degraded : b.minute
+    return { minute_count: mc, day_count: dc, reached: dc === b.day ? 'day' : mc === limit ? 'minute' : null }
+  } catch (e) {
+    console.log(`auth_write_counters spend failed: ${e}`)
+    return null
+  }
+}
+export const WRITE_BUDGET_LABEL: Record<WriteBudgetScope, string> = { login: 'ログインの失敗', public: 'ログインなしの送信（パスワードの再設定の依頼・募集ページの応募）' }
+/**
+ * 上限に届いたことを、本部の管理者（アプリ内の通知。kind は error_alert）と送り先に知らせる。1分の上限は60分に1回、1日の上限はその日に1回まで。
+ * 1時間ごとの使った量の確認（cron）より早く、ログインの失敗の急増に気づけるようにする。アプリ内の通知を作ったら true（呼び出し側でプッシュを送る）
+ */
+export async function notifyWriteBudgetReached(env: AlertEnv, scope: WriteBudgetScope, spent: BudgetSpent, now = Date.now()): Promise<boolean> {
+  if (!spent.reached) return false
+  try {
+    const b = writeBudgetOf(env as BudgetEnv, scope)
+    const day = utcDay(now)
+    const isDay = spent.reached === 'day'
+    const claim = await claimAlert(env.DB, isDay ? `write_budget:${scope}:day:${day}` : `write_budget:${scope}:minute`, isDay ? 1440 : 60)
+    if (!claim.claimed) return false
+    const label = WRITE_BUDGET_LABEL[scope]
+    const title = isDay ? `${label}が今日の目安（${b.day}回）に届きました` : `${label}が急に増えています（1分に${spent.minute_count}回）`
+    const lines = [isDay
+      ? `今日（UTC の ${day}。日本時間 9:00 から）の${label}が${spent.day_count}回になりました。D1 の書き込みの枠を守るため、次の日本時間 9:00 までは1分に${b.degraded}回までしか受け付けません。`
+      : `${label}が1分の上限（${spent.minute_count}回）に届いたため、その分の残りは記録せずに断っています（1〜2分後に受け付けを再開します）。`,
+      '総当たり・大量の送信の疑いがあります。Cloudflare のダッシュボードの Security → Events（WAF の記録）と、本部画面「セキュリティ」のログインの履歴を確かめてください。']
+    const r = await notifyHq(env, { event: 'write_budget', severity: 'critical', title, lines, count: isDay ? spent.day_count : spent.minute_count }, lines.join(''))
+    return r.notified > 0
+  } catch (e) {
+    console.log(`write budget alert failed: ${String((e as any)?.name || 'Error')}`)
+    return false
+  }
+}
+
+/** 上限に達していれば 429 の応答（D1 には書かない。code: write_budget）、まだなら null */
+export async function writeBudgetBusy(c: Context, scope: WriteBudgetScope): Promise<Response | null> {
+  const env = c.env as any
+  const st = await writeBudgetState(env.DB, env, scope)
+  return st.full ? c.json({ error: WRITE_BUDGET_BUSY_MESSAGE, code: 'write_budget' }, 429) : null
+}
+/** 1回分を数え、上限に届いたら本部に知らせる（知らせるのは応答の後。afterNotify はアプリ内の通知を作ったときに呼ぶ＝プッシュの送信） */
+export async function spendWriteBudgetFor(c: Context, scope: WriteBudgetScope, afterNotify?: (env: any) => Promise<unknown>): Promise<void> {
+  const env = c.env as any
+  const spent = await spendWriteBudget(env.DB, env, scope)
+  if (!spent?.reached) return
+  const p = notifyWriteBudgetReached(env, scope, spent).then(n => (n && afterNotify ? afterNotify(env) : null))
+    .catch(e => console.log(`write budget alert failed: ${String((e as any)?.name || 'Error')}`))
+  try { c.executionCtx.waitUntil(p) } catch { await p }
 }
 
 /** User-Agent から「iPhone / Safari」のような短い表示を作る（一覧用。判別できなければ「不明な端末」） */
